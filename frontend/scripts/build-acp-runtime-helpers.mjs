@@ -370,7 +370,8 @@ export function patchClaudeSteerSettlement(adapterPath) {
 
 const SUBAGENT_REPORTING_RULE =
 	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
-	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words.";
+	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words. " +
+	"End your final report with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or what you are waiting for in under 20 words.";
 
 /**
  * Stream what a Claude subagent is doing to its Agent/Task tool call.

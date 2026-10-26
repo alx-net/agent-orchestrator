@@ -696,7 +696,9 @@ describe("patchClaudeSubagentProgress", () => {
 		expect(updatedInput.prompt).toBe(
 			"Find the retry loop.\n\nWhile you work, before each major step write one short line that starts with " +
 			"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
-			"starts with \"Decision:\" stating the choice and the reason in under 20 words.",
+			"starts with \"Decision:\" stating the choice and the reason in under 20 words. End your final report " +
+			"with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, " +
+			"and the result or what you are waiting for in under 20 words.",
 		);
 		expect(input.prompt).toBe("Find the retry loop.");
 		expect(await hook({ hook_event_name: "PreToolUse", tool_name: "Task", tool_input: updatedInput })).toEqual({});
