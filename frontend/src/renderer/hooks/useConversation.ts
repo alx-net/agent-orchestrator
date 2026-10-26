@@ -386,20 +386,27 @@ async function fetchConversationPage(sessionId: string, hostId?: string, beforeS
 	return toSnapshot(data as WireSnapshot);
 }
 
-/** Refresh only the live page; refetching an infinite query downloads all older history. */
-export async function refreshRemoteConversation(queryClient: QueryClient, sessionId: string, hostId: string): Promise<void> {
-	let latest: ConversationSnapshot;
-	try {
-		latest = await fetchConversationPage(sessionId, hostId);
-	} catch (error) {
-		queryClient.setQueryData(remoteConversationRefreshErrorKey(sessionId, hostId), true);
-		throw error;
-	}
-	queryClient.setQueryData(remoteConversationRefreshErrorKey(sessionId, hostId), false);
-	queryClient.setQueryData<InfiniteData<ConversationSnapshot>>(conversationQueryKey(sessionId, hostId), (previous) => {
+/**
+ * Refresh only the live page; refetching an infinite query downloads all older
+ * history. Resolves false, leaving the cache alone, when the live page cannot be
+ * merged safely: more than a page arrived since the cached live page (merging
+ * would leave a hole before the older pages), or another fetch of this query is
+ * in flight and would overwrite the merge with what it started from. The caller
+ * must then refetch every page.
+ */
+export async function refreshConversationLivePage(queryClient: QueryClient, sessionId: string, hostId?: string): Promise<boolean> {
+	const queryKey = conversationQueryKey(sessionId, hostId);
+	const latest = await fetchConversationPage(sessionId, hostId);
+	if (queryClient.isFetching({ queryKey, exact: true }) > 0) return false;
+	let merged = true;
+	queryClient.setQueryData<InfiniteData<ConversationSnapshot>>(queryKey, (previous) => {
 		if (previous?.pages.length && previous.pages[0].conversationId === latest.conversationId && previous.pages[0].activeBranchId === latest.activeBranchId && latest.latestSequence < previous.pages[0].latestSequence) return previous;
 		if (!previous?.pages.length || !latest.hasMoreBefore || previous.pages[0].conversationId !== latest.conversationId || previous.pages[0].activeBranchId !== latest.activeBranchId) return { pages: [latest], pageParams: [undefined] };
 		const priorLive = previous.pages[0];
+		if (latest.oldestSequence > priorLive.latestSequence + 1) {
+			merged = false;
+			return previous;
+		}
 		const slidOut = latest.oldestSequence > priorLive.oldestSequence
 			? priorLive.items.filter((item) => item.sequence < latest.oldestSequence)
 			: [];
@@ -409,6 +416,19 @@ export async function refreshRemoteConversation(queryClient: QueryClient, sessio
 			: latest;
 		return { ...previous, pages: [live, ...previous.pages.slice(1)] };
 	});
+	return merged;
+}
+
+export async function refreshRemoteConversation(queryClient: QueryClient, sessionId: string, hostId: string): Promise<void> {
+	let merged: boolean;
+	try {
+		merged = await refreshConversationLivePage(queryClient, sessionId, hostId);
+	} catch (error) {
+		queryClient.setQueryData(remoteConversationRefreshErrorKey(sessionId, hostId), true);
+		throw error;
+	}
+	queryClient.setQueryData(remoteConversationRefreshErrorKey(sessionId, hostId), false);
+	if (!merged) await queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) }, { cancelRefetch: false });
 }
 
 /**

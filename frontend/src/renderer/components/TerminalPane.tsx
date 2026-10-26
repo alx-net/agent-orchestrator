@@ -371,7 +371,7 @@ export function TerminalCacheProvider({
 	// connect time rather than whatever was resolved on first render.
 	const cloudCpRef = useRef({ client: cloudClient, baseUrl: cloudBaseUrl });
 	cloudCpRef.current = { client: cloudClient, baseUrl: cloudBaseUrl };
-	const cloudMuxFactoriesRef = useRef(new Map<string, () => TerminalMux>());
+	const cloudMuxFactoriesRef = useRef(new Map<string, { sessionId: string; factory: () => TerminalMux }>());
 	const resolveCreateMux = useCallback(
 		(paneSession?: WorkspaceSession, terminalTarget?: TerminalTarget): (() => TerminalMux) => {
 			const cloud = paneSession?.cloud;
@@ -389,7 +389,7 @@ export function TerminalCacheProvider({
 			// epoch (which replays from 0) never sends output, so the pane never opens.
 			const factoryKey = `${paneSession.id}:${kind}:${identity}:${terminalResetNonce(paneSession.id)}`;
 			const cached = cloudMuxFactoriesRef.current.get(factoryKey);
-			if (cached) return cached;
+			if (cached) return cached.factory;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
 			const reviewerTerminalID = terminalTarget?.kind === "reviewer" ? terminalTarget.handleId : undefined;
@@ -420,7 +420,7 @@ export function TerminalCacheProvider({
 						return response.ticket;
 					},
 				});
-			cloudMuxFactoriesRef.current.set(factoryKey, factory);
+			cloudMuxFactoriesRef.current.set(factoryKey, { sessionId, factory });
 			return factory;
 		},
 		[muxPool],
@@ -654,6 +654,13 @@ export function TerminalCacheProvider({
 				entry.props = { ...entry.props, session };
 				rerender();
 			}
+		}
+		// A cloud mux factory (and its replay cursor) outlives its session
+		// otherwise. Keep one a retained terminal still dials through, such as
+		// the unlisted pane kept on screen above.
+		const retainedFactories = new Set([...entriesRef.current.values()].map((entry) => entry.props.createMux));
+		for (const [factoryKey, { sessionId, factory }] of cloudMuxFactoriesRef.current) {
+			if (!sessions.has(sessionId) && !retainedFactories.has(factory)) cloudMuxFactoriesRef.current.delete(factoryKey);
 		}
 	}, [removeEntry, workspaceQuery.data, workspaceQuery.isSuccess]);
 

@@ -1,6 +1,6 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { describe, expect, it } from "vitest";
-import { endsAtLastHunk, hydratedCopy, patchIdentity, stableFileDiff } from "./trailingContext";
+import { MAX_STABLE_DIFF_ENTRIES, endsAtLastHunk, hydratedCopy, patchIdentity, stableFileDiff } from "./trailingContext";
 
 function parse(path: string, body: string): FileDiffMetadata {
 	const patch = `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n${body}`;
@@ -76,5 +76,23 @@ describe("hydratedCopy", () => {
 		};
 		expect(stableFileDiff(second)).toBe(stableFileDiff(first));
 		expect(hydratedCopy(second, again)).toBe(hydratedCopy(first, files));
+	});
+});
+
+describe("stableFileDiff", () => {
+	it("keeps the diff it is still handed while evicting ones no longer rendered", () => {
+		const shown = parse("SHOWN.md", appendedAtEnd);
+		const evicted = parse("GONE.md", appendedAtEnd);
+		expect(stableFileDiff(shown)).toBe(shown);
+		expect(stableFileDiff(evicted)).toBe(evicted);
+		for (let index = 0; index < MAX_STABLE_DIFF_ENTRIES + 10; index++) {
+			stableFileDiff(parse(`churn-${index}.md`, appendedAtEnd));
+			if (index % 100 === 0) stableFileDiff(shown);
+		}
+		// The diff still on screen keeps its identity across a reparse.
+		expect(stableFileDiff(parse("SHOWN.md", appendedAtEnd))).toBe(shown);
+		// The evicted one is forgotten, so a reparse becomes the new entry.
+		const reparsed = parse("GONE.md", appendedAtEnd);
+		expect(stableFileDiff(reparsed)).toBe(reparsed);
 	});
 });

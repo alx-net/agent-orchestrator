@@ -48,6 +48,7 @@ vi.mock("./host-clients", () => ({
 
 import { createEventTransport } from "./event-transport";
 import { getEventsConnectionState, setEventsConnectionState } from "./events-connection";
+import { conversationQueryOptions } from "../hooks/useConversation";
 
 class EventSourceStub {
 	static instances: EventSourceStub[] = [];
@@ -83,6 +84,7 @@ function fakeQueryClient() {
 		refetchQueries: vi.fn().mockResolvedValue(undefined),
 		setQueryData: vi.fn(),
 		getQueryData: vi.fn(),
+		getQueryCache: () => ({ find: () => undefined }),
 	} as unknown as Parameters<typeof createEventTransport>[0];
 }
 
@@ -1200,4 +1202,82 @@ it("refreshes again when a root catch-up joins an older targeted conversation fe
 		client.clear();
 		vi.useRealTimers();
 	}
+});
+
+describe("local conversation events", () => {
+	// A local conversation of `total` messages, served in pages of 200 like the daemon.
+	let total = 0;
+	const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
+	const page = (beforeSequence?: number) => {
+		const before = Math.min(beforeSequence ?? total + 1, total + 1);
+		const oldest = Math.max(1, before - 200);
+		const messages = range(oldest, before - 1).map((sequence) => ({
+			kind: "message", id: `m${sequence}`, turnId: "t1", sequence, revision: 0,
+			role: "assistant", origin: "agent", text: `${sequence}`, streaming: false, createdAt: "2026-10-26T00:00:00Z",
+		}));
+		return { data: {
+			conversationId: "conv-1", sessionId: "chat-1", mode: "chat", controller: "busy", settings: {},
+			latestSequence: total, oldestSequence: oldest, hasMoreBefore: oldest > 1, turns: [], messages, activities: [],
+		} };
+	};
+	type PageRequest = { params: { query: { beforeSequence?: number } } };
+	const requestedBefore = () => remoteGetMock.mock.calls.map(([, init]) => (init as PageRequest).params.query.beforeSequence);
+	const emit = () => cdcSources()[0].emit("session_updated", JSON.stringify({ sessionId: "chat-1", payload: { conversationId: "conv-1" } }));
+	const sequences = (client: QueryClient) =>
+		(client.getQueryData<{ pages: { items: { sequence: number }[] }[] }>(["conversation", "chat-1"])?.pages ?? [])
+			.flatMap((entry) => entry.items.map((item) => item.sequence));
+
+	async function openChatWithOlderHistory() {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const observer = new InfiniteQueryObserver(client, conversationQueryOptions("chat-1"));
+		const unsubscribe = observer.subscribe(() => undefined);
+		await vi.waitFor(() => expect(observer.getCurrentResult().data?.pages).toHaveLength(1));
+		await observer.fetchNextPage();
+		expect(sequences(client)).toEqual([...range(201, 400), ...range(1, 200)]);
+		remoteGetMock.mockClear();
+		return { client, unsubscribe };
+	}
+
+	beforeEach(() => {
+		total = 400;
+		remoteGetMock.mockReset().mockImplementation((_path: string, init: PageRequest) => Promise.resolve(page(init.params.query.beforeSequence)));
+	});
+
+	it("refreshes only the live page of an open chat and keeps its older pages", async () => {
+		const { client, unsubscribe } = await openChatWithOlderHistory();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			total = 401;
+			emit();
+			await vi.waitFor(() => expect(sequences(client).at(0)).toBe(201));
+			await vi.waitFor(() => expect(sequences(client)).toContain(401));
+			expect(requestedBefore()).toEqual([undefined]);
+			// Message 201 slid out of the newest page but stays ahead of the older page.
+			expect(sequences(client)).toEqual([...range(201, 401), ...range(1, 200)]);
+		} finally { disconnect(); unsubscribe(); client.clear(); }
+	});
+
+	it("refetches every page when more than a page arrived, rather than leaving a hole", async () => {
+		const { client, unsubscribe } = await openChatWithOlderHistory();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			total = 700;
+			emit();
+			await vi.waitFor(() => expect(requestedBefore()).toEqual([undefined, undefined, 501]));
+			await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+			expect(sequences(client)).toEqual([...range(501, 700), ...range(301, 500)]);
+		} finally { disconnect(); unsubscribe(); client.clear(); }
+	});
+
+	it("only marks a closed chat stale", async () => {
+		const { client, unsubscribe } = await openChatWithOlderHistory();
+		unsubscribe();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			total = 401;
+			emit();
+			await vi.waitFor(() => expect(client.getQueryState(["conversation", "chat-1"])?.isInvalidated).toBe(true));
+			expect(remoteGetMock).not.toHaveBeenCalled();
+		} finally { disconnect(); client.clear(); }
+	});
 });

@@ -30,6 +30,7 @@ const {
 	replaySettled,
 	hasAttached,
 	terminalSessionOptions,
+	terminalSessionIds,
 	cloudMuxOptions,
 	cloudTicketMock,
 	xtermMounts,
@@ -48,6 +49,8 @@ const {
 		terminalState: { value: "idle" },
 		replaySettled: { value: true },
 		hasAttached: { value: false },
+		// The session each terminalSessionOptions entry was rendered for, by index.
+		terminalSessionIds: [] as Array<string | undefined>,
 		terminalSessionOptions: [] as Array<{
 			coverInitialReplay?: boolean;
 			createMux?: () => unknown;
@@ -151,6 +154,7 @@ vi.mock("../hooks/useTerminalSession", () => ({
 		options: { coverInitialReplay?: boolean; createMux?: () => unknown; exitNotice?: string; waitForInitialOutput?: boolean; shellTerminalHandleId?: string },
 	) => {
 		terminalSessionOptions.push(options);
+		terminalSessionIds.push(_session?.id);
 		return {
 			attach: attachMock,
 			state: terminalState.value,
@@ -191,6 +195,7 @@ beforeEach(() => {
 	hasAttached.value = false;
 	terminalLinkHandler = undefined;
 	terminalSessionOptions.length = 0;
+	terminalSessionIds.length = 0;
 	cloudMuxOptions.length = 0;
 	cloudTicketMock.mockClear();
 	attachMock.mockClear();
@@ -1083,6 +1088,39 @@ describe("TerminalCacheProvider", () => {
 
 			await waitFor(() => expect(terminalA.isConnected).toBe(false));
 			await waitFor(() => expect(xtermUnmounts.value).toBe(1));
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("keeps a cloud session's mux factory while it is listed and drops it once it is not", async () => {
+		const cloudA = { ...sessionA, cloud: { orgId: "cloud-org" } } satisfies WorkspaceSession;
+		const muxFor = (sessionId: string) =>
+			terminalSessionOptions.filter((_, index) => terminalSessionIds[index] === sessionId).at(-1)?.createMux;
+		const view = renderCachedPane({ session: cloudA, sessions: [cloudA, sessionB] });
+		try {
+			const terminalA = await waitFor(() => activeXterm());
+			const first = muxFor(cloudA.id);
+			expect(first).toBeTypeOf("function");
+			view.show(sessionB);
+			await waitFor(() => expect(activeXterm()).not.toBe(terminalA));
+			// Still listed: coming back reuses the factory and its replay cursor.
+			view.show(cloudA);
+			await waitFor(() => expect(activeXterm()).toBe(terminalA));
+			expect(muxFor(cloudA.id)).toBe(first);
+
+			view.show(sessionB);
+			await waitFor(() => expect(activeXterm()).not.toBe(terminalA));
+			act(() => {
+				view.queryClient.setQueryData(workspaceQueryKey, workspaceWithSessions([sessionB]));
+			});
+			await waitFor(() => expect(terminalA.isConnected).toBe(false));
+			act(() => {
+				view.queryClient.setQueryData(workspaceQueryKey, workspaceWithSessions([cloudA, sessionB]));
+			});
+			view.show(cloudA);
+			await waitFor(() => expect(muxFor(cloudA.id)).toBeTypeOf("function"));
+			expect(muxFor(cloudA.id)).not.toBe(first);
 		} finally {
 			view.restore();
 		}
