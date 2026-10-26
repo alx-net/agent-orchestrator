@@ -1318,6 +1318,10 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 	runtime.providerTurnID = ""
 	runtime.messageText = make(map[string]string)
 	runtime.messageIDs = make(map[string]string)
+	// Activities are turn-scoped like messages: each row carries its TurnID and
+	// attach seeds these maps from the active turn only.
+	runtime.activityIDs = make(map[string]string)
+	runtime.activityText = make(map[string]string)
 	runtime.mu.Unlock()
 	if len(turn.References) > 0 && turn.RetryOfTurnID == "" {
 		refs := make([]ports.ChatExcerptReference, 0, len(turn.References))

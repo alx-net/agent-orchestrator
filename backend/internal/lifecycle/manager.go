@@ -1689,6 +1689,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		}
 		if rec.IsTerminated {
 			m.reapSessionContainers(ctx, id)
+			m.forgetSessionPRReactions(ctx, id)
 			return nil
 		}
 
@@ -1731,6 +1732,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		switch outcome {
 		case terminationApplied, terminationAlreadyApplied:
 			m.reapSessionContainers(ctx, id)
+			m.forgetSessionPRReactions(ctx, id)
 			return nil
 		case terminationLaunchChanged:
 			return fmt.Errorf("lifecycle: runtime launch changed while terminating session %q", id)

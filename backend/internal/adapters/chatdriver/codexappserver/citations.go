@@ -25,12 +25,19 @@ var (
 	citationLocator = regexp.MustCompile(`^L\d+(?:-L\d+)?$`)
 )
 
+// citationTurnsPerThread bounds how many search-bearing turns each native
+// thread keeps sources for, so a long-lived connection does not retain every
+// turn's results. A citation to an older search renders unlinked.
+const citationTurnsPerThread = 32
+
 // citationFormatter keeps native thread state separate even though Codex
 // multiplexes child-thread notifications over one connection. Codex owns the
 // marker grammar and reference IDs; the events it emits contain ordinary
 // Markdown, which every Chat provider and renderer already understands.
 type citationFormatter struct {
-	sources  map[citationTurnKey]map[string]citation.Source
+	sources map[citationTurnKey]map[string]citation.Source
+	// turns lists each thread's source-bearing turns, oldest first.
+	turns    map[string][]string
 	messages map[citationMessageKey]*citationMessage
 }
 
@@ -54,6 +61,7 @@ type citationMessage struct {
 func newCitationFormatter() *citationFormatter {
 	return &citationFormatter{
 		sources:  make(map[citationTurnKey]map[string]citation.Source),
+		turns:    make(map[string][]string),
 		messages: make(map[citationMessageKey]*citationMessage),
 	}
 }
@@ -83,6 +91,12 @@ func (f *citationFormatter) observeItem(threadID, turnID string, item codexproto
 	key := citationTurnKey{threadID: threadID, turnID: turnID}
 	if f.sources[key] == nil {
 		f.sources[key] = make(map[string]citation.Source)
+		turns := append(f.turns[threadID], turnID)
+		if len(turns) > citationTurnsPerThread {
+			delete(f.sources, citationTurnKey{threadID: threadID, turnID: turns[0]})
+			turns = turns[1:]
+		}
+		f.turns[threadID] = turns
 	}
 	for _, raw := range item.Results {
 		var result struct {

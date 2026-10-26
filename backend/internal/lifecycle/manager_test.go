@@ -3359,6 +3359,75 @@ func TestPRObservation_DedupPersistsAcrossPRs(t *testing.T) {
 	}
 }
 
+// reactionKeysFor counts the in-memory reaction-dedup entries targeting prURL.
+func reactionKeysFor(m *Manager, prURL string) int {
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+	n := 0
+	for k := range m.react.seen {
+		if reactionKeyTargetsPR(k, prURL) {
+			n++
+		}
+	}
+	for k := range m.react.attempts {
+		if reactionKeyTargetsPR(k, prURL) {
+			n++
+		}
+	}
+	if m.react.loaded[prURL] {
+		n++
+	}
+	return n
+}
+
+// TestPRObservation_MergedOrTerminatedPrunesReactionState keeps the per-PR
+// dedup maps from growing for the daemon's lifetime: a merged/closed PR, or
+// every PR of a terminated session, leaves memory. The persisted payload still
+// dedups after a reopen, exactly as after a restart.
+func TestPRObservation_MergedOrTerminatedPrunesReactionState(t *testing.T) {
+	conflicting := func(url string) ports.PRObservation {
+		return ports.PRObservation{Fetched: true, URL: url, Mergeability: domain.MergeConflicting}
+	}
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1"}, {URL: "pr2"}}
+	for _, url := range []string{"pr1", "pr2"} {
+		if err := m.ApplyPRObservation(ctx, "mer-1", conflicting(url)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("want one conflict nudge per PR, got %v", msg.msgs)
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Closed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if n := reactionKeysFor(m, "pr1"); n != 0 {
+		t.Fatalf("closed PR kept %d reaction entries in memory, want 0", n)
+	}
+	if n := reactionKeysFor(m, "pr2"); n == 0 {
+		t.Fatal("closing pr1 must not drop the open sibling's reaction state")
+	}
+
+	// Reopened and still conflicting: the persisted payload reloads, no replay.
+	if err := m.ApplyPRObservation(ctx, "mer-1", conflicting("pr1")); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 2 {
+		t.Fatalf("reopened PR replayed a persisted nudge: %v", msg.msgs)
+	}
+
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{"pr1", "pr2"} {
+		if n := reactionKeysFor(m, url); n != 0 {
+			t.Fatalf("terminated session kept %d reaction entries for %s, want 0", n, url)
+		}
+	}
+}
+
 func TestApplyTrackerFacts_TerminalStateMarksTerminated(t *testing.T) {
 	for _, state := range []domain.NormalizedIssueState{domain.IssueDone, domain.IssueCancelled} {
 		t.Run(string(state), func(t *testing.T) {

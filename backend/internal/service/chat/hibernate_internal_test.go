@@ -21,3 +21,15 @@ func TestClosedChatViewTimestampExpiresAfterGrace(t *testing.T) {
 		t.Fatalf("expired view retained: %v", svc.viewClosedAt)
 	}
 }
+
+func TestStopForgetsPendingVersionSwitch(t *testing.T) {
+	svc := New(Options{})
+	id := domain.SessionID("switching-chat")
+	svc.noteVersionSwitch(id, "1.2.3")
+	if err := svc.Stop(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := svc.takeVersionSwitch(id); ok {
+		t.Fatal("stopped session kept its pending release switch")
+	}
+}

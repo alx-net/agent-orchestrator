@@ -432,6 +432,10 @@ func (s *Service) clearHibernation(ctx context.Context, id domain.SessionID) err
 	s.wakeMu.Lock()
 	delete(s.updateStops, id)
 	s.wakeMu.Unlock()
+	// An explicit stop also ends a pending move to a new release.
+	s.versionSwitchMu.Lock()
+	delete(s.versionSwitches, id)
+	s.versionSwitchMu.Unlock()
 	if s.sessions == nil {
 		return nil
 	}
