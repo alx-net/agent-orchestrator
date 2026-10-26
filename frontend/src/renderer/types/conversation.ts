@@ -304,6 +304,17 @@ export interface CommandDetail {
 	providerTitle?: string;
 	subagentType?: string;
 	subagentRetry?: unknown;
+	/** The provider's tool arguments, e.g. an Agent call's `{ description, prompt, subagent_type }`. */
+	input?: unknown;
+	/**
+	 * Claude subagent progress, on an Agent/Task row. Each may be absent: older
+	 * daemons and other providers never report it.
+	 */
+	progressSummary?: string;
+	/** When progressSummary was written, unix milliseconds. */
+	progressAt?: number;
+	lastToolName?: string;
+	progressToolUses?: number;
 	terminalId?: string;
 	signal?: string;
 }

@@ -35,7 +35,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Columns2, FlaskConical, ListTodo, Loader2, MessageSquarePlus, NotebookPen, Presentation, Route, ScanSearch, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
+import { ArrowDown, Bot, Columns2, FlaskConical, ListTodo, Loader2, MessageSquarePlus, NotebookPen, Presentation, Route, ScanSearch, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
 import { AnimatePresence, motion, Reorder, useDragControls, useReducedMotion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { useChatSelectionPosition } from "../../hooks/useChatSelectionPosition";
@@ -155,6 +155,8 @@ import type { QueuedMessageEditOptions } from "../../types/conversation";
 import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { SessionStartup } from "./SessionStartup";
 import { ActivityRun } from "./ActivityRun";
+import { SubagentBoard } from "./SubagentBoard";
+import { activeSubagentCount, subagentAskPrefix, useSubagentCards, type SubagentCard } from "../../lib/subagent-board";
 import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
@@ -941,6 +943,25 @@ function ChatWorkspaceContent({
 	// session temporarily becomes terminated and later returns.
 	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
+	// The subagent board shares the chat tab's body: it covers the timeline and
+	// leaves the composer where it is, so stepping in never leaves the board.
+	// Read from the raw items, not the timeline's readable subset.
+	const subagentCards = useSubagentCards(snapshot.items, snapshot.turns);
+	const subagentCounts = useMemo(() => activeSubagentCount(subagentCards), [subagentCards]);
+	// Claude Code is the chat agent that runs subagents; another agent gets the
+	// board once one appears.
+	const subagentBoardAvailable = Boolean(session) && !hideHeader && snapshot.items.length > 0 &&
+		(snapshot.harness === "claude-code" || subagentCards.length > 0);
+	const [subagentBoardOpen, setSubagentBoardOpen] = useState(false);
+	const subagentBoardActive = subagentBoardOpen && subagentBoardAvailable && !reviewerActive && !shellActive && !workspaceActiveTabKey;
+	const openSubagentBoard = useCallback(() => {
+		onSelectChat?.();
+		setSubagentBoardOpen(true);
+	}, [onSelectChat]);
+	const selectChatTimeline = useCallback(() => {
+		setSubagentBoardOpen(false);
+		onSelectChat?.();
+	}, [onSelectChat]);
 	const auxiliaryTabs = useMemo<ChatAuxiliaryTab[]>(
 		() => [
 			...(reviewerTerminal
@@ -1324,7 +1345,11 @@ function ChatWorkspaceContent({
 	// tabs there is nothing to cycle to and the shortcut is a no-op.
 	const selectAdjacentTab = useCallback(
 		(direction: -1 | 1) => {
-			const tabs = [{ key: "chat", kind: "chat" as const }, ...orderedAuxiliaryTabs];
+			const tabs = [
+				{ key: "chat", kind: "chat" as const },
+				...(subagentBoardAvailable ? [{ key: "subagents", kind: "subagents" as const }] : []),
+				...orderedAuxiliaryTabs,
+			];
 			if (tabs.length <= 1) return;
 			const activeKey = workspaceActiveTabKey ?? (shellActive
 				? shellTarget?.handleId
@@ -1334,13 +1359,17 @@ function ChatWorkspaceContent({
 						: reviewerChat
 							? `reviewer-chat:${reviewerChat.reviewId}`
 							: "chat"
-					: "chat");
+					: subagentBoardActive ? "subagents" : "chat");
 			const activeIndex = tabs.findIndex((tab) => tab.key === activeKey);
 			const currentIndex = activeIndex >= 0 ? activeIndex : 0;
 			const next = tabs[(currentIndex + direction + tabs.length) % tabs.length];
 			if (!next) return;
 			if (next.kind === "chat") {
-				onSelectChat?.();
+				selectChatTimeline();
+				return;
+			}
+			if (next.kind === "subagents") {
+				openSubagentBoard();
 				return;
 			}
 			if (next.kind === "reviewer") {
@@ -1360,14 +1389,17 @@ function ChatWorkspaceContent({
 		[
 			onOpenReviewerTerminal,
 			onOpenReviewerChat,
-			onSelectChat,
 			onSelectShellTerminal,
+			openSubagentBoard,
 			reviewerActive,
 			reviewerChat,
 			reviewerTerminal,
 			orderedAuxiliaryTabs,
+			selectChatTimeline,
 			shellActive,
 			shellTarget,
+			subagentBoardActive,
+			subagentBoardAvailable,
 			workspaceActiveTabKey,
 		],
 	);
@@ -1616,6 +1648,14 @@ function ChatWorkspaceContent({
 		!(turn?.state === "running" && snapshot.controller.state !== "connecting");
 	const conversationEmpty = !arrivingWithHistory && snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0 && (!hasStartup || sessionRole === "orchestrator");
 	const { t } = useTranslation();
+	// The composer stays under the board, so asking about a subagent starts a
+	// draft there. A draft the person already started is never replaced.
+	const askAboutSubagent = useCallback((card: SubagentCard) => {
+		const composer = composerFocusRef.current;
+		if (!composer) return;
+		if (composer.isEmpty()) composer.setDraft(subagentAskPrefix(card.title ?? t("subagents.untitled")));
+		else composer.focus();
+	}, [t]);
 	const [emptyChatPlaceholder] = useState(
 		() => sessionRole === "orchestrator"
 			? "Ask anything about this project"
@@ -1723,7 +1763,13 @@ function ChatWorkspaceContent({
 				onOpenReviewerTerminal={onOpenReviewerTerminal}
 				onOpenReviewerChat={onOpenReviewerChat}
 				reviewerActive={reviewerActive}
-				onSelectChat={onSelectChat}
+				onSelectChat={selectChatTimeline}
+				subagentsTab={subagentBoardAvailable ? {
+					active: subagentBoardActive,
+					running: subagentCounts.running,
+					needsYou: subagentCounts.needsYou,
+					onSelect: openSubagentBoard,
+				} : undefined}
 				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
 				onSelectShellTerminal={onSelectShellTerminal}
 				onCloseShellTerminal={onCloseShellTerminal}
@@ -1851,7 +1897,17 @@ function ChatWorkspaceContent({
 						>
 							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)} artifacts={session?.artifactFiles}>
 							<ChatHostId.Provider value={activeRemoteHostId}>
-
+							{/* The board covers the timeline without unmounting or resizing it, so
+							    its scroll position and live follow survive a trip to the board. */}
+							<div
+								className={subagentBoardActive ? "relative flex min-h-0 flex-1 flex-col" : "contents"}
+								data-testid="chat-timeline-region"
+							>
+							<div
+								aria-hidden={subagentBoardActive || undefined}
+								className={cn("contents", subagentBoardActive && "invisible")}
+								inert={subagentBoardActive || undefined}
+							>
 								<Timeline
 							onAddToSideChat={onAddToSideChat}
 									workerUpdates={sessionRole === "orchestrator"}
@@ -1887,6 +1943,19 @@ function ChatWorkspaceContent({
 									openingStartedAt={openingStartedAt}
 									arriving={arrivingInChat}
 								/>
+							</div>
+							{subagentBoardActive ? (
+								<div className="absolute inset-0 z-10 bg-background" data-testid="chat-subagents-panel">
+									<SubagentBoard
+										activeTurnId={turn?.state === "running" ? turn.id : undefined}
+										cards={subagentCards}
+										mode={snapshot.mode}
+										onAskMainAgent={askAboutSubagent}
+										onStopTurn={turn && !newWorkDisabled && !openingStarting ? stableInterrupt : undefined}
+									/>
+								</div>
+							) : null}
+							</div>
 							</ChatHostId.Provider>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -2223,6 +2292,7 @@ function ChatHeader({
 	onCloseShellTerminal,
 	onRenameShellTerminal,
 	onTabsKeyDown,
+	subagentsTab,
 	headerActions,
 	sessionTabAction,
 	sessionTabActionWide = false,
@@ -2251,6 +2321,8 @@ function ChatHeader({
 	onCloseShellTerminal?: (handleId: string) => void;
 	onRenameShellTerminal?: (handleId: string, title: string) => void;
 	onTabsKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
+	/** The subagent board's tab, beside the chat tab. Absent where the board is not offered. */
+	subagentsTab?: { active: boolean; running: number; needsYou: number; onSelect: () => void };
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
 	sessionTabActionWide?: boolean;
@@ -2289,7 +2361,7 @@ function ChatHeader({
 	const closeShellTerminal = useStableCallback(onCloseShellTerminal);
 	const renameShellTerminal = useStableCallback(onRenameShellTerminal);
 	// The chat tab is "selected" only when neither terminal pane is the body.
-	const timelineActive = !workspaceActiveTabKey && !reviewerActive && !shellActiveHandleId;
+	const timelineActive = !workspaceActiveTabKey && !reviewerActive && !shellActiveHandleId && !subagentsTab?.active;
 	// Match CenterPane: when the sidebar is off-canvas, the fixed TitlebarNav
 	// cluster sits over the session tab strip. Terminal already reserves that
 	// space; chat must too or the back/forward buttons land on the tab label.
@@ -2351,6 +2423,37 @@ function ChatHeader({
 								<span className="truncate">{label}</span>
 							</button>
 						)}
+						{subagentsTab ? (
+							<button
+								aria-current={subagentsTab.active ? true : undefined}
+								aria-selected={subagentsTab.active}
+								className={cn(
+									"group relative inline-flex shrink-0 self-stretch cursor-pointer items-center gap-1.5 border-r border-border px-3 text-control font-medium leading-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50",
+									subagentsTab.active
+										? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
+										: "text-muted-foreground hover:bg-raised hover:text-foreground",
+								)}
+								data-testid="chat-subagents-tab"
+								onClick={subagentsTab.active ? undefined : subagentsTab.onSelect}
+								role="tab"
+								tabIndex={subagentsTab.active ? 0 : -1}
+								type="button"
+							>
+								<Bot aria-hidden="true" className="size-icon-base" />
+								<span>{t("subagents.tab")}</span>
+								{subagentsTab.running > 0 ? (
+									<>
+										<span
+											aria-hidden="true"
+											className={cn("text-caption tabular-nums", subagentsTab.needsYou > 0 ? "text-status-needs-you" : "text-passive")}
+										>
+											{subagentsTab.running}
+										</span>
+										<span className="sr-only">{t("subagents.running", { count: subagentsTab.running })}</span>
+									</>
+								) : null}
+							</button>
+						) : null}
 						<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
 							<motion.div ref={tabsOverflowRef} className="scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto" layoutScroll>
 								<div className="flex w-max items-stretch">
