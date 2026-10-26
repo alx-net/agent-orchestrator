@@ -78,6 +78,25 @@ type Runtime struct {
 	reapSessions   func(ctx context.Context, pids []int, grace time.Duration)
 	socketMu       sync.RWMutex
 	sessionSockets map[string]string
+	now            func() time.Time
+	processes      processSnapshot
+}
+
+// processSnapshotTTL is how long one `ps` of the whole machine is shared by
+// supervised-process probes. The reaper probes every session each tick; without
+// sharing, N sessions cost N full process-table scans per tick.
+const processSnapshotTTL = time.Second
+
+// processSnapshot caches the last successful process table. Failed scans are
+// never cached, so a ps error still surfaces to the caller as a probe failure.
+type processSnapshot struct {
+	fetchMu sync.Mutex // serializes ps runs so concurrent misses share one
+	mu      sync.Mutex // guards the fields below
+	entries []processEntry
+	takenAt time.Time
+	// gen invalidates in-flight scans started before this runtime spawned a
+	// pane, so a table predating a launch is never stored or reused.
+	gen uint64
 }
 
 var _ ports.Runtime = (*Runtime)(nil)
@@ -336,6 +355,7 @@ func New(opts Options) *Runtime {
 		runner:         execRunner{},
 		reapSessions:   killSessionsByPID,
 		sessionSockets: make(map[string]string),
+		now:            time.Now,
 	}
 }
 
@@ -366,6 +386,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		)
 	}
 	r.rememberSessionSocket(id, r.socketName)
+	r.invalidateProcessSnapshot()
 	handle := ports.RuntimeHandle{ID: id}
 	if err := r.verifyPaneWorkingDirectory(ctx, id, cfg.WorkspacePath); err != nil {
 		return ports.RuntimeHandle{}, r.failedCreatedRuntime(handle, err)
@@ -443,6 +464,7 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
+	r.invalidateProcessSnapshot()
 	alive, err := r.IsAlive(ctx, handle)
 	if err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: verify restarted session %s: %w", id, err)
@@ -898,15 +920,74 @@ func (r *Runtime) supervisedProcessTree(ctx context.Context, handle ports.Runtim
 	if err != nil || panePID <= 0 {
 		return nil, 0, fmt.Errorf("tmux runtime: invalid pane pid %q", strings.TrimSpace(string(paneOut)))
 	}
+	entries, err := r.processTable(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	return entries, panePID, nil
+}
+
+// processTable returns the machine process table, reusing a successful scan
+// younger than processSnapshotTTL. Callers must treat the entries as read-only.
+func (r *Runtime) processTable(ctx context.Context, id string) ([]processEntry, error) {
+	snap := &r.processes
+	if entries, ok := r.freshProcessSnapshot(); ok {
+		return entries, nil
+	}
+	snap.fetchMu.Lock()
+	defer snap.fetchMu.Unlock()
+	if entries, ok := r.freshProcessSnapshot(); ok {
+		return entries, nil
+	}
+	snap.mu.Lock()
+	gen := snap.gen
+	snap.mu.Unlock()
+	startedAt := r.clock()
 	processOut, err := r.runCommand(ctx, "ps", "-ww", "-axo", "pid=,ppid=,args=")
 	if err != nil {
-		return nil, 0, fmt.Errorf("tmux runtime: inspect process tree %s: %w", id, err)
+		return nil, fmt.Errorf("tmux runtime: inspect process tree %s: %w", id, err)
 	}
 	entries, err := parseProcessTable(string(processOut))
 	if err != nil {
-		return nil, 0, fmt.Errorf("tmux runtime: parse process tree %s: %w", id, err)
+		return nil, fmt.Errorf("tmux runtime: parse process tree %s: %w", id, err)
 	}
-	return entries, panePID, nil
+	snap.mu.Lock()
+	if snap.gen == gen {
+		snap.entries, snap.takenAt = entries, startedAt
+	}
+	snap.mu.Unlock()
+	return entries, nil
+}
+
+func (r *Runtime) freshProcessSnapshot() ([]processEntry, bool) {
+	snap := &r.processes
+	snap.mu.Lock()
+	defer snap.mu.Unlock()
+	if snap.takenAt.IsZero() {
+		return nil, false
+	}
+	age := r.clock().Sub(snap.takenAt)
+	if age < 0 || age >= processSnapshotTTL {
+		return nil, false
+	}
+	return snap.entries, true
+}
+
+// invalidateProcessSnapshot drops the shared table after this runtime spawns
+// a pane, so the next probe sees the new workload.
+func (r *Runtime) invalidateProcessSnapshot() {
+	snap := &r.processes
+	snap.mu.Lock()
+	snap.gen++
+	snap.entries, snap.takenAt = nil, time.Time{}
+	snap.mu.Unlock()
+}
+
+func (r *Runtime) clock() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+	return r.now()
 }
 
 // SendMessage sends literal text to the session (chunked via send-keys -l) then

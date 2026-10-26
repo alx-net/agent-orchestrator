@@ -3711,3 +3711,53 @@ func TestMergeabilityFromProviderFacts_UnstableOutranksBlockers(t *testing.T) {
 		})
 	}
 }
+
+func TestGitLookupsAreCachedPerPathUntilTTL(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	obs := &Observer{clock: func() time.Time { return now }}
+
+	remoteCalls := map[string]int{}
+	restoreRemotes := gitRemoteURLsFunc
+	gitRemoteURLsFunc = func(_ context.Context, path string) []string {
+		remoteCalls[path]++
+		return []string{"https://github.com/o/" + filepath.Base(path) + ".git"}
+	}
+	defer func() { gitRemoteURLsFunc = restoreRemotes }()
+	originCalls := 0
+	restoreOrigin := resolveGitOriginURLFunc
+	resolveGitOriginURLFunc = func(context.Context, string) string {
+		originCalls++
+		return ""
+	}
+	defer func() { resolveGitOriginURLFunc = restoreOrigin }()
+
+	ctx := context.Background()
+	for range 3 {
+		if got := obs.gitRemoteURLs(ctx, "/repo/a"); len(got) != 1 || got[0] != "https://github.com/o/a.git" {
+			t.Fatalf("remotes = %v", got)
+		}
+		obs.gitRemoteURLs(ctx, "/repo/b")
+		if got := obs.gitOriginURL(ctx, "/repo/a"); got != "" {
+			t.Fatalf("origin = %q, want empty", got)
+		}
+	}
+	if remoteCalls["/repo/a"] != 1 || remoteCalls["/repo/b"] != 1 || originCalls != 1 {
+		t.Fatalf("calls within TTL: remotes=%v origin=%d, want one lookup per path", remoteCalls, originCalls)
+	}
+
+	now = now.Add(gitLookupTTL)
+	obs.gitRemoteURLs(ctx, "/repo/a")
+	obs.gitOriginURL(ctx, "/repo/a")
+	if remoteCalls["/repo/a"] != 2 || originCalls != 2 {
+		t.Fatalf("calls after TTL: remotes=%v origin=%d, want a fresh lookup", remoteCalls, originCalls)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	now = now.Add(gitLookupTTL)
+	obs.gitRemoteURLs(canceled, "/repo/a")
+	obs.gitRemoteURLs(ctx, "/repo/a")
+	if remoteCalls["/repo/a"] != 4 {
+		t.Fatalf("remote calls = %d, want a canceled lookup not to be cached", remoteCalls["/repo/a"])
+	}
+}
