@@ -39,6 +39,7 @@ import {
 	subagentLanes,
 	withPendingMessages,
 	withStopRequests,
+	type AgentOutcomeKind,
 	type MainAgentState,
 	type MainAgentSummary,
 	type SentMessage,
@@ -271,9 +272,7 @@ const SubagentCardView = memo(function SubagentCardView({
 	const fieldRef = useRef<HTMLInputElement>(null);
 	const focusField = useFieldFocus(expanded, fieldRef);
 	const title = card.title ?? t("subagents.untitled");
-	const nowLine = card.lane === "needs_you"
-		? card.blockedOn ? t("subagents.waitingFor", { what: card.blockedOn }) : t("subagents.waiting")
-		: card.nowLine;
+	const nowLine = subagentNowLine(t, card);
 	const stopping = card.lane !== "done" && control.stopping;
 	const sent = useMemo(() => withPendingMessages(card.inbox, control.pending), [card.inbox, control.pending]);
 	const stopError = errorText(t, control.stopError);
@@ -298,13 +297,13 @@ const SubagentCardView = memo(function SubagentCardView({
 			>
 				<StatusGlyph outcome={card.outcome} />
 				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className="line-clamp-2 text-sm-md font-semibold leading-tight tracking-tight text-foreground" title={title}>
+					<span className="line-clamp-2 text-base font-semibold leading-tight tracking-tight text-foreground" title={title}>
 						{title}
 					</span>
-					{card.subagentType ? <span className="truncate text-2xs text-muted-foreground">{card.subagentType}</span> : null}
+					{card.subagentType ? <span className="truncate text-xs text-muted-foreground">{card.subagentType}</span> : null}
 					{nowLine ? (
 						<span
-							className={cn("mt-1 line-clamp-2 text-xs leading-snug", card.lane === "needs_you" ? "text-foreground" : "text-muted-foreground")}
+							className={cn("mt-1 line-clamp-2 text-sm leading-snug", card.lane === "needs_you" || card.outcome === "blocked" ? "text-foreground" : "text-muted-foreground")}
 							data-testid="subagent-now"
 						>
 							{nowLine}
@@ -313,10 +312,10 @@ const SubagentCardView = memo(function SubagentCardView({
 				</span>
 				<ChevronRight
 					aria-hidden="true"
-					className={cn("mt-0.5 size-3 shrink-0 text-muted-foreground/60 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
+					className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground/60 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
 				/>
 			</button>
-			<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-2xs text-muted-foreground">
+			<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-xs text-muted-foreground">
 				<Elapsed durationMs={card.durationMs} live={card.lane !== "done"} startedAt={card.startedAt} />
 				<span className="tabular-nums">{t("subagents.tools", { count: card.toolCount })}</span>
 				{stopping ? <span role="status">{t("subagents.stopping")}</span> : null}
@@ -360,7 +359,7 @@ const SubagentCardView = memo(function SubagentCardView({
 				</span>
 			</div>
 			{stopError ? (
-				<p className="border-t border-border px-3.5 py-2 text-xs text-destructive" role="alert">{stopError}</p>
+				<p className="border-t border-border px-3.5 py-2 text-sm text-destructive" role="alert">{stopError}</p>
 			) : null}
 			{expanded ? (
 				<SubagentDetails
@@ -415,9 +414,7 @@ const MainAgentCardView = memo(function MainAgentCardView({
 	const focusField = useFieldFocus(expanded, fieldRef);
 	const title = t("subagents.main");
 	const needsYou = summary.state === "needs_you";
-	const nowLine = needsYou
-		? summary.blockedOn ? t("subagents.waitingFor", { what: summary.blockedOn }) : t("subagents.waiting")
-		: summary.nowLine;
+	const nowLine = mainNowLine(t, summary);
 	const decision = summary.decisions.at(-1);
 	const sent = useMemo(() => withPendingMessages(summary.sent, control.pending), [summary.sent, control.pending]);
 	return (
@@ -440,10 +437,10 @@ const MainAgentCardView = memo(function MainAgentCardView({
 			>
 				<StatusGlyph outcome={summary.state} />
 				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className="truncate text-sm-md font-semibold leading-tight tracking-tight text-foreground">{title}</span>
+					<span className="truncate text-base font-semibold leading-tight tracking-tight text-foreground">{title}</span>
 					{nowLine ? (
 						<span
-							className={cn("mt-1 line-clamp-2 text-xs leading-snug", needsYou ? "text-foreground" : "text-muted-foreground")}
+							className={cn("mt-1 line-clamp-2 text-sm leading-snug", needsYou ? "text-foreground" : "text-muted-foreground")}
 							data-testid="main-agent-now"
 						>
 							{nowLine}
@@ -451,18 +448,18 @@ const MainAgentCardView = memo(function MainAgentCardView({
 					) : null}
 					{decision ? (
 						<span className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug text-foreground" data-testid="main-agent-decision">
-							<span className="mr-1.5 text-2xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
+							<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
 							{decision.text}
 						</span>
 					) : null}
 				</span>
 				<ChevronRight
 					aria-hidden="true"
-					className={cn("mt-0.5 size-3 shrink-0 text-muted-foreground/60 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
+					className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground/60 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
 				/>
 			</button>
 			{summary.startedAt ? (
-				<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-2xs text-muted-foreground">
+				<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-xs text-muted-foreground">
 					<Elapsed live separated={false} startedAt={summary.startedAt} />
 					<span
 						className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[120ms] group-hover/subagent:opacity-100 group-focus-within/subagent:opacity-100 data-[open]:opacity-100 motion-reduce:transition-none"
@@ -566,14 +563,14 @@ function AgentMessageField({
 	};
 	return (
 		<div className="min-w-0">
-			<Label className="text-caption font-medium text-muted-foreground" htmlFor={id}>{label}</Label>
+			<Label className="text-xs font-medium text-muted-foreground" htmlFor={id}>{label}</Label>
 			{/* The global `font: inherit` on inputs outranks a utility, so the row sets the size. */}
-			<div className="mt-1.5 flex items-center gap-1 text-xs">
+			<div className="mt-1.5 flex items-center gap-1 text-sm">
 				<Input
 					aria-describedby={error ? errorId : undefined}
 					aria-invalid={error ? true : undefined}
 					autoComplete="off"
-					className="h-control-md flex-1 px-2.5 text-xs focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+					className="h-control-md flex-1 px-2.5 text-sm focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
 					disabled={disabled}
 					enterKeyHint="send"
 					id={id}
@@ -592,10 +589,23 @@ function AgentMessageField({
 				</CardAction>
 			</div>
 			{error ? (
-				<p className="mt-1.5 text-xs text-destructive" id={errorId} role="alert">{error}</p>
+				<p className="mt-1.5 text-sm text-destructive" id={errorId} role="alert">{error}</p>
 			) : null}
 		</div>
 	);
+}
+
+/** The main agent's now line: what a pending request waits for, else how the turn ended, else what it is doing. */
+export function mainNowLine(t: TFunction, summary: MainAgentSummary): ReactNode {
+	if (summary.nowSource === "outcome" && summary.result) return <OutcomeText outcome={summary.result.kind} text={summary.nowLine} />;
+	if (summary.state === "needs_you") return summary.blockedOn ? t("subagents.waitingFor", { what: summary.blockedOn }) : t("subagents.waiting");
+	return summary.nowLine;
+}
+
+/** A subagent's now line: what it waits for, else how it finished, else what it is doing. */
+export function subagentNowLine(t: TFunction, card: SubagentCard): ReactNode {
+	if (card.lane === "needs_you") return card.blockedOn ? t("subagents.waitingFor", { what: card.blockedOn }) : t("subagents.waiting");
+	return card.result ? <OutcomeText outcome={card.result.kind} text={card.nowLine} /> : card.nowLine;
 }
 
 const OUTCOME_LABEL_KEYS = {
@@ -603,23 +613,27 @@ const OUTCOME_LABEL_KEYS = {
 	needs_you: "subagents.state.needsYou",
 	idle: "subagents.state.idle",
 	completed: "subagents.state.completed",
+	blocked: "subagents.state.blocked",
 	failed: "subagents.state.failed",
 	stopped: "subagents.state.stopped",
 } as const satisfies Record<SubagentOutcome | MainAgentState, string>;
 
-function StatusGlyph({ outcome }: { outcome: SubagentOutcome | MainAgentState }) {
+/** Any agent's state, for one status slot. */
+export type AgentGlyphState = SubagentOutcome | MainAgentState;
+
+export function StatusGlyph({ outcome }: { outcome: AgentGlyphState }) {
 	const { t } = useTranslation();
 	const label = t(OUTCOME_LABEL_KEYS[outcome]);
 	return (
-		<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center" data-testid="subagent-glyph">
+		<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center" data-glyph={outcome} data-testid="subagent-glyph">
 			{outcome === "working" ? (
 				<Loader2 aria-hidden="true" className="size-3.5 animate-spin text-status-working motion-reduce:animate-none" />
-			) : outcome === "needs_you" ? (
+			) : outcome === "needs_you" || outcome === "blocked" ? (
 				<span aria-hidden="true" className="size-2 rounded-full bg-status-needs-you" />
 			) : outcome === "idle" ? (
 				<span aria-hidden="true" className="size-2 rounded-full bg-status-idle" />
 			) : outcome === "completed" ? (
-				<Check aria-hidden="true" className="size-3.5 text-muted-foreground" />
+				<Check aria-hidden="true" className="size-3.5 text-status-ready" />
 			) : outcome === "failed" ? (
 				<CircleX aria-hidden="true" className="size-3.5 text-destructive" />
 			) : (
@@ -627,6 +641,25 @@ function StatusGlyph({ outcome }: { outcome: SubagentOutcome | MainAgentState })
 			)}
 			<span className="sr-only">{label}</span>
 		</span>
+	);
+}
+
+const OUTCOME_KEYS = {
+	done: "subagents.outcome.done",
+	blocked: "subagents.outcome.blocked",
+	needs_input: "subagents.outcome.needsInput",
+	failed: "subagents.outcome.failed",
+	stopped: "subagents.outcome.stopped",
+} as const satisfies Record<AgentOutcomeKind, string>;
+
+/** How an agent finished, named, then what it said about it. */
+export function OutcomeText({ outcome, text }: { outcome: AgentOutcomeKind; text?: string }) {
+	const { t } = useTranslation();
+	return (
+		<>
+			<span className="font-medium text-foreground" data-outcome={outcome} data-testid="agent-outcome">{t(OUTCOME_KEYS[outcome])}</span>
+			{text ? ` ${text}` : null}
+		</>
 	);
 }
 
@@ -715,9 +748,10 @@ const SENT_STATE_KEYS = {
 
 /**
  * Status and decision lines in the order they were written, decisions emphasized,
- * with what the person sent placed by when they sent it.
+ * with what the person sent placed by when they sent it, and the agent's outcome
+ * last once it finished.
  */
-function NotesTimeline({
+export function NotesTimeline({
 	className,
 	notes,
 	sent = NO_MESSAGES,
@@ -730,7 +764,7 @@ function NotesTimeline({
 	const entries = useMemo(() => boardTimeline(notes, sent), [notes, sent]);
 	return (
 		<section aria-label={t("subagents.timeline")}>
-			<h4 className="text-caption font-medium text-muted-foreground">{t("subagents.timeline")}</h4>
+			<h4 className="text-xs font-medium text-muted-foreground">{t("subagents.timeline")}</h4>
 			{entries.length > 0 ? (
 				<ol className={cn("mt-1.5 flex flex-col gap-1.5", className)}>
 					{entries.map((entry, index) => {
@@ -738,16 +772,16 @@ function NotesTimeline({
 							const { message } = entry;
 							return (
 								<li
-									className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-xs leading-snug"
+									className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 text-sm leading-snug"
 									data-sent-state={message.state}
 									data-testid="sent-message"
 									key={`sent:${message.id}`}
 								>
-									<time className="pt-px text-2xs tabular-nums text-passive" dateTime={message.at}>{formatTime(message.at)}</time>
+									<time className="text-xs tabular-nums text-passive" dateTime={message.at}>{formatTime(message.at)}</time>
 									<span className="min-w-0 break-words text-foreground">
-										<span className="mr-1.5 text-2xs text-muted-foreground">{t("subagents.you")}</span>
+										<span className="mr-1.5 text-xs text-muted-foreground">{t("subagents.you")}</span>
 										{message.text}
-										<span className={cn("ml-1.5 text-2xs", message.state === "dropped" ? "text-muted-foreground" : "text-passive")}>
+										<span className={cn("ml-1.5 text-xs", message.state === "dropped" ? "text-muted-foreground" : "text-passive")}>
 											<span aria-hidden="true">· </span>
 											{t(SENT_STATE_KEYS[message.state])}
 										</span>
@@ -756,17 +790,23 @@ function NotesTimeline({
 							);
 						}
 						const { note } = entry;
+						const strong = note.kind !== "status";
 						return (
 							<li
-								className={cn("grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 leading-snug", note.kind === "decision" ? "text-sm" : "text-xs")}
+								className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 text-sm leading-snug"
 								data-note-kind={note.kind}
+								data-outcome={note.outcome}
 								key={`note:${index}`}
 							>
-								<time className="text-2xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
-								<span className={cn("min-w-0 break-words", note.kind === "decision" ? "font-medium text-foreground" : "text-muted-foreground")}>
-									<span className={note.kind === "decision" ? "mr-1.5 text-2xs font-normal text-muted-foreground" : "sr-only"}>
-										{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
-									</span>
+								<time className="text-xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
+								<span className={cn("min-w-0 break-words", strong ? "font-medium text-foreground" : "text-muted-foreground")}>
+									{note.kind === "outcome" && note.outcome ? (
+										<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t(OUTCOME_KEYS[note.outcome])}</span>
+									) : (
+										<span className={note.kind === "decision" ? "mr-1.5 text-xs font-normal text-muted-foreground" : "sr-only"}>
+											{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
+										</span>
+									)}
 									{note.text}
 								</span>
 							</li>
@@ -774,7 +814,7 @@ function NotesTimeline({
 					})}
 				</ol>
 			) : (
-				<p className="mt-1 text-xs text-passive">{t("subagents.noUpdates")}</p>
+				<p className="mt-1 text-sm text-passive">{t("subagents.noUpdates")}</p>
 			)}
 		</section>
 	);
@@ -803,7 +843,7 @@ function SubagentDetails({
 				<div className="min-w-0">
 					<button
 						aria-expanded={taskOpen}
-						className="flex items-center gap-1 rounded-sm text-caption font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-accent/50"
+						className="flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-accent/50"
 						onClick={() => setTaskOpen((open) => !open)}
 						type="button"
 					>
@@ -811,7 +851,7 @@ function SubagentDetails({
 						{t("subagents.task")}
 					</button>
 					{taskOpen ? (
-						<p className="board-scrollbar mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+						<p className="board-scrollbar mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-relaxed text-muted-foreground">
 							{card.prompt}
 						</p>
 					) : null}
@@ -819,8 +859,8 @@ function SubagentDetails({
 			) : null}
 			{card.lane === "done" && card.finalReport ? (
 				<section aria-label={reportLabel} className="min-w-0">
-					<h4 className="text-caption font-medium text-muted-foreground">{reportLabel}</h4>
-					<div className="board-scrollbar mt-1.5 max-h-80 overflow-y-auto text-xs">
+					<h4 className="text-xs font-medium text-muted-foreground">{reportLabel}</h4>
+					<div className="board-scrollbar mt-1.5 max-h-80 overflow-y-auto text-sm">
 						<ChatMarkdown text={card.finalReport} />
 					</div>
 				</section>

@@ -12,6 +12,8 @@ import {
 	activeSubagentCount,
 	boardTimeline,
 	createSubagentBoardDeriver,
+	firstSentence,
+	parseOutcomeLine,
 	parseSubagentNoteLine,
 	subagentAskPrefix,
 	subagentLanes,
@@ -409,23 +411,26 @@ describe("main agent summary", () => {
 		expect(mainOf([{ ...question, status: "resolved" as const }])).toMatchObject({ state: "working", blockedOn: undefined });
 	});
 
-	it("is idle between turns and falls back to the previous turn's lines", () => {
+	it("is idle before any turn, settles on the turn's outcome and falls back to the previous turn's lines", () => {
+		expect(mainOf([], [])).toMatchObject({ state: "idle", turnId: undefined, nowLine: undefined, result: undefined });
+
 		const earlier: ConversationTurn = { id: "turn-0", state: "completed", requestedAt: "2026-10-26T09:00:00.000Z" };
 		const items = [
 			said("m0", "Decision: Add a migration, since the column is new\nStatus: Wrote the migration\n", { turnId: "turn-0" }),
 			said("m1", "Here is the answer."),
 		];
-		const idle = mainOf(items, [earlier, turn("completed")]);
-		expect(idle).toMatchObject({ state: "idle", turnId: "turn-1", startedAt: undefined, nowLine: "Wrote the migration", nowSource: "status" });
-		expect(idle.notes.map((note) => [note.kind, note.text, note.at])).toEqual([
+		const settled = mainOf(items, [earlier, turn("completed")]);
+		expect(settled).toMatchObject({ state: "completed", turnId: "turn-1", startedAt: undefined, nowLine: "Here is the answer.", nowSource: "outcome" });
+		expect(settled.notes.map((note) => [note.kind, note.text, note.at])).toEqual([
 			["decision", "Add a migration, since the column is new", items[0]!.createdAt],
 			["status", "Wrote the migration", items[0]!.createdAt],
+			["outcome", "Here is the answer.", items[1]!.createdAt],
 		]);
-		expect(idle.decisions).toHaveLength(1);
+		expect(settled.decisions).toHaveLength(1);
 
-		// A turn with lines of its own shows only those.
+		// A turn with lines of its own shows only those, then its outcome.
 		const own = mainOf([...items, said("m2", "Status: Answering\n")], [earlier, turn("completed")]);
-		expect(own.notes.map((note) => note.text)).toEqual(["Answering"]);
+		expect(own.notes.map((note) => note.kind === "outcome" ? note.outcome : note.text)).toEqual(["Answering", "done"]);
 
 		// A new turn that has said nothing keeps the last lines, but not as its now line.
 		const next = mainOf(items, [earlier, turn("completed"), { id: "turn-2", state: "running", requestedAt: "2026-10-26T11:00:00.000Z" }]);
@@ -450,6 +455,146 @@ describe("main agent summary", () => {
 			["status", "Testing"],
 		]);
 		expect(after.nowLine).toBe("Testing");
+	});
+});
+
+describe("outcomes", () => {
+	const settledTurn = (state: TurnState, extra: Partial<ConversationTurn> = {}): ConversationTurn => ({
+		...turn(state),
+		startedAt: "2026-10-26T10:00:00.000Z",
+		completedAt: "2026-10-26T10:05:00.000Z",
+		...extra,
+	});
+
+	it("reads an Outcome: line with any separator, case-insensitively", () => {
+		expect(parseOutcomeLine("Outcome: done — Shipped the pause route")).toEqual({ kind: "done", text: "Shipped the pause route" });
+		expect(parseOutcomeLine("outcome: BLOCKED - on the Hetzner 2FA prompt")).toEqual({ kind: "blocked", text: "on the Hetzner 2FA prompt" });
+		expect(parseOutcomeLine("Outcome: failed: the migration does not apply")).toEqual({ kind: "failed", text: "the migration does not apply" });
+		expect(parseOutcomeLine("Outcome: needs input — Which region should it deploy to?")).toEqual({ kind: "needs_input", text: "Which region should it deploy to?" });
+		expect(parseOutcomeLine("Outcome: Needs-Input: Which branch?")).toEqual({ kind: "needs_input", text: "Which branch?" });
+		expect(parseOutcomeLine("- **Outcome:** done – all green")).toEqual({ kind: "done", text: "all green" });
+		expect(parseOutcomeLine("Outcome: done")).toEqual({ kind: "done", text: undefined });
+		expect(parseOutcomeLine("Outcome: maybe — later")).toBeUndefined();
+		expect(parseOutcomeLine("The outcome: done")).toBeUndefined();
+	});
+
+	it("takes a settled turn's explicit Outcome: line over every fallback", () => {
+		const items = [
+			said("m1", "Status: Checking the deploy\nBLOCKED on the old prompt"),
+			said("m2", "All set.\nOutcome: done — Deployed to staging; smoke tests pass\nThanks!"),
+		];
+		const main = mainOf(items, [settledTurn("failed", { errorMessage: "boom" })]);
+		expect(main).toMatchObject({
+			state: "completed",
+			nowLine: "Deployed to staging; smoke tests pass",
+			nowSource: "outcome",
+			result: { kind: "done", text: "Deployed to staging; smoke tests pass", at: "2026-10-26T10:05:00.000Z", source: "outcome_line" },
+		});
+		expect(main.notes.at(-1)).toEqual({ kind: "outcome", outcome: "done", text: "Deployed to staging; smoke tests pass", at: "2026-10-26T10:05:00.000Z" });
+
+		expect(mainOf([said("m1", "Outcome: needs input — Which region?")], [settledTurn("completed")])).toMatchObject({
+			state: "needs_you",
+			nowLine: "Which region?",
+			result: { kind: "needs_input" },
+		});
+		expect(mainOf([said("m1", "Outcome: failed — the API key is revoked")], [settledTurn("completed")])).toMatchObject({
+			state: "failed",
+			result: { kind: "failed", text: "the API key is revoked" },
+		});
+	});
+
+	it("falls back to a BLOCKED line in the final message, up to its first semicolon", () => {
+		const final = said("m1", [
+			"I checked every provider.",
+			"BLOCKED on you turning on 2FA in Verda, Resend and Hetzner; recommendation: use the shared authenticator; default if no answer: skip Verda",
+		].join("\n"));
+		expect(mainOf([final], [settledTurn("completed")])).toMatchObject({
+			state: "needs_you",
+			nowLine: "on you turning on 2FA in Verda, Resend and Hetzner",
+			nowSource: "outcome",
+			blockedOn: undefined,
+			result: { kind: "blocked", source: "blocked_line" },
+		});
+		// Only the final message counts, and only an upper-case BLOCKED.
+		const earlier = mainOf([said("m0", "BLOCKED on the token"), said("m1", "Got the token, all done.")], [settledTurn("completed")]);
+		expect(earlier).toMatchObject({ state: "completed", nowLine: "Got the token, all done." });
+		expect(mainOf([said("m1", "Blocked requests are retried.")], [settledTurn("completed")]).state).toBe("completed");
+	});
+
+	it("falls back to how the turn ended", () => {
+		const items = [said("m1", "## Summary\n\nFixed the **login** redirect. Also cleaned up the tests.\n\nStatus: Wrapping up")];
+		expect(mainOf(items, [settledTurn("completed")])).toMatchObject({ state: "completed", nowLine: "Fixed the login redirect.", result: { kind: "done", source: "settled" } });
+		expect(mainOf(items, [settledTurn("recovered")]).state).toBe("completed");
+		expect(mainOf(items, [settledTurn("failed", { errorMessage: "Usage limit reached\nretry at 5pm" })])).toMatchObject({
+			state: "failed",
+			nowLine: "Usage limit reached",
+			result: { kind: "failed", text: "Usage limit reached" },
+		});
+		expect(mainOf(items, [settledTurn("interrupted")])).toMatchObject({ state: "stopped", nowLine: undefined, result: { kind: "stopped" } });
+		expect(mainOf(items, [settledTurn("cancelled")]).state).toBe("stopped");
+		expect(mainOf([], [settledTurn("completed")])).toMatchObject({ state: "completed", nowLine: undefined, result: { kind: "done", text: undefined } });
+	});
+
+	it("clips the first sentence and skips fences, tables and note lines", () => {
+		expect(firstSentence("```ts\nconst a = 1;\n```\n| a | b |\nStatus: x\nThe build is green now! Next up: docs.")).toBe("The build is green now!");
+		expect(firstSentence("# Only a heading")).toBe("Only a heading");
+		const long = firstSentence(`${"word ".repeat(60)}end`)!;
+		expect(long.length).toBe(140);
+		expect(long.endsWith("…")).toBe(true);
+	});
+
+	it("is working again once a new turn runs, and a pending request still outranks the outcome", () => {
+		const deriver = createSubagentBoardDeriver();
+		const blocked = said("m1", "BLOCKED on the deploy key");
+		const first = settledTurn("completed");
+		expect(deriver.derive([blocked], [first]).main.state).toBe("needs_you");
+		const next: ConversationTurn = { id: "turn-2", state: "running", requestedAt: "2026-10-26T11:00:00.000Z", startedAt: "2026-10-26T11:00:00.000Z" };
+		const running = deriver.derive([blocked], [first, next]).main;
+		expect(running).toMatchObject({ state: "working", turnId: "turn-2", result: undefined });
+		expect(running.notes.some((note) => note.kind === "outcome")).toBe(false);
+
+		const question = activity({ id: "question", providerItemId: "question", activityKind: "user_input", status: "pending", summary: "Which branch?" });
+		expect(mainOf([said("m1", "Outcome: done — shipped"), question], [first])).toMatchObject({
+			state: "needs_you",
+			blockedOn: "Which branch?",
+			nowSource: undefined,
+			result: { kind: "done" },
+		});
+	});
+
+	it("keeps an unchanged settled summary's identity", () => {
+		const deriver = createSubagentBoardDeriver();
+		const items = [said("m1", "Outcome: done — shipped")];
+		const turns = [settledTurn("completed")];
+		const before = deriver.derive(items, turns).main;
+		expect(deriver.derive([...items], [...turns]).main).toBe(before);
+	});
+
+	it("reads a finished subagent's report for an Outcome: or BLOCKED line, keeping it in Done", () => {
+		const report = (text: string) => ({ content: [{ type: "content", content: { type: "text", text } }] });
+		const blocked = derive([parent({ status: "completed" }, report("Looked everywhere.\nOutcome: blocked — the staging DB needs a VPN"))])[0]!;
+		expect(blocked).toMatchObject({ lane: "done", outcome: "blocked", nowLine: "the staging DB needs a VPN", result: { kind: "blocked", source: "outcome_line" } });
+		expect(blocked.notes.at(-1)).toMatchObject({ kind: "outcome", outcome: "blocked", text: "the staging DB needs a VPN" });
+
+		const asks = derive([parent({ status: "completed" }, report("Outcome: needs input — keep v1?"))])[0]!;
+		expect(asks).toMatchObject({ lane: "done", outcome: "blocked", result: { kind: "needs_input" } });
+
+		const convention = derive([parent({ status: "completed" }, report("BLOCKED on a missing fixture; default: skip it"))])[0]!;
+		expect(convention).toMatchObject({ outcome: "blocked", nowLine: "on a missing fixture", result: { source: "blocked_line" } });
+
+		const failed = derive([parent({ status: "completed" }, report("Outcome: failed — the suite does not compile"))])[0]!;
+		expect(failed).toMatchObject({ lane: "done", outcome: "failed", nowLine: "the suite does not compile" });
+
+		const done = derive([parent({ status: "completed" }, report("Outcome: done — 3 risks found"))])[0]!;
+		expect(done).toMatchObject({ outcome: "completed", nowLine: "3 risks found", result: { kind: "done", source: "outcome_line" } });
+
+		// Without one, how its call ended.
+		const plain = derive([parent({ status: "completed" }, report("## Findings\nThe refresh token never rotates."))])[0]!;
+		expect(plain).toMatchObject({ outcome: "completed", nowLine: "Findings", result: { kind: "done", text: "Findings", source: "settled" } });
+		expect(derive([parent({ status: "cancelled" })])[0]!.result).toMatchObject({ kind: "stopped", text: undefined });
+		expect(derive([parent({ status: "failed" }, { output: "Tool crashed" })])[0]!.result).toMatchObject({ kind: "failed", text: "Tool crashed" });
+		// A live subagent has none.
+		expect(derive([parent()])[0]!.result).toBeUndefined();
 	});
 });
 
@@ -550,14 +695,21 @@ describe("messages sent from the board", () => {
 	});
 
 	it("settles a subagent the person stopped as stopped, leaving the rest alone", () => {
-		const live = { id: "a", providerItemId: "toolu-a", lane: "working", outcome: "working" } as SubagentCard;
-		const finished = { id: "b", providerItemId: "toolu-b", lane: "done", outcome: "completed" } as SubagentCard;
-		const failed = { id: "c", providerItemId: "toolu-c", lane: "done", outcome: "failed" } as SubagentCard;
+		const live = { id: "a", providerItemId: "toolu-a", lane: "working", outcome: "working", notes: [] } as unknown as SubagentCard;
+		const done = { kind: "done", text: "All clear", at: "2026-10-26T10:00:05.000Z", source: "settled" } as const;
+		const finished = {
+			id: "b", providerItemId: "toolu-b", lane: "done", outcome: "completed", result: done,
+			notes: [{ kind: "status", text: "Reading", at: "2026-10-26T10:00:01.000Z" }, { kind: "outcome", outcome: "done", text: "All clear", at: done.at }],
+		} as unknown as SubagentCard;
+		const failed = { id: "c", providerItemId: "toolu-c", lane: "done", outcome: "failed", notes: [] } as unknown as SubagentCard;
 		const cards = [live, finished, failed];
 		expect(withStopRequests(cards, new Set())).toBe(cards);
 		expect(withStopRequests(cards, new Set(["toolu-a"]))).toBe(cards);
 		const result = withStopRequests(cards, new Set(["toolu-a", "toolu-b"]));
 		expect(result.map((card) => card.outcome)).toEqual(["working", "stopped", "failed"]);
+		// Its outcome entry says it was stopped, not what its call reported.
+		expect(result[1]!.result).toEqual({ kind: "stopped", at: done.at, source: "settled" });
+		expect(result[1]!.notes.map((note) => note.outcome ?? note.text)).toEqual(["Reading", "stopped"]);
 		expect(result[0]).toBe(live);
 		expect(result[2]).toBe(failed);
 	});

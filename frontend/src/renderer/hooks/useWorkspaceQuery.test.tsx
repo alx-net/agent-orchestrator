@@ -112,6 +112,35 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.data?.[0].sessions[0].artifactFiles?.[0]).toMatchObject({ path: "q3/report.html", inlineUrl });
 	});
 
+	it("keeps the session that spawned a worker, and leaves it out when the daemon sends none", async () => {
+		const base = {
+			projectId: "p1", harness: "codex", status: "working", statusReadiness: "ready", updatedAt: "2026-01-01T00:00:00Z", prs: [],
+			activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" },
+		};
+		respondWith({
+			projects: { data: { projects: [{ id: "p1", name: "Project", path: "/tmp/project" }] } },
+			sessions: { data: { sessions: [
+				{ ...base, id: "orch", kind: "orchestrator" },
+				{ ...base, id: "w1", kind: "worker", parentSessionId: "orch" },
+				{ ...base, id: "w2", kind: "worker" },
+				{ ...base, id: "w3", kind: "worker", parentSessionId: "" },
+				// A projectless session goes through the Scratchpad mapping.
+				{ ...base, projectId: undefined, id: "loose", parentSessionId: "orch" },
+			] } },
+		});
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		const [project, scratchpad] = result.current.data ?? [];
+		expect(project!.sessions.map((session) => [session.id, session.parentSessionId])).toEqual([
+			["orch", undefined],
+			["w1", "orch"],
+			["w2", undefined],
+			["w3", undefined],
+		]);
+		expect(project!.sessions[2]).not.toHaveProperty("parentSessionId");
+		expect(scratchpad!.sessions[0]).toMatchObject({ id: "loose", parentSessionId: "orch" });
+	});
+
 	it("rejects workspace reads while the daemon base URL is untrusted", async () => {
 		hasTrustedApiBaseUrlMock.mockReturnValue(false);
 

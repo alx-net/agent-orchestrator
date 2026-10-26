@@ -84,6 +84,8 @@ function renderBoard(ui: ReactElement) {
 	return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
 
+const inTooltips = (ui: ReactElement) => <TooltipProvider>{ui}</TooltipProvider>;
+
 describe("SubagentBoard", () => {
 	it("explains an empty board", () => {
 		renderBoard(<SubagentBoard cards={[]} mode="chat" />);
@@ -130,6 +132,80 @@ describe("SubagentBoard", () => {
 		expect(within(main).queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
 		expect(screen.getByRole("status")).toHaveTextContent("No subagents yet");
 		expect(screen.queryByTestId("subagent-lane")).not.toBeInTheDocument();
+	});
+
+	it("names how the main agent's turn ended, as its now line, glyph and newest update", async () => {
+		const user = userEvent.setup();
+		const blocked: MainAgentSummary = {
+			...mainIdle,
+			state: "needs_you",
+			nowLine: "on you turning on 2FA in Verda, Resend and Hetzner",
+			nowSource: "outcome",
+			result: { kind: "blocked", text: "on you turning on 2FA in Verda, Resend and Hetzner", at: "2026-10-26T10:05:00.000Z", source: "blocked_line" },
+			notes: [
+				{ kind: "status", text: "Looking up your ISO task in Linear", at: "2026-10-26T10:00:01.000Z" },
+				{ kind: "outcome", outcome: "blocked", text: "on you turning on 2FA in Verda, Resend and Hetzner", at: "2026-10-26T10:05:00.000Z" },
+			],
+		};
+		const view = renderBoard(<SubagentBoard cards={[]} main={blocked} mode="chat" />);
+		let main = screen.getByRole("article", { name: "Main agent" });
+		expect(main).toHaveAttribute("data-state", "needs_you");
+		expect(main).toHaveClass("border-status-needs-you");
+		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Blocked on you turning on 2FA in Verda, Resend and Hetzner");
+		await user.click(within(main).getByRole("button", { name: /Main agent/ }));
+		const updates = within(main).getByRole("region", { name: "Updates" });
+		const entries = within(updates).getAllByRole("listitem");
+		expect(entries.map((item) => item.dataset.noteKind)).toEqual(["status", "outcome"]);
+		expect(entries[1]).toHaveAttribute("data-outcome", "blocked");
+		expect(entries[1]).toHaveTextContent("Blocked");
+
+		const done: MainAgentSummary = { ...mainIdle, state: "completed", nowLine: "Shipped the pause route.", nowSource: "outcome", result: { kind: "done", text: "Shipped the pause route.", at: "2026-10-26T10:05:00.000Z", source: "settled" } };
+		view.rerender(inTooltips(<SubagentBoard cards={[]} main={done} mode="chat" />));
+		main = screen.getByRole("article", { name: "Main agent" });
+		expect(within(main).getByTestId("subagent-glyph")).toHaveAttribute("data-glyph", "completed");
+		expect(within(main).getByTestId("subagent-glyph").querySelector("svg")).toHaveClass("text-status-ready");
+		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Done Shipped the pause route.");
+
+		const failed: MainAgentSummary = { ...done, state: "failed", nowLine: "Usage limit reached", result: { kind: "failed", text: "Usage limit reached", at: done.result!.at, source: "settled" } };
+		view.rerender(inTooltips(<SubagentBoard cards={[]} main={failed} mode="chat" />));
+		expect(screen.getByTestId("subagent-glyph")).toHaveAttribute("data-glyph", "failed");
+		expect(screen.getByTestId("main-agent-now")).toHaveTextContent("Failed Usage limit reached");
+	});
+
+	it("shows a finished subagent that reports it is blocked with the needs-you glyph, still in Done", () => {
+		const reported = card({
+			id: "e",
+			title: "Check staging",
+			lane: "done",
+			outcome: "blocked",
+			nowLine: "the staging DB needs a VPN",
+			result: { kind: "blocked", text: "the staging DB needs a VPN", at: "2026-10-26T10:05:00.000Z", source: "outcome_line" },
+		});
+		renderBoard(<SubagentBoard cards={[reported]} mode="chat" />);
+		const article = screen.getByRole("article", { name: "Check staging" });
+		expect(article).toHaveAttribute("data-lane", "done");
+		expect(within(article).getByTestId("subagent-glyph")).toHaveAttribute("data-glyph", "blocked");
+		expect(within(article).getByTestId("subagent-now")).toHaveTextContent("Blocked the staging DB needs a VPN");
+	});
+
+	it("uses readable type: titles at body size, status lines below, decisions stronger, metadata smallest", async () => {
+		const user = userEvent.setup();
+		renderBoard(<SubagentBoard activeTurnId="turn-1" cards={[working]} main={mainWorking} mode="chat" />);
+		const main = screen.getByRole("article", { name: "Main agent" });
+		expect(within(main).getByText("Main agent")).toHaveClass("text-base");
+		expect(within(main).getByTestId("main-agent-now")).toHaveClass("text-sm");
+		expect(within(main).getByTestId("main-agent-decision")).toHaveClass("text-sm", "font-medium");
+		const subagent = screen.getByRole("article", { name: "Audit the auth flow" });
+		expect(within(subagent).getByTitle("Audit the auth flow")).toHaveClass("text-base");
+		expect(within(subagent).getByText("Explore")).toHaveClass("text-xs");
+		await user.click(within(subagent).getByRole("button", { name: /Audit the auth flow/ }));
+		const entries = within(within(subagent).getByRole("region", { name: "Updates" })).getAllByRole("listitem");
+		expect(entries[0]).toHaveClass("text-sm");
+		expect(within(entries[1]!).getByText("Start with login, because it is the entry point")).toHaveClass("font-medium");
+		expect(entries[0]!.querySelector("time")).toHaveClass("text-xs");
+		for (const element of subagent.querySelectorAll("[class*='text-2xs'], [class*='text-caption']")) {
+			throw new Error(`small type left on the card: ${element.className}`);
+		}
 	});
 
 	it("says what the main agent is waiting for", () => {
@@ -219,8 +295,6 @@ describe("SubagentBoard", () => {
 });
 
 describe("SubagentBoard stepping in", () => {
-	const inTooltips = (ui: ReactElement) => <TooltipProvider>{ui}</TooltipProvider>;
-
 	it("steers the running main turn from its card", async () => {
 		const user = userEvent.setup();
 		const board = controls();
@@ -345,7 +419,9 @@ describe("SubagentBoard stepping in", () => {
 		subagent = screen.getByRole("article", { name: "Audit the auth flow" });
 		expect(subagent).toHaveAttribute("data-lane", "done");
 		expect(subagent).toHaveAttribute("data-outcome", "stopped");
-		expect(within(subagent).getByText("Stopped")).toHaveClass("sr-only");
+		expect(within(within(subagent).getByTestId("subagent-glyph")).getByText("Stopped")).toHaveClass("sr-only");
+		// Its now line names the stop rather than what the call reported.
+		expect(within(subagent).getByTestId("agent-outcome")).toHaveTextContent("Stopped");
 		expect(within(subagent).queryByRole("status")).not.toBeInTheDocument();
 	});
 

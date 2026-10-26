@@ -712,6 +712,38 @@ describe("Sidebar", () => {
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/artifacts" });
 	});
 
+	it("shows the Agents row after Artifacts with a count of working sessions", async () => {
+		const user = userEvent.setup();
+		const active = { state: "active" as const, lastActivityAt: "2026-06-30T00:00:00Z" };
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, activity: active },
+					{ ...session, id: "proj-1-2", activity: active },
+					{ ...session, id: "proj-1-3", activity: { ...active, state: "idle" } },
+					{ ...session, id: "proj-1-4", activity: active, isTerminated: true, status: "terminated" },
+				],
+			}],
+		});
+
+		const artifacts = screen.getByRole("button", { name: "Artifacts" });
+		const agents = screen.getByRole("button", { name: "Agents" });
+		expect(artifacts.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(agents).toHaveTextContent("2");
+		await user.click(agents);
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/agents" });
+	});
+
+	it("omits the Agents count when nothing works and marks the row active on its route", () => {
+		mockLocation.pathname = "/agents";
+		renderSidebar();
+
+		const agents = screen.getByRole("button", { name: "Agents" });
+		expect(agents).toHaveAttribute("aria-current", "page");
+		expect(agents.textContent).toBe("Agents");
+	});
+
 	it("omits the Artifacts count when there are none and marks the row active on its route", () => {
 		mockLocation.pathname = "/artifacts";
 		renderSidebar();

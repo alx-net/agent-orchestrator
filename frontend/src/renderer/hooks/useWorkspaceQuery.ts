@@ -71,6 +71,10 @@ function toSessionArtifact(artifact: components["schemas"]["SessionArtifact"]): 
 	};
 }
 
+/**
+ * The spawning session, read without trusting the generated type: a daemon too
+ * old to send it leaves it out, and a session without a parent has none.
+ */
 export function toWorkspaceSession(
 	session: components["schemas"]["ControllersSessionView"],
 	project: Pick<WorkspaceSummary, "id" | "name">,

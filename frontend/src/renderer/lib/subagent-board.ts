@@ -27,14 +27,35 @@ import {
 } from "../types/conversation";
 
 export type SubagentLane = "working" | "needs_you" | "done";
-export type SubagentOutcome = "working" | "needs_you" | "completed" | "failed" | "stopped";
+/** `blocked`: it finished, and its report says it is blocked or needs an answer. */
+export type SubagentOutcome = "working" | "needs_you" | "completed" | "blocked" | "failed" | "stopped";
 
-/** A `Status:` or `Decision:` line the subagent wrote in its narration. */
+/** How an agent's turn, or a subagent's call, ended. */
+export type AgentOutcomeKind = "done" | "blocked" | "needs_input" | "failed" | "stopped";
+
+/**
+ * How an agent finished, read in this order: an `Outcome:` line it wrote, a
+ * line that starts with `BLOCKED`, then how its turn or call ended.
+ */
+export interface AgentOutcome {
+	kind: AgentOutcomeKind;
+	/** What it finished with, is blocked on, or failed with. */
+	text?: string;
+	at: string;
+	source: "outcome_line" | "blocked_line" | "settled";
+}
+
+/**
+ * A `Status:` or `Decision:` line the agent wrote, or how it finished. An
+ * outcome is always the newest entry.
+ */
 export interface SubagentNote {
-	kind: "status" | "decision";
+	kind: "status" | "decision" | "outcome";
 	text: string;
 	/** When the narration block carrying the line started. Lines in one block share it. */
 	at: string;
+	/** Set on an outcome entry. */
+	outcome?: AgentOutcomeKind;
 }
 
 export interface SubagentCard {
@@ -57,7 +78,9 @@ export interface SubagentCard {
 	nowSource?: "status" | "progress" | "tool" | "report";
 	/** What a subagent that needs you is waiting on. */
 	blockedOn?: string;
-	/** Status and decision lines, in the order they were written. */
+	/** How a settled subagent finished; absent while it runs. */
+	result?: AgentOutcome;
+	/** Status and decision lines, in the order they were written, then its outcome. */
 	notes: SubagentNote[];
 	decisions: SubagentNote[];
 	toolCount: number;
@@ -97,7 +120,12 @@ export interface SubagentLanes {
 	done: SubagentCard[];
 }
 
-export type MainAgentState = "working" | "needs_you" | "idle";
+/**
+ * `working` while a turn runs; once it settles, its outcome: `needs_you` when it
+ * is blocked or asks a question, else `completed`, `failed` or `stopped`. `idle`
+ * before any turn ran.
+ */
+export type MainAgentState = "working" | "needs_you" | "idle" | "completed" | "failed" | "stopped";
 
 /** The main agent's own card: a now line and timeline read from its assistant messages. */
 export interface MainAgentSummary {
@@ -107,12 +135,15 @@ export interface MainAgentSummary {
 	/** When the running turn started; absent while no turn runs. */
 	startedAt?: string;
 	nowLine?: string;
-	nowSource?: "status" | "plan" | "tool";
-	/** What the main agent is waiting on when it needs you. */
+	/** `outcome`: the now line is the settled turn's outcome text. */
+	nowSource?: "status" | "plan" | "tool" | "outcome";
+	/** What the main agent is waiting on when a pending request needs you. */
 	blockedOn?: string;
+	/** How the latest turn ended; absent while one runs or before any ran. */
+	result?: AgentOutcome;
 	/**
-	 * Status and decision lines from the turn's assistant messages, in order. A turn
-	 * that wrote none shows the newest earlier turn's lines.
+	 * Status and decision lines from the turn's assistant messages, in order, then
+	 * the turn's outcome. A turn that wrote none shows the newest earlier turn's lines.
 	 */
 	notes: SubagentNote[];
 	decisions: SubagentNote[];
@@ -157,7 +188,7 @@ function narrationText(activity: ConversationActivity): string {
 	return "";
 }
 
-type ParsedLine = { kind: SubagentNote["kind"]; text: string };
+type ParsedLine = { kind: "status" | "decision"; text: string };
 
 // Line-start label, case-insensitive. Tolerates the markdown the model tends to
 // wrap it in ("- **Status:** …", "**Decision**: …").
@@ -170,6 +201,127 @@ export function parseSubagentNoteLine(line: string): ParsedLine | undefined {
 	const text = match[2]?.trim();
 	if (!text) return undefined;
 	return { kind: match[1]!.toLowerCase() === "decision" ? "decision" : "status", text };
+}
+
+// `Outcome: done — <summary>`, `Outcome: blocked - <on what>`, `Outcome: failed: <why>`,
+// `Outcome: needs input — <question>`: case-insensitive, with the same markdown tolerance.
+const OUTCOME_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?outcome(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(needs[\s_-]*input|done|blocked|failed)\b(?:\*\*|__)?\s*(?:[—–:-]+\s*)?(.*?)\s*(?:\*\*|__)?\s*$/i;
+// The person's own convention: "BLOCKED on <what>; recommendation: …; default if no answer: …".
+// Upper case only, so prose that starts with "Blocked" is not read as one.
+const BLOCKED_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?BLOCKED\b(?:\*\*|__)?\s*[:—–-]?\s*(.*)$/;
+const OUTCOME_TEXT_MAX = 140;
+
+/** An `Outcome:` line as its kind and text, or nothing. */
+export function parseOutcomeLine(line: string): { kind: Exclude<AgentOutcomeKind, "stopped">; text?: string } | undefined {
+	const match = OUTCOME_LINE.exec(line.trim());
+	if (!match) return undefined;
+	const word = match[1]!.toLowerCase();
+	return { kind: word.startsWith("needs") ? "needs_input" : (word as "done" | "blocked" | "failed"), text: clip(match[2]) };
+}
+
+/** What a `BLOCKED` line is blocked on, up to its first `;`: empty when it names nothing, absent when it is no such line. */
+function parseBlockedLine(line: string): string | undefined {
+	const match = BLOCKED_LINE.exec(line.trim());
+	if (!match) return undefined;
+	return clip(match[1]!.split(";")[0]!.replace(/\*\*|__/g, "")) ?? "";
+}
+
+function clip(value: string | undefined): string | undefined {
+	const trimmed = value?.replace(/\s+/g, " ").trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > OUTCOME_TEXT_MAX ? `${trimmed.slice(0, OUTCOME_TEXT_MAX - 1).trimEnd()}…` : trimmed;
+}
+
+/** The newest `Outcome:` line in the texts, read from the last line of the last text back. */
+function explicitOutcome(texts: readonly string[]): ReturnType<typeof parseOutcomeLine> {
+	for (let index = texts.length - 1; index >= 0; index -= 1) {
+		const lines = texts[index]!.split("\n");
+		for (let line = lines.length - 1; line >= 0; line -= 1) {
+			const parsed = parseOutcomeLine(lines[line]!);
+			if (parsed) return parsed;
+		}
+	}
+	return undefined;
+}
+
+/** The last `BLOCKED` line of a text. */
+function blockedOutcome(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const lines = value.split("\n");
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		const blocked = parseBlockedLine(lines[index]!);
+		if (blocked !== undefined) return blocked;
+	}
+	return undefined;
+}
+
+function plainMarkdown(line: string): string {
+	return line
+		.replace(/^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)]\s+|>\s*)/, "")
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/\*\*|__|`/g, "")
+		.trim();
+}
+
+/** The first sentence of a message's prose, past code fences, tables, rules and note lines; a heading only when nothing follows it. */
+export function firstSentence(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	let heading: string | undefined;
+	let fenced = false;
+	for (const raw of value.split("\n")) {
+		const line = raw.trim();
+		if (line.startsWith("```")) {
+			fenced = !fenced;
+			continue;
+		}
+		if (fenced || !line || line.startsWith("|") || /^(?:-{3,}|\*{3,}|_{3,})$/.test(line) || parseSubagentNoteLine(line)) continue;
+		const plain = plainMarkdown(line);
+		if (!plain) continue;
+		if (/^#{1,6}\s/.test(line)) {
+			heading ??= plain;
+			continue;
+		}
+		return clip(/^(.+?[.!?])(?=\s|$)/.exec(plain)?.[1] ?? plain);
+	}
+	return clip(heading);
+}
+
+/**
+ * How a settled turn ended: an `Outcome:` line in its messages, else a `BLOCKED`
+ * line in its final message, else its state, with the final message's first
+ * sentence when it completed.
+ */
+function turnOutcome(turn: ConversationTurn, said: readonly ConversationMessage[]): AgentOutcome {
+	const final = said.at(-1);
+	const at = turn.completedAt ?? final?.createdAt ?? turn.startedAt ?? turn.requestedAt;
+	const explicit = explicitOutcome(said.map((message) => message.text));
+	if (explicit) return { ...explicit, at, source: "outcome_line" };
+	const blocked = blockedOutcome(final?.text);
+	if (blocked !== undefined) return { kind: "blocked", text: blocked || undefined, at, source: "blocked_line" };
+	if (turn.state === "failed") return { kind: "failed", text: clip(firstLine(turn.errorMessage)), at, source: "settled" };
+	if (turn.state === "interrupted" || turn.state === "cancelled") return { kind: "stopped", at, source: "settled" };
+	return { kind: "done", text: firstSentence(final?.text), at, source: "settled" };
+}
+
+/** A finished subagent's report, read for an `Outcome:` line, then a `BLOCKED` line. */
+function reportOutcome(report: string | undefined): Pick<AgentOutcome, "kind" | "text" | "source"> | undefined {
+	if (!report) return undefined;
+	const explicit = explicitOutcome([report]);
+	if (explicit) return { ...explicit, source: "outcome_line" };
+	const blocked = blockedOutcome(report);
+	return blocked === undefined ? undefined : { kind: "blocked", text: blocked || undefined, source: "blocked_line" };
+}
+
+const MAIN_STATE_BY_OUTCOME = {
+	done: "completed",
+	blocked: "needs_you",
+	needs_input: "needs_you",
+	failed: "failed",
+	stopped: "stopped",
+} as const satisfies Record<AgentOutcomeKind, MainAgentState>;
+
+function outcomeNote(outcome: AgentOutcome): SubagentNote {
+	return { kind: "outcome", outcome: outcome.kind, text: outcome.text ?? "", at: outcome.at };
 }
 
 interface NarrationParse {
@@ -405,6 +557,14 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 	// the turn's newest row; one already set when the turn arrives is as old as the plan.
 	let planStep: { turnId: string; text: string; ms: number } | undefined;
 	let watchedTurnId: string | undefined;
+	// A settled turn's outcome, read again only when the turn or what it said changes.
+	let settled: { key: string; outcome: AgentOutcome } | undefined;
+
+	function outcomeOf(turn: ConversationTurn, said: readonly ConversationMessage[]): AgentOutcome {
+		const key = [turn.id, turn.state, turn.completedAt, turn.errorMessage, ...said.map((message) => `${message.id}:${message.revision}:${message.text.length}`)].join("\u0000");
+		if (settled?.key !== key) settled = { key, outcome: turnOutcome(turn, said) };
+		return settled.outcome;
+	}
 
 	// Status and decision lines of one turn's messages, parsed once per streamed chunk.
 	function notesOf(said: readonly ConversationMessage[] | undefined, nextMessages: Map<string, MessageParse>) {
@@ -428,6 +588,8 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 	function summarize(inputs: MainInputs): MainAgentSummary {
 		const { turn } = inputs;
 		const running = turn?.state === "running";
+		// Only a settled turn has an outcome; a new running turn is working again.
+		const result = turn && !running ? outcomeOf(turn, inputs.said.get(turn.id) ?? []) : undefined;
 		// A request that matches no subagent's call is the main agent's own.
 		let blocked = false;
 		let blockedOn: string | undefined;
@@ -485,19 +647,24 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 		} else {
 			planStep = undefined;
 			const status = shown.notes.findLast((note) => note.kind === "status");
-			if (status) {
+			// A pending request outranks how the turn ended: the card says what it waits for.
+			if (result && !blocked) {
+				nowLine = result.text;
+				nowSource = "outcome";
+			} else if (status) {
 				nowLine = status.text;
 				nowSource = "status";
 			}
 		}
 		watchedTurnId = turn?.id;
 
-		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : "idle";
+		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : result ? MAIN_STATE_BY_OUTCOME[result.kind] : "idle";
 		const startedAt = running ? turn.startedAt ?? turn.requestedAt : undefined;
 		if (!blocked) blockedOn = undefined;
 		const steersKey = inputs.steers.map((steer) => `${steer.id}:${steer.revision}`).join(",");
+		const resultKey = result ? [result.kind, result.text, result.at, result.source].join(":") : "";
 		// Unchanged inputs keep the summary's identity, so the memoized card skips the render.
-		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key, steersKey].join("\u0000");
+		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key, steersKey, resultKey].join("\u0000");
 		if (main?.key === key) return main.summary;
 		const summary: MainAgentSummary = {
 			state,
@@ -506,7 +673,8 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			nowLine,
 			nowSource,
 			blockedOn,
-			notes: shown.notes,
+			result,
+			notes: result ? [...shown.notes, outcomeNote(result)] : shown.notes,
 			decisions: shown.notes.filter((note) => note.kind === "decision"),
 			sent: inputs.steers.map(steerMessage),
 		};
@@ -701,10 +869,27 @@ function buildCard(
 	if (parent.status === "recovered" && outcome === "stopped" && report) outcome = "completed";
 	const lane: SubagentLane = outcome === "working" ? "working" : outcome === "needs_you" ? "needs_you" : "done";
 
+	// A settled subagent's outcome: its report's Outcome: or BLOCKED line, else how
+	// its call ended. It stays in Done either way; only its glyph and line change.
+	let result: AgentOutcome | undefined;
+	if (lane === "done") {
+		const at = new Date(latestMs || Date.now()).toISOString();
+		const read = outcome === "stopped" ? undefined : reportOutcome(report);
+		if (read) {
+			if (read.kind === "blocked" || read.kind === "needs_input") outcome = "blocked";
+			else if (read.kind === "failed") outcome = "failed";
+			result = { ...read, at };
+		} else {
+			const kind: AgentOutcomeKind = outcome === "completed" ? "done" : outcome === "failed" ? "failed" : "stopped";
+			result = { kind, text: kind === "stopped" ? undefined : clip(firstLine(report)), at, source: "settled" };
+		}
+		notes.push(outcomeNote(result));
+	}
+
 	let nowLine: string | undefined;
 	let nowSource: SubagentCard["nowSource"];
 	if (lane === "done") {
-		const reportLine = firstLine(report);
+		const reportLine = result?.source === "settled" ? firstLine(report) : result?.text;
 		if (reportLine) {
 			nowLine = reportLine;
 			nowSource = "report";
@@ -742,6 +927,7 @@ function buildCard(
 		nowLine,
 		nowSource,
 		blockedOn: lane === "needs_you" ? blockedOn : undefined,
+		result,
 		notes,
 		decisions: notes.filter((note) => note.kind === "decision"),
 		toolCount: Math.max(toolCount, typeof detail.progressToolUses === "number" ? detail.progressToolUses : 0),
@@ -817,7 +1003,13 @@ export function withStopRequests(cards: readonly SubagentCard[], stopped: Readon
 	const result = cards.map((card) => {
 		if (card.lane !== "done" || card.outcome === "stopped" || !stopped.has(card.providerItemId)) return card;
 		changed = true;
-		return { ...card, outcome: "stopped" as const };
+		const result: AgentOutcome = { kind: "stopped", at: card.result?.at ?? card.updatedAt, source: "settled" };
+		return {
+			...card,
+			outcome: "stopped" as const,
+			result,
+			notes: [...card.notes.filter((note) => note.kind !== "outcome"), outcomeNote(result)],
+		};
 	});
 	return changed ? result : cards;
 }
