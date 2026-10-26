@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VitePlugin } from "@electron-forge/plugin-vite";
 import { MachOParseError } from "./makers/macho-archs";
 
 // postMake's dmg/zip branches only need to prove they call the right
@@ -340,5 +341,17 @@ describe("packaged native dependencies", () => {
 		expect(ignore("/node_modules/react/index.js")).toBe(true);
 		expect(ignore("/src/main.ts")).toBe(true);
 		expect(config.hooks?.prePackage).toBeTypeOf("function");
+	});
+
+	it("builds the browser import read worker next to main.js", () => {
+		const vite = config.plugins?.find((plugin): plugin is VitePlugin => plugin instanceof VitePlugin);
+		// main.ts loads .vite/build/browser-profile-import-worker.js.
+		expect(vite?.config.build).toContainEqual(expect.objectContaining({
+			entry: "src/main/browser-profile-import-worker.ts",
+			config: "vite.main.config.ts",
+			target: "main",
+		}));
+		const ignore = config.packagerConfig?.ignore;
+		if (typeof ignore === "function") expect(ignore("/.vite/build/browser-profile-import-worker.js")).toBe(false);
 	});
 });

@@ -846,6 +846,7 @@ async function createWindowInternal(): Promise<void> {
 		profileStore: browserProfileStore,
 		historyStore: browserHistoryStore,
 		fromPartition: (partition) => session.fromPartition(partition),
+		readWorkerFile: path.join(__dirname, "browser-profile-import-worker.js"),
 	});
 	await profileImporter.initialize();
 	const windowOptions: Electron.BaseWindowConstructorOptions = {

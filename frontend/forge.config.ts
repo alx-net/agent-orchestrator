@@ -390,6 +390,9 @@ const config: ForgeConfig = {
 		new VitePlugin({
 			build: [
 				{ entry: "src/main.ts", config: "vite.main.config.ts", target: "main" },
+				// Worker thread for browser-profile import reads; main.ts loads it
+				// from .vite/build/browser-profile-import-worker.js.
+				{ entry: "src/main/browser-profile-import-worker.ts", config: "vite.main.config.ts", target: "main" },
 				{ entry: "src/preload.ts", config: "vite.preload.config.ts", target: "preload" },
 				{ entry: "src/annotate-preload.ts", config: "vite.preload.config.ts", target: "preload" },
 			],

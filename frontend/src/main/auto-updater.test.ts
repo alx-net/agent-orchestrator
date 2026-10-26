@@ -4545,6 +4545,24 @@ it("gives the signature-verification plateau a grace before calling a stall", as
   } finally { restore(); vi.useRealTimers(); }
 });
 
+it("still applies the no-signal cap while a staging walk never finishes", async () => {
+  vi.useFakeTimers();
+  const restore = stubProcess("darwin", process.execPath);
+  try {
+    const { module, updaterEvents } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+    const readStagingBytes = vi.fn(() => new Promise<number | undefined>(() => undefined));
+    module.__setStagingProbesForTesting({ readStagingBytes });
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(module.getUpdateStatus().state).not.toBe("error");
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(module.getUpdateStatus()).toMatchObject({ state: "error", staged: { ready: false } });
+    // Polls skip while the walk is in flight instead of stacking new walks.
+    expect(readStagingBytes).toHaveBeenCalledOnce();
+  } finally { restore(); vi.useRealTimers(); }
+});
+
 it("keeps a slow stage alive past the no-signal cap once staging bytes start growing", async () => {
   vi.useFakeTimers();
   const restore = stubProcess("darwin", process.execPath);
