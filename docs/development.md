@@ -56,12 +56,16 @@ agent-orchestrator/
 | `npm run check`                  | Fast gate: `go build`, vet+test changed Go packages, typecheck, related vitest |
 | `npm run check:all`              | Full lint and test suites (CI equivalent, several minutes)                   |
 | `npm run app:install`            | Packages this checkout and installs it into `/Applications`                  |
+| `ao-app-update [ref]`            | Builds `origin/<ref>` (default `main`) in `~/.ao/build-src`, installs, reopens |
 | `npm run sync:upstream`          | Fast-forwards the fork's `main` from upstream                                 |
 
 Node 26 / npm 12 cannot install this tree (it refuses the lockfile's git
 dependency and blocks native install scripts), so `.nvmrc` pins Node 24, the CI
 version. The installed build's updater points at the fork (`AO_RELEASE_REPO`),
-so upstream releases never replace it. Conductor workspaces run `setup`
+so upstream releases never replace it. `ao-app-update` (linked into
+`~/.local/bin` by `scripts/dev.sh link-updater`) builds in its own checkout, so
+updating the app never touches a workspace; dependencies reinstall only when a
+lockfile changed and the tmux build is cached in `~/.ao/build-cache`. Conductor workspaces run `setup`
 automatically and expose `app`, `web`, and `check` as run scripts
 (`.conductor/settings.toml`); each workspace's dev app uses its own port and
 data so several can run at once.
