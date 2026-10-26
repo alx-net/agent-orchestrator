@@ -46,6 +46,10 @@ if (isWindowsDev) {
 	rmSync(outPath, { force: true });
 	rmSync(windowsDevManifestPath, { force: true });
 	cleanupOldWindowsDevDaemons(undefined);
+} else if (process.argv.includes("--dev")) {
+	// Keep the previous binary: go build leaves an up-to-date output untouched,
+	// so an unchanged backend skips the ~3s relink on every dev launch.
+	mkdirSync(outDir, { recursive: true });
 } else {
 	rmSync(outDir, { recursive: true, force: true });
 	mkdirSync(outDir, { recursive: true });

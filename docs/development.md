@@ -44,6 +44,28 @@ agent-orchestrator/
   CONTRIBUTING.md       # Contribution guide
 ```
 
+## Fast fork dev loop
+
+`scripts/dev.sh` wraps the whole loop (`npm run <alias>` from the repo root):
+
+| Command                          | What it does                                                                  |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `npm run setup`                  | Checks Go, pins Node 24 via nvm, runs `npm ci` only when a lockfile changed   |
+| `npm run dev`                    | Electron dev app on isolated per-workspace data (`~/.ao/dev/workspaces/<name>`) |
+| `npm run dev:real`               | Dev app against `~/.ao/data` (quit the installed app first)                  |
+| `npm run check`                  | Fast gate: `go build`, vet+test changed Go packages, typecheck, related vitest |
+| `npm run check:all`              | Full lint and test suites (CI equivalent, several minutes)                   |
+| `npm run app:install`            | Packages this checkout and installs it into `/Applications`                  |
+| `npm run sync:upstream`          | Fast-forwards the fork's `main` from upstream                                 |
+
+Node 26 / npm 12 cannot install this tree (it refuses the lockfile's git
+dependency and blocks native install scripts), so `.nvmrc` pins Node 24, the CI
+version. The installed build's updater points at the fork (`AO_RELEASE_REPO`),
+so upstream releases never replace it. Conductor workspaces run `setup`
+automatically and expose `app`, `web`, and `check` as run scripts
+(`.conductor/settings.toml`); each workspace's dev app uses its own port and
+data so several can run at once.
+
 ## Getting the code
 
 ```bash
