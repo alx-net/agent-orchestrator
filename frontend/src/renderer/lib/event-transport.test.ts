@@ -491,6 +491,33 @@ describe("createEventTransport", () => {
 		}
 	});
 
+	// A board fetches PR summaries per card; refreshing every card's for each
+	// session update refetched them all per flush.
+	it("refreshes PR summaries only for the sessions an event batch names", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			const scmRefreshes = () => vi.mocked(queryClient.invalidateQueries).mock.calls
+				.map(([filters]) => filters?.queryKey)
+				.filter((queryKey) => queryKey?.[0] === "session-scm-summary");
+			cdcSources()[0].emit("session_updated", JSON.stringify({ sessionId: "worker-1", type: "session_updated", payload: { id: "worker-1", activity: "active" } }));
+			cdcSources()[0].emit("pr_session_changed", JSON.stringify({ sessionId: "worker-3", type: "pr_session_changed", payload: { url: "u", fromSession: "worker-2", toSession: "worker-3" } }));
+			vi.advanceTimersByTime(200);
+			expect(scmRefreshes()).toEqual([
+				["session-scm-summary", "local", "worker-1"],
+				["session-scm-summary", "local", "worker-3"],
+				["session-scm-summary", "local", "worker-2"],
+			]);
+			// A reconnect cannot know what changed in the gap, so it refreshes all.
+			cdcSources()[0].onopen?.();
+			vi.advanceTimersByTime(200);
+			expect(scmRefreshes().at(-1)).toEqual(["session-scm-summary"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	// An agent can start a review with `ao review trigger`, and a reviewer can
 	// finish one, without this window asking. The session's reviews must refresh
 	// or the inspector keeps showing the previous verdict.

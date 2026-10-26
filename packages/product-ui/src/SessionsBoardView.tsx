@@ -5,6 +5,7 @@ import {
 	startTransition,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 	type HTMLAttributes,
@@ -140,13 +141,18 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 	renderSessionCard,
 	sessions,
 }: SessionsBoardGridViewProps<TSession>) {
-	const byColumn = new Map<KanbanColumn, TSession[]>();
-	for (const session of sessions) {
-		const column = toKanbanColumn(session.kanbanColumn, session.status);
-		const sessionsForColumn = byColumn.get(column);
-		if (sessionsForColumn) sessionsForColumn.push(session);
-		else byColumn.set(column, [session]);
-	}
+	// Memoized with the lane sort below so a re-render with the same sessions
+	// neither regroups nor re-sorts them.
+	const byColumn = useMemo(() => {
+		const grouped = new Map<KanbanColumn, TSession[]>();
+		for (const session of sessions) {
+			const column = toKanbanColumn(session.kanbanColumn, session.status);
+			const sessionsForColumn = grouped.get(column);
+			if (sessionsForColumn) sessionsForColumn.push(session);
+			else grouped.set(column, [session]);
+		}
+		return grouped;
+	}, [sessions]);
 
 	return (
 		<div
@@ -183,11 +189,11 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 	renderSessionCard: (session: TSession) => ReactNode;
 	sessions: TSession[];
 }) {
-	const ordered = [...sessions].sort((left, right) => {
+	const ordered = useMemo(() => [...sessions].sort((left, right) => {
 		const attentionPriority =
 			Number(boardSessionNeedsAttention(right)) - Number(boardSessionNeedsAttention(left));
 		return attentionPriority || right.updatedAt.localeCompare(left.updatedAt);
-	});
+	}), [sessions]);
 	return (
 		<section
 			aria-label={labels.columnAria(column.label)}

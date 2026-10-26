@@ -73,6 +73,12 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			const pendingModelCatalogScopes = new Map<string, { agentId: string; projectId: string }>();
 			let workspaceInvalidationPending = false;
 			let allConversationsInvalidationPending = false;
+			// PR summaries refresh with the workspace, but only for the sessions the
+			// batched events name: a board fetches one per card, and refreshing them
+			// all for every session update refetched every card's PRs per flush.
+			// An event that names no session (or a lifecycle refresh) refreshes all.
+			const pendingScmSummarySessions = new Set<string>();
+			let allScmSummariesInvalidationPending = false;
 			let allEditorHandoffsInvalidationPending = false;
 			// Reviews, interface transitions and model catalogs are otherwise only
 			// refreshed by their own events. A fresh stream starts at the newest event,
@@ -274,7 +280,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				}
 				if (workspaceInvalidationPending) {
 					invalidate(workspaceQueryKey);
-					invalidate(sessionScmSummaryQueryKey());
+					if (allScmSummariesInvalidationPending) invalidate(sessionScmSummaryQueryKey());
+					else for (const sessionId of pendingScmSummarySessions) invalidate(sessionScmSummaryQueryKey(sessionId));
+					allScmSummariesInvalidationPending = false;
+					pendingScmSummarySessions.clear();
 					invalidate(sessionUsageQueryRoot);
 					workspaceInvalidationPending = false;
 					lastWorkspaceRefreshAt = Date.now();
@@ -363,6 +372,7 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				let conversationOnly = false;
 				let modelCatalogOnly = false;
 				let idOnlySessionUpdate = false;
+				const scmSessions: string[] = [];
 				if (event === undefined) {
 					// A lifecycle refresh -- reconnect, daemon status change, base-URL change --
 					// carries no event, so we cannot know which conversations moved. Normally the
@@ -397,6 +407,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 										projectId?: unknown;
 								  })
 								: undefined;
+						// A PR moving between sessions names both; its envelope carries the new one.
+						const prMove = payload as { fromSession?: unknown; toSession?: unknown } | undefined;
+						for (const sessionId of [decoded.sessionId, prMove?.fromSession, prMove?.toSession]) {
+							if (typeof sessionId === "string" && sessionId) scmSessions.push(sessionId);
+						}
 						// A review run can start or finish without this window asking for
 						// it: an agent ran `ao review trigger`, auto-review fired, or a
 						// reviewer submitted. Refresh that session's reviews so the
@@ -465,6 +480,10 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 						// A malformed CDC payload still invalidates workspaces; it simply
 						// cannot target a conversation cache precisely.
 					}
+				}
+				if (!conversationOnly && !modelCatalogOnly) {
+					if (scmSessions.length === 0) allScmSummariesInvalidationPending = true;
+					for (const sessionId of scmSessions) pendingScmSummarySessions.add(sessionId);
 				}
 				if (idOnlySessionUpdate) queueIdOnlyWorkspaceRefresh();
 				else if (!conversationOnly && !modelCatalogOnly) workspaceInvalidationPending = true;

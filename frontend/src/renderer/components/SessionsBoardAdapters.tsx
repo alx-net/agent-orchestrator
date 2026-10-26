@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -83,7 +83,11 @@ export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 	};
 }
 
-export function BoardSessionCardAdapter({
+/**
+ * Memoized, with callbacks that take the session, so a board re-render (any
+ * session update) redraws only the cards whose session or reading changed.
+ */
+export const BoardSessionCardAdapter = memo(function BoardSessionCardAdapter({
 	memory,
 	memoryTone,
 	onOpen,
@@ -96,25 +100,29 @@ export function BoardSessionCardAdapter({
 	memory?: SessionMemoryReading;
 	/** Colour for the chip; neutral unless this card is part of the fix. */
 	memoryTone?: ChipTone;
-	onOpen: () => void;
+	onOpen: (session: WorkspaceSession) => void;
 	/** Opens the session with this artifact (by path) shown in the inspector. */
-	onOpenArtifact?: (path: string) => void;
-	onOpenArtifacts?: () => void;
-	onTerminate?: (choice: SessionArchiveChoice) => void;
+	onOpenArtifact?: (session: WorkspaceSession, path: string) => void;
+	onOpenArtifacts?: (session: WorkspaceSession) => void;
+	onTerminate?: (session: WorkspaceSession, choice: SessionArchiveChoice) => void;
 	session: WorkspaceSession;
 }) {
+	const open = useCallback(() => onOpen(session), [onOpen, session]);
+	const openArtifact = useCallback((path: string) => onOpenArtifact?.(session, path), [onOpenArtifact, session]);
+	const openArtifacts = useCallback(() => onOpenArtifacts?.(session), [onOpenArtifacts, session]);
+	const terminate = useCallback((choice: SessionArchiveChoice) => onTerminate?.(session, choice), [onTerminate, session]);
 	return (
 		<DesktopSessionCard
 			memory={memory}
 			memoryTone={memoryTone}
-			onOpen={onOpen}
-			onOpenArtifact={onOpenArtifact}
-			onOpenArtifacts={onOpenArtifacts}
-			onTerminate={onTerminate}
+			onOpen={open}
+			onOpenArtifact={onOpenArtifact ? openArtifact : undefined}
+			onOpenArtifacts={onOpenArtifacts ? openArtifacts : undefined}
+			onTerminate={onTerminate ? terminate : undefined}
 			session={session}
 		/>
 	);
-}
+});
 
 export function ArchivedSessionCardAdapter({
 	hideTerminatedStatus = false,

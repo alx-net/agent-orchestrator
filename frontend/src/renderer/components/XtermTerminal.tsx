@@ -1665,6 +1665,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			});
 		};
 
+		// One decoder for the escape scanning below. Each chunk is decoded on its
+		// own (no stream state), as before; only the per-chunk allocation goes.
+		const outputDecoder = new TextDecoder();
 		// Live cols/rows getters: the owner reads the current grid at attach time,
 		// not a snapshot taken at ready time (the first fit may not have run yet).
 		const handle: AttachableTerminal = {
@@ -1696,7 +1699,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				if (hasEsc || cursorPositionForwarder.hasPartialRequest()) {
 					// A DSR can be split immediately after ESC. Decode an ESC-free chunk
 					// only while a request prefix from the preceding chunk is incomplete.
-					const chunk = new TextDecoder().decode(data);
+					const chunk = outputDecoder.decode(data);
 					if (source === "live") cursorPositionForwarder.observeOutput(chunk);
 					if (hasEsc) {
 						const reply = callbacksRef.current.supportsCursorColorScheme
