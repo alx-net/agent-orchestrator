@@ -164,6 +164,8 @@ cmd_install() {
     osascript -e "tell application \"$(basename "${app}" .app)\" to quit" || true
     for _ in $(seq 1 30); do pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null || break; sleep 1; done
   fi
+  local still_running=0
+  pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null && still_running=1
   say "installing to ${dest}"
   rm -rf "${dest:?}/$(basename "${app}")"
   ditto "${app}" "${dest}/$(basename "${app}")"
@@ -173,7 +175,12 @@ cmd_install() {
   # tests in this checkout keep working.
   ensure_node_native
   say "installed ${dest}/$(basename "${app}") ($(git -C "${repo_root}" log -1 --format='%h %s'))"
-  if [[ "${AO_REOPEN:-}" == "1" ]]; then open "${dest}/$(basename "${app}")"; fi
+  if [[ "${still_running}" == 1 ]]; then
+    printf '\033[1;33m==>\033[0m %s did not quit, so the old version is still running.\n' "$(basename "${app}" .app)"
+    printf '    Quit it with Cmd+Q and open it again to load the new build.\n'
+  elif [[ "${AO_REOPEN:-}" == "1" ]]; then
+    open "${dest}/$(basename "${app}")"
+  fi
 }
 
 # Put `ao-app-update` on PATH, pointing at the build checkout's copy so the
