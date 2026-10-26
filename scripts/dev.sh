@@ -169,7 +169,20 @@ cmd_install() {
   ditto "${app}" "${dest}/$(basename "${app}")"
   # Local builds have no Developer ID; an ad-hoc seal keeps Apple Silicon happy.
   codesign --force --deep --sign - "${dest}/$(basename "${app}")" >/dev/null 2>&1 || true
-  say "installed ${dest}/$(basename "${app}") — open it with: open \"${dest}/$(basename "${app}")\""
+  # Packaging rebuilt better-sqlite3 for Electron; put the Node build back so
+  # tests in this checkout keep working.
+  ensure_node_native
+  say "installed ${dest}/$(basename "${app}") ($(git -C "${repo_root}" log -1 --format='%h %s'))"
+  if [[ "${AO_REOPEN:-}" == "1" ]]; then open "${dest}/$(basename "${app}")"; fi
+}
+
+# Put `ao-app-update` on PATH, pointing at the build checkout's copy so the
+# updater updates itself with the app.
+cmd_link_updater() {
+  local bin="${AO_BIN_DIR:-${HOME}/.local/bin}" src="${AO_APP_SRC:-${HOME}/.ao/build-src}"
+  mkdir -p "${bin}"
+  ln -sfn "${src}/scripts/app-update.sh" "${bin}/ao-app-update"
+  say "linked ${bin}/ao-app-update -> ${src}/scripts/app-update.sh"
 }
 
 cmd_cli() {
@@ -196,6 +209,8 @@ usage: scripts/dev.sh <command>
   check       fast gate: go build, vet+test changed Go pkgs, typecheck, related vitest
   check-all   full lint + test suites (CI equivalent, slower)
   install     package this checkout and install it into /Applications
+  update [ref] build origin/<ref> (default main) in ~/.ao/build-src and install it
+  link-updater put `ao-app-update` on PATH
   cli         build the ao CLI from source and link it onto PATH
   sync        fast-forward the fork's main from upstream
 EOF
@@ -208,6 +223,8 @@ case "${1:-help}" in
   check) cmd_check ;;
   check-all) cmd_check_all ;;
   install) cmd_install ;;
+  update) shift; exec bash "${repo_root}/scripts/app-update.sh" "$@" ;;
+  link-updater) cmd_link_updater ;;
   cli) cmd_cli ;;
   sync) cmd_sync ;;
   help|-h|--help) cmd_help ;;

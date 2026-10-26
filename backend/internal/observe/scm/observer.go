@@ -1910,7 +1910,8 @@ func domainFromObservation(sessionID domain.SessionID, sessionRecord domain.Sess
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
-		checks = append(checks, domain.PullRequestCheck{Name: ch.Name, CommitHash: obs.CI.HeadSHA, Status: domain.PRCheckStatus(ch.Status), Conclusion: ch.Conclusion, URL: ch.URL, Details: ch.ProviderID, LogTail: ch.LogTail, CreatedAt: now})
+		checks = append(checks, domain.PullRequestCheck{Name: ch.Name, CommitHash: obs.CI.HeadSHA, Status: domain.PRCheckStatus(ch.Status), Conclusion: ch.Conclusion, URL: ch.URL, Details: ch.ProviderID, LogTail: ch.LogTail, CreatedAt: now,
+			Workflow: ch.Workflow, Description: ch.Description, Required: ch.Required, StartedAt: ch.StartedAt, CompletedAt: ch.CompletedAt})
 	}
 	reviews := make([]domain.PullRequestReview, 0, len(obs.Review.Reviews))
 	for _, review := range obs.Review.Reviews {

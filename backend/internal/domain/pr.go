@@ -114,6 +114,13 @@ type PullRequestCheck struct {
 	Details    string
 	LogTail    string
 	CreatedAt  time.Time
+	// Workflow, Description, Required, StartedAt and CompletedAt are provider
+	// facts refreshed on every observation of the same check row.
+	Workflow    string
+	Description string
+	Required    bool
+	StartedAt   time.Time
+	CompletedAt time.Time
 }
 
 // PullRequestComment is one normalized review comment for a pull request.

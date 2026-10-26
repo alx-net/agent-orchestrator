@@ -1274,9 +1274,155 @@ func TestSCMBatchQueryRequestsStablePullRequestID(t *testing.T) {
 	query, _ := buildSCMBatchQuery([]ports.SCMPRRef{{
 		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello"},
 		Number: 42,
-	}})
+	}}, true)
 	if !strings.Contains(query, "number id url") {
 		t.Fatalf("batch query does not request the stable pull request id:\n%s", query)
+	}
+}
+
+// isRequired is evaluated per pull request, so each alias in the batch must
+// carry its own PR number, and the paged fallback must match the batch.
+func TestSCMBatchQueryRequestsPerPRCheckDetails(t *testing.T) {
+	repo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello"}
+	refs := []ports.SCMPRRef{{Repo: repo, Number: 42}, {Repo: repo, Number: 7}}
+	query, _ := buildSCMBatchQuery(refs, true)
+	for _, want := range []string{
+		"isRequired(pullRequestNumber:42)",
+		"isRequired(pullRequestNumber:7)",
+		"startedAt completedAt",
+		"checkSuite{ workflowRun{ workflow{ name } } }",
+		"context state targetUrl createdAt description",
+		"contexts(first:20)",
+		"pageInfo{ hasNextPage endCursor }",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("batch query missing %q:\n%s", want, query)
+		}
+	}
+	if got := strings.Count(query, "isRequired(pullRequestNumber:42)"); got != 2 {
+		t.Fatalf("PR 42 isRequired selections = %d, want CheckRun + StatusContext:\n%s", got, query)
+	}
+	page := buildCheckContextsQuery(refs[0], "cursor-1", true)
+	if !strings.Contains(page, "isRequired(pullRequestNumber:42)") || !strings.Contains(page, "workflow{ name }") {
+		t.Fatalf("context page query missing check details:\n%s", page)
+	}
+
+	base, _ := buildSCMBatchQuery(refs, false)
+	for _, unwanted := range []string{"isRequired", "workflowRun", "startedAt", "description"} {
+		if strings.Contains(base, unwanted) {
+			t.Fatalf("base batch query selects %q:\n%s", unwanted, base)
+		}
+	}
+}
+
+func TestSCMChecksFromGraphQL_ParsesCheckDetails(t *testing.T) {
+	pr := map[string]any{
+		"commits": map[string]any{"nodes": []any{
+			map[string]any{"commit": map[string]any{"statusCheckRollup": map[string]any{
+				"contexts": map[string]any{"nodes": []any{
+					map[string]any{
+						"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+						"isRequired": true, "startedAt": "2026-10-26T10:00:00Z", "completedAt": "2026-10-26T10:04:30Z",
+						"checkSuite": map[string]any{"workflowRun": map[string]any{"workflow": map[string]any{"name": "CI"}}},
+					},
+					map[string]any{
+						"__typename": "CheckRun", "name": "external", "status": "IN_PROGRESS", "conclusion": nil,
+						"isRequired": false, "startedAt": "2026-10-26T10:01:00Z", "completedAt": nil,
+						"checkSuite": map[string]any{"workflowRun": nil},
+					},
+					map[string]any{
+						"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING",
+						"isRequired": true, "createdAt": "2026-10-26T10:02:00Z", "description": "Build queued",
+					},
+					map[string]any{
+						"__typename": "StatusContext", "context": "ci/done", "state": "SUCCESS",
+						"isRequired": false, "createdAt": "2026-10-26T10:03:00Z", "description": "All good",
+					},
+				}},
+			}}},
+		}},
+	}
+	checks := scmChecksFromGraphQL(pr)
+	if len(checks) != 4 {
+		t.Fatalf("checks = %d, want 4: %+v", len(checks), checks)
+	}
+	at := func(s string) time.Time {
+		v, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	run := checks[0]
+	if run.Workflow != "CI" || !run.Required || !run.StartedAt.Equal(at("2026-10-26T10:00:00Z")) || !run.CompletedAt.Equal(at("2026-10-26T10:04:30Z")) {
+		t.Fatalf("check run details = %+v", run)
+	}
+	external := checks[1]
+	if external.Workflow != "" || external.Required || external.StartedAt.IsZero() || !external.CompletedAt.IsZero() {
+		t.Fatalf("non-Actions check run details = %+v", external)
+	}
+	pending := checks[2]
+	if !pending.Required || pending.Description != "Build queued" || !pending.StartedAt.Equal(at("2026-10-26T10:02:00Z")) || !pending.CompletedAt.IsZero() {
+		t.Fatalf("pending status details = %+v", pending)
+	}
+	done := checks[3]
+	if done.Required || done.Description != "All good" || !done.StartedAt.IsZero() || !done.CompletedAt.Equal(at("2026-10-26T10:03:00Z")) {
+		t.Fatalf("final status details = %+v", done)
+	}
+}
+
+// A token that cannot read a detail field (for example workflow runs without
+// Actions read) must not break PR observation: the batch retries once with
+// the base selection and later batches skip the details.
+func TestFetchPullRequestsFallsBackWhenCheckDetailsForbidden(t *testing.T) {
+	fake := newFakeGH(t)
+	fx := basePRFixture()
+	var pr map[string]any
+	fx.prData(func(m map[string]any) { pr = m })
+	graphQLBodies := func() []string {
+		var out []string
+		for _, req := range fake.calls() {
+			if req.Method == http.MethodPost && req.Path == "/graphql" {
+				out = append(out, req.Body)
+			}
+		}
+		return out
+	}
+	fake.on(http.MethodPost, "/graphql", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "isRequired") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"pr0": map[string]any{"pullRequest": pr}},
+				"errors": []any{map[string]any{
+					"type":    "FORBIDDEN",
+					"message": "Resource not accessible by personal access token",
+				}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"pr0": map[string]any{"pullRequest": pr}},
+		})
+	})
+	p := newProviderForTest(t, fake)
+	refs := []ports.SCMPRRef{{Repo: ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "octocat", Name: "hello", Repo: "octocat/hello"}, Number: 42}}
+
+	obs, err := p.FetchPullRequests(ctx(), refs)
+	if err != nil {
+		t.Fatalf("FetchPullRequests: %v", err)
+	}
+	if len(obs) != 1 || !obs[0].Fetched || len(obs[0].CI.Checks) != 1 {
+		t.Fatalf("observation = %#v", obs)
+	}
+	if bodies := graphQLBodies(); len(bodies) != 2 || !strings.Contains(bodies[0], "isRequired") || strings.Contains(bodies[1], "isRequired") {
+		t.Fatalf("graphql bodies = %d, want detailed then base query", len(bodies))
+	}
+	if _, err := p.FetchPullRequests(ctx(), refs); err != nil {
+		t.Fatalf("second FetchPullRequests: %v", err)
+	}
+	if bodies := graphQLBodies(); len(bodies) != 3 || strings.Contains(bodies[2], "isRequired") {
+		t.Fatalf("later batch should use the base selection without a retry; bodies = %d", len(bodies))
 	}
 }
 

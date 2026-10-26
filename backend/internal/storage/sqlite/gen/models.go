@@ -521,15 +521,20 @@ type PR struct {
 }
 
 type PRCheck struct {
-	PRURL      string
-	Name       string
-	CommitHash string
-	Status     domain.PRCheckStatus
-	URL        string
-	LogTail    string
-	CreatedAt  time.Time
-	Conclusion string
-	Details    string
+	PRURL       string
+	Name        string
+	CommitHash  string
+	Status      domain.PRCheckStatus
+	URL         string
+	LogTail     string
+	CreatedAt   time.Time
+	Conclusion  string
+	Details     string
+	IsRequired  int64
+	StartedAt   sql.NullTime
+	CompletedAt sql.NullTime
+	Workflow    string
+	Description string
 }
 
 type PRComment struct {

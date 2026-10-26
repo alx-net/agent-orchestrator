@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -47,6 +48,10 @@ type Provider struct {
 	identityMu       sync.Mutex
 	identity         ports.SCMIdentity
 	identityResolved bool
+	// checkDetailsUnavailable latches once GitHub rejects the batch's per-check
+	// detail selection (required flag, run times, workflow name) as not
+	// readable by this token, so later batches use the base selection.
+	checkDetailsUnavailable atomic.Bool
 }
 
 // NewProvider returns a Provider. If opts.Client is supplied it is used

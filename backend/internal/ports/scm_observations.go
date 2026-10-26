@@ -219,6 +219,16 @@ type SCMCheckObservation struct {
 	LogTail string
 	// ProviderID is an opaque provider id used for follow-up provider calls.
 	ProviderID string
+	// Workflow is the workflow/pipeline that produced the check, when known.
+	Workflow string
+	// Description is the provider's short status text (commit statuses).
+	Description string
+	// Required reports whether the provider requires this check to pass before
+	// the pull request can merge.
+	Required bool
+	// StartedAt and CompletedAt are provider run times; zero when unknown.
+	StartedAt   time.Time
+	CompletedAt time.Time
 }
 
 // SCMReviewObservation carries normalized review-decision and review-thread facts.

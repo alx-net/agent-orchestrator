@@ -1323,7 +1323,11 @@ type SessionPRFacts struct {
 
 // SessionPRSummary is the concise desktop SCM read model returned by GET
 // /sessions/{sessionId}/pr. It intentionally omits CI log tails and review
-// comment bodies.
+// comment bodies. Checks lists every check on the current head commit:
+// failing, then running, then skipped/neutral, then passed; required checks
+// lead each group, then names sort; omitted when the head has no recorded
+// checks. MergeStateStatus is the raw provider merge state, e.g. GitHub's
+// CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, DRAFT, HAS_HOOKS or UNKNOWN.
 type SessionPRSummary struct {
 	URL              string                       `json:"url"`
 	HTMLURL          string                       `json:"htmlUrl,omitempty"`
@@ -1349,6 +1353,8 @@ type SessionPRSummary struct {
 	ObservedAt       time.Time                    `json:"observedAt,omitempty"`
 	CIObservedAt     time.Time                    `json:"ciObservedAt,omitempty"`
 	ReviewObservedAt time.Time                    `json:"reviewObservedAt,omitempty"`
+	Checks           []SessionPRCheck             `json:"checks,omitempty" description:"Every check on the current head commit: failing, then queued/in progress, then skipped/neutral, then passed; required checks first within each group, then by name."`
+	MergeStateStatus string                       `json:"mergeStateStatus,omitempty" description:"Raw provider merge state, e.g. GitHub CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, DRAFT, HAS_HOOKS or UNKNOWN."`
 }
 
 // SessionPRCISummary is the CI status block for a session PR summary.
@@ -1364,6 +1370,25 @@ type SessionPRFailingCheck struct {
 	Status     domain.PRCheckStatus `json:"status" enum:"failed,cancelled"`
 	Conclusion string               `json:"conclusion"`
 	URL        string               `json:"url,omitempty"`
+}
+
+// SessionPRCheck is one CI check on a session PR's current head commit.
+// Status maps the stored check facts: queued and in_progress as observed;
+// passed, except a neutral conclusion, which is neutral; failed (failure,
+// timed_out, action_required, startup_failure, or an error commit status);
+// cancelled; skipped (skipped or stale); and neutral for a check with no
+// pass/fail signal. Conclusion is the lowercased provider conclusion or
+// commit-status state.
+type SessionPRCheck struct {
+	Name        string                  `json:"name"`
+	Workflow    string                  `json:"workflow,omitempty"`
+	Status      sessionsvc.PRCheckState `json:"status" enum:"queued,in_progress,passed,failed,cancelled,skipped,neutral" description:"Merge-box state: queued and in_progress as observed; failed for failure, timed_out, action_required, startup_failure or a failing commit status; cancelled; skipped for skipped or stale; neutral for a neutral conclusion or no pass/fail signal; otherwise passed."`
+	Conclusion  string                  `json:"conclusion,omitempty"`
+	Description string                  `json:"description,omitempty"`
+	Required    bool                    `json:"required" description:"Whether the provider requires this check to pass before the pull request can merge."`
+	StartedAt   *time.Time              `json:"startedAt,omitempty" nullable:"false"`
+	CompletedAt *time.Time              `json:"completedAt,omitempty" nullable:"false"`
+	URL         string                  `json:"url,omitempty"`
 }
 
 // SessionPRReviewSummary is the review state block for a session PR summary.
@@ -1458,6 +1483,8 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		CI:               newSessionPRCISummary(in.CI),
 		Review:           newSessionPRReviewSummary(in.Review),
 		Mergeability:     newSessionPRMergeabilitySummary(in.Mergeability),
+		Checks:           newSessionPRChecks(in.Checks),
+		MergeStateStatus: in.MergeStateStatus,
 		StateChangedAt:   optionalTime(in.StateChangedAt),
 		CreatedAt:        optionalTime(in.CreatedAt),
 		UpdatedAt:        in.UpdatedAt,
@@ -1472,6 +1499,27 @@ func optionalTime(value time.Time) *time.Time {
 		return nil
 	}
 	return &value
+}
+
+func newSessionPRChecks(in []sessionsvc.PRCheck) []SessionPRCheck {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SessionPRCheck, 0, len(in))
+	for _, ch := range in {
+		out = append(out, SessionPRCheck{
+			Name:        ch.Name,
+			Workflow:    ch.Workflow,
+			Status:      ch.Status,
+			Conclusion:  ch.Conclusion,
+			Description: ch.Description,
+			Required:    ch.Required,
+			StartedAt:   optionalTime(ch.StartedAt),
+			CompletedAt: optionalTime(ch.CompletedAt),
+			URL:         ch.URL,
+		})
+	}
+	return out
 }
 
 func newSessionPRCISummary(in sessionsvc.PRCISummary) SessionPRCISummary {

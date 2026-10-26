@@ -8,6 +8,7 @@
 		"check": "bash scripts/dev.sh check",
 		"check:all": "bash scripts/dev.sh check-all",
 		"app:install": "bash scripts/dev.sh install",
+		"app:update": "bash scripts/dev.sh update",
 		"sync:upstream": "bash scripts/dev.sh sync",
 		"lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --path-mode=abs",
 		"frontend:typecheck": "npm --prefix frontend run typecheck",

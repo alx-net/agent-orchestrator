@@ -156,6 +156,7 @@ import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { SessionStartup } from "./SessionStartup";
 import { ActivityRun } from "./ActivityRun";
 import { SubagentBoard } from "./SubagentBoard";
+import { PullRequestsPanel, PullRequestsTabButton } from "./PullRequestsPanel";
 import { activeSubagentCount, subagentAskPrefix, useSubagentBoard, type SubagentCard } from "../../lib/subagent-board";
 import { useAgentBoardControls } from "../../hooks/useAgentBoardControls";
 import { isOrdinaryActivity } from "./activity-action";
@@ -954,14 +955,23 @@ function ChatWorkspaceContent({
 	// board once one appears.
 	const subagentBoardAvailable = Boolean(session) && !hideHeader && snapshot.items.length > 0 &&
 		(snapshot.harness === "claude-code" || subagentCards.length > 0);
-	const [subagentBoardOpen, setSubagentBoardOpen] = useState(false);
-	const subagentBoardActive = subagentBoardOpen && subagentBoardAvailable && !reviewerActive && !shellActive && !workspaceActiveTabKey;
+	// The Pull requests tab shares that body the same way, once the session has a PR.
+	const pullRequestsAvailable = Boolean(session) && !hideHeader && (session?.prs.length ?? 0) > 0;
+	const [chatOverlay, setChatOverlay] = useState<"subagents" | "pullRequests" | null>(null);
+	const overlayAllowed = !reviewerActive && !shellActive && !workspaceActiveTabKey;
+	const subagentBoardActive = chatOverlay === "subagents" && subagentBoardAvailable && overlayAllowed;
+	const pullRequestsActive = chatOverlay === "pullRequests" && pullRequestsAvailable && overlayAllowed;
+	const overlayActive = subagentBoardActive || pullRequestsActive;
 	const openSubagentBoard = useCallback(() => {
 		onSelectChat?.();
-		setSubagentBoardOpen(true);
+		setChatOverlay("subagents");
+	}, [onSelectChat]);
+	const openPullRequests = useCallback(() => {
+		onSelectChat?.();
+		setChatOverlay("pullRequests");
 	}, [onSelectChat]);
 	const selectChatTimeline = useCallback(() => {
-		setSubagentBoardOpen(false);
+		setChatOverlay(null);
 		onSelectChat?.();
 	}, [onSelectChat]);
 	const auxiliaryTabs = useMemo<ChatAuxiliaryTab[]>(
@@ -1350,6 +1360,7 @@ function ChatWorkspaceContent({
 			const tabs = [
 				{ key: "chat", kind: "chat" as const },
 				...(subagentBoardAvailable ? [{ key: "subagents", kind: "subagents" as const }] : []),
+				...(pullRequestsAvailable ? [{ key: "pull-requests", kind: "pullRequests" as const }] : []),
 				...orderedAuxiliaryTabs,
 			];
 			if (tabs.length <= 1) return;
@@ -1361,7 +1372,7 @@ function ChatWorkspaceContent({
 						: reviewerChat
 							? `reviewer-chat:${reviewerChat.reviewId}`
 							: "chat"
-					: subagentBoardActive ? "subagents" : "chat");
+					: subagentBoardActive ? "subagents" : pullRequestsActive ? "pull-requests" : "chat");
 			const activeIndex = tabs.findIndex((tab) => tab.key === activeKey);
 			const currentIndex = activeIndex >= 0 ? activeIndex : 0;
 			const next = tabs[(currentIndex + direction + tabs.length) % tabs.length];
@@ -1372,6 +1383,10 @@ function ChatWorkspaceContent({
 			}
 			if (next.kind === "subagents") {
 				openSubagentBoard();
+				return;
+			}
+			if (next.kind === "pullRequests") {
+				openPullRequests();
 				return;
 			}
 			if (next.kind === "reviewer") {
@@ -1392,7 +1407,10 @@ function ChatWorkspaceContent({
 			onOpenReviewerTerminal,
 			onOpenReviewerChat,
 			onSelectShellTerminal,
+			openPullRequests,
 			openSubagentBoard,
+			pullRequestsActive,
+			pullRequestsAvailable,
 			reviewerActive,
 			reviewerChat,
 			reviewerTerminal,
@@ -1658,6 +1676,15 @@ function ChatWorkspaceContent({
 		if (composer.isEmpty()) composer.setDraft(subagentAskPrefix(card.title ?? t("subagents.untitled")));
 		else composer.focus();
 	}, [t]);
+	// "Fix this" on a merge box goes back to the chat with the fix drafted, under
+	// the same rule: a draft the person already started is never replaced.
+	const fixFromPullRequests = useCallback((prompt: string) => {
+		selectChatTimeline();
+		const composer = composerFocusRef.current;
+		if (!composer) return;
+		if (composer.isEmpty()) composer.setDraft(prompt);
+		else composer.focus();
+	}, [selectChatTimeline]);
 	// Stepping in from a card: a steer straight into the running main turn, or a
 	// message to one subagent's inbox. Subagents are reached through the daemon
 	// that runs them, which a cloud session does not have, and only when the
@@ -1786,6 +1813,12 @@ function ChatWorkspaceContent({
 					running: subagentCounts.running,
 					needsYou: subagentCounts.needsYou + (mainAgent.state === "needs_you" ? 1 : 0),
 					onSelect: openSubagentBoard,
+				} : undefined}
+				pullRequestsTab={pullRequestsAvailable && session ? {
+					active: pullRequestsActive,
+					hostId: activeRemoteHostId,
+					onSelect: openPullRequests,
+					session,
 				} : undefined}
 				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
 				onSelectShellTerminal={onSelectShellTerminal}
@@ -1917,13 +1950,13 @@ function ChatWorkspaceContent({
 							{/* The board covers the timeline without unmounting or resizing it, so
 							    its scroll position and live follow survive a trip to the board. */}
 							<div
-								className={subagentBoardActive ? "relative flex min-h-0 flex-1 flex-col" : "contents"}
+								className={overlayActive ? "relative flex min-h-0 flex-1 flex-col" : "contents"}
 								data-testid="chat-timeline-region"
 							>
 							<div
-								aria-hidden={subagentBoardActive || undefined}
-								className={cn("contents", subagentBoardActive && "invisible")}
-								inert={subagentBoardActive || undefined}
+								aria-hidden={overlayActive || undefined}
+								className={cn("contents", overlayActive && "invisible")}
+								inert={overlayActive || undefined}
 							>
 								<Timeline
 							onAddToSideChat={onAddToSideChat}
@@ -1971,6 +2004,15 @@ function ChatWorkspaceContent({
 										mode={snapshot.mode}
 										onAskMainAgent={askAboutSubagent}
 										onStopTurn={turn && !newWorkDisabled && !openingStarting ? stableInterrupt : undefined}
+									/>
+								</div>
+							) : null}
+							{pullRequestsActive && session ? (
+								<div className="absolute inset-0 z-10 bg-background" data-testid="chat-pull-requests-panel">
+									<PullRequestsPanel
+										hostId={activeRemoteHostId}
+										onFix={newWorkDisabled || openingStarting || agentInputDisabled ? undefined : fixFromPullRequests}
+										session={session}
 									/>
 								</div>
 							) : null}
@@ -2312,6 +2354,7 @@ function ChatHeader({
 	onRenameShellTerminal,
 	onTabsKeyDown,
 	subagentsTab,
+	pullRequestsTab,
 	headerActions,
 	sessionTabAction,
 	sessionTabActionWide = false,
@@ -2342,6 +2385,8 @@ function ChatHeader({
 	onTabsKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 	/** The subagent board's tab, beside the chat tab. Absent where the board is not offered. */
 	subagentsTab?: { active: boolean; running: number; needsYou: number; onSelect: () => void };
+	/** The Pull requests tab, after Agents. Absent until the session has a PR. */
+	pullRequestsTab?: { active: boolean; hostId?: string; onSelect: () => void; session: WorkspaceSession };
 	headerActions?: ReactNode;
 	sessionTabAction?: ReactNode;
 	sessionTabActionWide?: boolean;
@@ -2380,7 +2425,7 @@ function ChatHeader({
 	const closeShellTerminal = useStableCallback(onCloseShellTerminal);
 	const renameShellTerminal = useStableCallback(onRenameShellTerminal);
 	// The chat tab is "selected" only when neither terminal pane is the body.
-	const timelineActive = !workspaceActiveTabKey && !reviewerActive && !shellActiveHandleId && !subagentsTab?.active;
+	const timelineActive = !workspaceActiveTabKey && !reviewerActive && !shellActiveHandleId && !subagentsTab?.active && !pullRequestsTab?.active;
 	// Match CenterPane: when the sidebar is off-canvas, the fixed TitlebarNav
 	// cluster sits over the session tab strip. Terminal already reserves that
 	// space; chat must too or the back/forward buttons land on the tab label.
@@ -2472,6 +2517,14 @@ function ChatHeader({
 									</>
 								) : null}
 							</button>
+						) : null}
+						{pullRequestsTab ? (
+							<PullRequestsTabButton
+								active={pullRequestsTab.active}
+								hostId={pullRequestsTab.hostId}
+								onSelect={pullRequestsTab.onSelect}
+								session={pullRequestsTab.session}
+							/>
 						) : null}
 						<div className="relative min-w-0 flex-1 self-stretch overflow-hidden">
 							<motion.div ref={tabsOverflowRef} className="scrollbar-none flex h-full min-w-flex-min min-w-0 items-stretch overflow-x-auto" layoutScroll>
