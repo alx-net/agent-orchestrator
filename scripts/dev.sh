@@ -156,7 +156,7 @@ cmd_install() {
   say "packaging (updater feed: ${release_repo})"
   # Shared cache: the bundled tmux source build takes minutes per checkout.
   (cd "${frontend}" && AO_BUILD_CACHE_DIR="${AO_BUILD_CACHE_DIR:-${HOME}/.ao/build-cache}" \
-    AO_RELEASE_REPO="${release_repo}" npm run package)
+    AO_RELEASE_REPO="${release_repo}" AO_LOCAL_BUILD=1 npm run package)
   app="$(find "${frontend}/out" -maxdepth 2 -name '*.app' -type d -newer "${frontend}/package.json" | head -1)"
   [[ -n "${app}" ]] || die "no packaged .app found under frontend/out"
   if pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null; then
