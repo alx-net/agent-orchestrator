@@ -2010,6 +2010,44 @@ func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_ListAndGetExposeParentSession(t *testing.T) {
+	svc := newFakeSessionService()
+	child := svc.sessions["ao-1"]
+	child.ID, child.ParentSessionID = "ao-2", "ao-1"
+	svc.sessions[child.ID] = child
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions?project=ao", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET sessions = %d, want 200; body=%s", status, body)
+	}
+	var list struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	mustJSON(t, body, &list)
+	parents := map[any]any{}
+	for _, session := range list.Sessions {
+		parents[session["id"]] = session["parentSessionId"] // nil when omitted
+	}
+	if len(parents) != 2 || parents["ao-2"] != "ao-1" || parents["ao-1"] != nil {
+		t.Fatalf("list parents = %v, want ao-2 -> ao-1 and ao-1 without the field; body=%s", parents, body)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET session = %d, want 200; body=%s", status, body)
+	}
+	var got struct {
+		Session struct {
+			ParentSessionID string `json:"parentSessionId"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &got)
+	if got.Session.ParentSessionID != "ao-1" {
+		t.Fatalf("session parentSessionId = %q, want ao-1; body=%s", got.Session.ParentSessionID, body)
+	}
+}
+
 func TestSessionsAPI_OrchestratorAcceptsExplicitChatMode(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)

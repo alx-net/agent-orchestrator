@@ -318,6 +318,7 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 		ProvisionState:     rec.ProvisionState.WithDefault(),
 		ClientRequestID:    rec.ClientRequestID,
 		ClientRequestHash:  rec.ClientRequestHash,
+		ParentSessionID:    optionalSessionID(rec.ParentSessionID),
 		ID:                 id,
 	})
 	if err != nil {
@@ -978,6 +979,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutomationRunID:           row.AutomationRunID,
 		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
 		IssueID:                   row.IssueID,
+		ParentSessionID:           domain.SessionID(row.ParentSessionID.String),
 		Kind:                      row.Kind,
 		Harness:                   row.Harness,
 		ReviewerHarness:           row.ReviewerHarness,
@@ -1175,6 +1177,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 		ClientRequestID:                  rec.ClientRequestID,
 		ClientRequestHash:                rec.ClientRequestHash,
+		ParentSessionID:                  optionalSessionID(rec.ParentSessionID),
 	}
 }
 

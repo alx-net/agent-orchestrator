@@ -743,6 +743,7 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
+	ParentSessionID                  sql.NullString
 }
 
 type SessionAgentAccount struct {

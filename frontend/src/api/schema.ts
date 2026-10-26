@@ -5259,6 +5259,7 @@ export interface components {
             model?: string;
             /** @enum {string} */
             outputType: "none" | "pr" | "artifact" | "pr_artifact";
+            parentSessionId?: string;
             /** Format: date-time */
             pinnedAt?: null | string;
             /** Format: int64 */

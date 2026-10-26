@@ -165,6 +165,7 @@ describe("useWorkspaceQuery", () => {
 							terminalGeneration: "launch-2",
 							displayName: "fix-bug",
 							issueId: "github:acme/project-one#42",
+							parentSessionId: "orch-1",
 							harness: "claude-code",
 							reviewerHarness: "agy",
 							branch: "qa/modal-worker",
@@ -215,6 +216,7 @@ describe("useWorkspaceQuery", () => {
 			terminalGeneration: "launch-2",
 			title: "fix-bug",
 			issueId: "github:acme/project-one#42",
+			parentSessionId: "orch-1",
 			provider: "claude-code",
 			reviewerHarness: "agy",
 			branch: "qa/modal-worker",
@@ -230,6 +232,7 @@ describe("useWorkspaceQuery", () => {
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
 			title: "sess-2",
+			parentSessionId: undefined,
 			provider: "codex",
 			reviewerHarness: undefined,
 			status: "unknown",
@@ -368,6 +371,7 @@ describe("useWorkspaceQuery", () => {
 					sessions: [
 						{
 							id: "standalone-1",
+							parentSessionId: "standalone-0",
 							displayName: "Research",
 							provisionState: "failed",
 							provisionError: "Agent failed to start",
@@ -397,6 +401,7 @@ describe("useWorkspaceQuery", () => {
 			workspaceId: "__standalone__",
 			workspaceName: "Scratchpad",
 			title: "Research",
+			parentSessionId: "standalone-0",
 			branch: undefined,
 			provisionState: "failed",
 			provisionError: "Agent failed to start",

@@ -1013,12 +1013,22 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
 	}
-	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
-		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
+	if cfg.ParentSessionID != "" {
+		parent, ok, err := m.store.GetSession(ctx, cfg.ParentSessionID)
 		if err != nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: load parent session %s: %w", cfg.ParentSessionID, err)
 		}
-		cfg.AgentConfig.Permissions = permissions
+		if !ok || parent.ProjectID != cfg.ProjectID {
+			// AO_SESSION_ID may be stale or name another project's session; the
+			// spawn proceeds as if no session had requested it.
+			cfg.ParentSessionID = ""
+		} else if cfg.AgentConfig.Permissions == "" {
+			permissions, err := m.inheritedSpawnPermissions(ctx, parent)
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			}
+			cfg.AgentConfig.Permissions = permissions
+		}
 	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
@@ -1817,29 +1827,26 @@ func containsString(values []string, value string) bool {
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
-// orchestrator. The request supplies identity only: the stored conversation
-// settings remain the authority for the permission policy.
-func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.PermissionMode, error) {
-	parent, ok, err := m.store.GetSession(ctx, parentID)
-	if err != nil {
-		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
-	}
-	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+// orchestrator, already confirmed to be in the spawn's project. The request
+// supplies identity only: the stored conversation settings remain the
+// authority for the permission policy.
+func (m *Manager) inheritedSpawnPermissions(ctx context.Context, parent domain.SessionRecord) (domain.PermissionMode, error) {
+	if parent.Kind != domain.KindOrchestrator {
 		// AO_SESSION_ID is available in every session, not only orchestrators.
-		// A worker (or a stale/cross-project value) must preserve the historical
-		// project-default spawn behavior rather than gain an inherited policy.
+		// A worker must preserve the historical project-default spawn behavior
+		// rather than gain an inherited policy.
 		return "", nil
 	}
 	conversations, ok := m.store.(conversationSettingsStore)
 	if !ok {
 		return "", nil
 	}
-	conversation, err := conversations.ConversationForSession(ctx, parentID)
+	conversation, err := conversations.ConversationForSession(ctx, parent.ID)
 	if errors.Is(err, domain.ErrNoConversation) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
+		return "", fmt.Errorf("load parent conversation %s: %w", parent.ID, err)
 	}
 	return conversation.Settings.ApprovalMode, nil
 }
@@ -5701,6 +5708,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 	return domain.SessionRecord{
 		ProjectID:         cfg.ProjectID,
 		IssueID:           cfg.IssueID,
+		ParentSessionID:   cfg.ParentSessionID,
 		AutomationRunID:   cfg.AutomationRunID,
 		ClientRequestID:   cfg.ClientRequestID,
 		ClientRequestHash: cfg.ClientRequestHash,

@@ -23,7 +23,7 @@ INSERT INTO sessions (
     requested_output,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
     provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
-    client_request_id, client_request_hash
+    client_request_id, client_request_hash, parent_session_id
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -31,7 +31,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?
 );
 
 -- name: GetClientRequestSession :one
@@ -294,7 +294,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id
 FROM sessions WHERE id = ?;
 
 -- name: GetSessionByAutomationRunID :one
@@ -316,7 +316,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id
 FROM sessions WHERE automation_run_id = ?;
 
 -- name: ListSessionsByProject :many
@@ -338,7 +338,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id
 FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -360,7 +360,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id
 FROM sessions ORDER BY project_id, num;
 
 -- name: ListLiveSessions :many
@@ -384,7 +384,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id
 FROM sessions WHERE is_terminated = 0 ORDER BY project_id, num;
 
 -- name: ListChatHibernationCandidates :many
@@ -432,6 +432,7 @@ UPDATE sessions SET
     provision_error = '',
     client_request_id = sqlc.arg(client_request_id),
     client_request_hash = sqlc.arg(client_request_hash),
+    parent_session_id = sqlc.narg(parent_session_id),
     is_task_preparation = 0
 WHERE id = sqlc.arg(id) AND is_task_preparation = 1;
 

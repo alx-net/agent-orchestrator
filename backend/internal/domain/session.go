@@ -282,6 +282,10 @@ type SessionRecord struct {
 	IssueID                IssueID      `json:"issueId,omitempty"`
 	Kind                   SessionKind  `json:"kind"`
 	Harness                AgentHarness `json:"harness,omitempty"`
+	// ParentSessionID is the session whose `ao spawn` created this one, kept
+	// only when that session existed in the same project at spawn time. Empty
+	// for sessions started any other way. Written once at insertion.
+	ParentSessionID SessionID `json:"parentSessionId,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
 	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
