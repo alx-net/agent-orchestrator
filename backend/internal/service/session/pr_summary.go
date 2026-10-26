@@ -12,8 +12,47 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
 
-// PRSummary is the user-facing SCM read model for one PR owned by a session.
-type PRSummary = contract.PullRequestSummary
+// PRSummary is the user-facing SCM read model for one PR owned by a session:
+// the shared contract summary plus the desktop merge-box detail the Cloud
+// contract does not carry.
+type PRSummary struct {
+	contract.PullRequestSummary
+	// Checks lists every check on the PR's current head commit in merge-box
+	// order. Nil when the head commit has no recorded checks.
+	Checks []PRCheck
+	// MergeStateStatus is the raw provider merge state (GitHub
+	// mergeStateStatus: CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, DRAFT,
+	// HAS_HOOKS, UNKNOWN). Empty when the provider has not reported one.
+	MergeStateStatus string
+}
+
+// PRCheckState is a check's merge-box state, derived at read time from the
+// stored check status and provider conclusion.
+type PRCheckState string
+
+// Merge-box check states.
+const (
+	PRCheckStateQueued     PRCheckState = "queued"
+	PRCheckStateInProgress PRCheckState = "in_progress"
+	PRCheckStatePassed     PRCheckState = "passed"
+	PRCheckStateFailed     PRCheckState = "failed"
+	PRCheckStateCancelled  PRCheckState = "cancelled"
+	PRCheckStateSkipped    PRCheckState = "skipped"
+	PRCheckStateNeutral    PRCheckState = "neutral"
+)
+
+// PRCheck is one CI check on a PR's current head commit.
+type PRCheck struct {
+	Name        string
+	Workflow    string
+	Status      PRCheckState
+	Conclusion  string
+	Description string
+	Required    bool
+	StartedAt   time.Time
+	CompletedAt time.Time
+	URL         string
+}
 
 // PRCISummary describes the latest CI status and failing checks for a PR.
 type PRCISummary = contract.PullRequestCISummary
@@ -55,7 +94,7 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 	groups := groupPullRequestAliases(prs)
 	out := make([]PRSummary, 0, len(groups))
 	for _, group := range groups {
-		var checks []domain.PullRequestCheck
+		var checks, primaryChecks []domain.PullRequestCheck
 		var threads []domain.PullRequestReviewThread
 		var reviews []domain.PullRequestReview
 		var comments []domain.PullRequestComment
@@ -66,6 +105,9 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 				return nil, err
 			}
 			checks = append(checks, prChecks...)
+			if pr.URL == group.primary.URL {
+				primaryChecks = prChecks
+			}
 			prThreads, err := s.store.ListPRReviewThreads(ctx, pr.URL)
 			if err != nil {
 				return nil, err
@@ -89,7 +131,11 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 				threadsExact = false
 			}
 		}
-		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments, threadsExact))
+		summary := summarizePR(group.primary, checks, reviews, threads, comments, threadsExact)
+		// The primary alias carries the freshest observation, so its rows win
+		// when an older alias recorded the same check name.
+		summary.Checks = summarizeHeadChecks(group.primary.HeadSHA, append(append([]domain.PullRequestCheck(nil), primaryChecks...), checks...))
+		out = append(out, summary)
 	}
 	sortPRSummaries(out)
 	return out, nil
@@ -159,6 +205,87 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		ObservedAt:       pr.ObservedAt,
 		CIObservedAt:     pr.CIObservedAt,
 		ReviewObservedAt: pr.ReviewObservedAt,
+		MergeStateStatus: strings.TrimSpace(pr.ProviderMergeStateStatus),
+	}
+}
+
+// summarizeHeadChecks returns the checks recorded for headSHA, one per name
+// (first row wins), ordered failing, then running, then skipped/neutral, then
+// passed; required checks lead within each group, then names sort.
+func summarizeHeadChecks(headSHA string, checks []domain.PullRequestCheck) []PRCheck {
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		return nil
+	}
+	var out []PRCheck
+	seen := map[string]bool{}
+	for _, ch := range checks {
+		if !strings.EqualFold(ch.CommitHash, headSHA) || seen[ch.Name] {
+			continue
+		}
+		seen[ch.Name] = true
+		out = append(out, PRCheck{
+			Name:        ch.Name,
+			Workflow:    ch.Workflow,
+			Status:      prCheckState(ch.Status, ch.Conclusion),
+			Conclusion:  ch.Conclusion,
+			Description: ch.Description,
+			Required:    ch.Required,
+			StartedAt:   ch.StartedAt,
+			CompletedAt: ch.CompletedAt,
+			URL:         ch.URL,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := prCheckStateRank(out[i].Status), prCheckStateRank(out[j].Status); ri != rj {
+			return ri < rj
+		}
+		if out[i].Required != out[j].Required {
+			return out[i].Required
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// prCheckState maps the stored check vocabulary onto merge-box states. The
+// stored status already folds provider conclusions (failure, timed_out,
+// action_required and startup_failure are failed; stale is skipped; neutral
+// is passed), so only a neutral conclusion is split back out. An unknown
+// status (a completed run without a conclusion, or a state AO does not
+// recognize) carries no pass/fail signal and reads as neutral.
+func prCheckState(status domain.PRCheckStatus, conclusion string) PRCheckState {
+	switch status {
+	case domain.PRCheckQueued:
+		return PRCheckStateQueued
+	case domain.PRCheckInProgress:
+		return PRCheckStateInProgress
+	case domain.PRCheckPassed:
+		if strings.EqualFold(strings.TrimSpace(conclusion), "neutral") {
+			return PRCheckStateNeutral
+		}
+		return PRCheckStatePassed
+	case domain.PRCheckFailed:
+		return PRCheckStateFailed
+	case domain.PRCheckCancelled:
+		return PRCheckStateCancelled
+	case domain.PRCheckSkipped:
+		return PRCheckStateSkipped
+	default:
+		return PRCheckStateNeutral
+	}
+}
+
+func prCheckStateRank(state PRCheckState) int {
+	switch state {
+	case PRCheckStateFailed, PRCheckStateCancelled:
+		return 0
+	case PRCheckStateInProgress, PRCheckStateQueued:
+		return 1
+	case PRCheckStateSkipped, PRCheckStateNeutral:
+		return 2
+	default:
+		return 3
 	}
 }
 
@@ -439,7 +566,14 @@ func mergeabilityReasons(pr domain.PullRequest) []string {
 	if pr.Merged || pr.Closed {
 		return nil
 	}
+	// A head behind its base is reported from the raw provider state alone:
+	// GitHub's BEHIND leaves the normalized mergeability unknown, so a PR that
+	// is only out of date would otherwise show no reason at all.
+	behindBase := containsAny(pr.ProviderMergeStateStatus, "behind")
 	if pr.Mergeability != domain.MergeConflicting && pr.Mergeability != domain.MergeBlocked && pr.Mergeability != domain.MergeUnstable {
+		if behindBase {
+			return []string{"behind_base"}
+		}
 		return nil
 	}
 	reasons := map[string]bool{}
@@ -451,7 +585,7 @@ func mergeabilityReasons(pr domain.PullRequest) []string {
 	if pr.Mergeability == domain.MergeConflicting || containsAny(pr.ProviderMergeable, "conflict", "dirty") || containsAny(pr.ProviderMergeStateStatus, "conflict", "dirty") {
 		add("conflicts")
 	}
-	if containsAny(pr.ProviderMergeStateStatus, "behind") {
+	if behindBase {
 		add("behind_base")
 	}
 	if pr.Draft {

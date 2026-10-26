@@ -6735,6 +6735,24 @@ export interface components {
             /** @enum {string} */
             state: "unknown" | "pending" | "passing" | "failing";
         };
+        SessionPRCheck: {
+            /** Format: date-time */
+            completedAt?: string;
+            conclusion?: string;
+            description?: string;
+            name: string;
+            /** @description Whether the provider requires this check to pass before the pull request can merge. */
+            required: boolean;
+            /** Format: date-time */
+            startedAt?: string;
+            /**
+             * @description Merge-box state: queued and in_progress as observed; failed for failure, timed_out, action_required, startup_failure or a failing commit status; cancelled; skipped for skipped or stale; neutral for a neutral conclusion or no pass/fail signal; otherwise passed.
+             * @enum {string}
+             */
+            status: "queued" | "in_progress" | "passed" | "failed" | "cancelled" | "skipped" | "neutral";
+            url?: string;
+            workflow?: string;
+        };
         SessionPRConflictFile: {
             path: string;
             url?: string;
@@ -6809,6 +6827,8 @@ export interface components {
             author: string;
             authorAvatarUrl?: string;
             changedFiles: number;
+            /** @description Every check on the current head commit: failing, then queued/in progress, then skipped/neutral, then passed; required checks first within each group, then by name. */
+            checks?: components["schemas"]["SessionPRCheck"][];
             ci: components["schemas"]["SessionPRCISummary"];
             /** Format: date-time */
             ciObservedAt?: string;
@@ -6817,6 +6837,8 @@ export interface components {
             deletions: number;
             headSha: string;
             htmlUrl?: string;
+            /** @description Raw provider merge state, e.g. GitHub CLEAN, BLOCKED, BEHIND, DIRTY, UNSTABLE, DRAFT, HAS_HOOKS or UNKNOWN. */
+            mergeStateStatus?: string;
             mergeability: components["schemas"]["SessionPRMergeabilitySummary"];
             number: number;
             /** Format: date-time */

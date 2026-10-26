@@ -119,3 +119,47 @@ func TestNewSessionPRSummaryExposesCIFailureInjectionPolicy(t *testing.T) {
 		t.Fatalf("CI summary payload = %s, want explicit disabled injection policy", payload)
 	}
 }
+
+func TestNewSessionPRSummaryMapsHeadChecksAndMergeState(t *testing.T) {
+	started := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	got := controllers.NewSessionPRSummary(sessionsvc.PRSummary{
+		MergeStateStatus: "BEHIND",
+		Checks: []sessionsvc.PRCheck{
+			{Name: "unit", Workflow: "CI", Status: sessionsvc.PRCheckStateInProgress, Required: true, StartedAt: started, URL: "https://ci.example/unit"},
+			{Name: "lint", Status: sessionsvc.PRCheckStatePassed, Conclusion: "success"},
+		},
+	})
+	payload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		MergeStateStatus string           `json:"mergeStateStatus"`
+		Checks           []map[string]any `json:"checks"`
+	}
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.MergeStateStatus != "BEHIND" || len(wire.Checks) != 2 {
+		t.Fatalf("payload = %s", payload)
+	}
+	unit, lint := wire.Checks[0], wire.Checks[1]
+	if unit["name"] != "unit" || unit["workflow"] != "CI" || unit["status"] != "in_progress" || unit["required"] != true ||
+		unit["startedAt"] != "2026-10-26T10:00:00Z" || unit["url"] != "https://ci.example/unit" {
+		t.Fatalf("unit check = %v", unit)
+	}
+	if _, ok := unit["completedAt"]; ok {
+		t.Fatalf("unknown completedAt must be omitted: %v", unit)
+	}
+	if lint["required"] != false || lint["conclusion"] != "success" {
+		t.Fatalf("lint check = %v, want explicit required=false", lint)
+	}
+
+	empty, err := json.Marshal(controllers.NewSessionPRSummary(sessionsvc.PRSummary{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(empty), `"checks"`) || strings.Contains(string(empty), `"mergeStateStatus"`) {
+		t.Fatalf("absent checks and merge state must be omitted: %s", empty)
+	}
+}

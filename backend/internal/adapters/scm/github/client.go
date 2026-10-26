@@ -30,6 +30,9 @@ var (
 	ErrNotFound    = ports.ErrSCMNotFound
 	ErrAuthFailed  = errors.New("github scm: authentication failed")
 	ErrRateLimited = errors.New("github scm: rate limited")
+	// errGraphQLForbidden marks a GraphQL response rejecting a selected field
+	// the token may not read (GitHub error type FORBIDDEN).
+	errGraphQLForbidden = errors.New("github scm: graphql forbidden")
 )
 
 // RateLimitError carries the structured backoff hints from a rate-limit
@@ -321,6 +324,8 @@ func (c *Client) doGraphQL(ctx context.Context, query string, variables map[stri
 			return decoded.Data, fmt.Errorf("%w: %s", ErrAuthFailed, msg)
 		case strings.Contains(low, "could not resolve") || strings.Contains(low, "not found"):
 			return decoded.Data, fmt.Errorf("%w: %s", ErrNotFound, msg)
+		case strings.EqualFold(decoded.Errors[0].Type, "FORBIDDEN") || strings.Contains(low, "resource not accessible"):
+			return decoded.Data, fmt.Errorf("%w: %s", errGraphQLForbidden, msg)
 		default:
 			return decoded.Data, fmt.Errorf("github scm: graphql error: %s", msg)
 		}

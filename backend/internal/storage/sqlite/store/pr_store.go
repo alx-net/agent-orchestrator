@@ -776,6 +776,8 @@ func genCheckParams(prURL string, c domain.PullRequestCheck) gen.UpsertPRCheckPa
 		PRURL: prURL, Name: c.Name, CommitHash: c.CommitHash,
 		Status: status, URL: c.URL, LogTail: c.LogTail, CreatedAt: c.CreatedAt,
 		Conclusion: c.Conclusion, Details: c.Details,
+		IsRequired: boolInt(c.Required), StartedAt: nullTime(c.StartedAt), CompletedAt: nullTime(c.CompletedAt),
+		Workflow: c.Workflow, Description: c.Description,
 	}
 }
 
@@ -784,6 +786,8 @@ func checkRowFromGen(c gen.PRCheck) domain.PullRequestCheck {
 		Name: c.Name, CommitHash: c.CommitHash, Status: c.Status,
 		Conclusion: c.Conclusion, URL: c.URL, Details: c.Details,
 		LogTail: c.LogTail, CreatedAt: c.CreatedAt,
+		Required: c.IsRequired != 0, StartedAt: timeFromNull(c.StartedAt), CompletedAt: timeFromNull(c.CompletedAt),
+		Workflow: c.Workflow, Description: c.Description,
 	}
 }
 

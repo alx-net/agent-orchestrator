@@ -19234,6 +19234,47 @@ components:
       - failingChecks
       - autoInjectCI
       type: object
+    SessionPRCheck:
+      properties:
+        completedAt:
+          format: date-time
+          type: string
+        conclusion:
+          type: string
+        description:
+          type: string
+        name:
+          type: string
+        required:
+          description: Whether the provider requires this check to pass before the
+            pull request can merge.
+          type: boolean
+        startedAt:
+          format: date-time
+          type: string
+        status:
+          description: 'Merge-box state: queued and in_progress as observed; failed
+            for failure, timed_out, action_required, startup_failure or a failing
+            commit status; cancelled; skipped for skipped or stale; neutral for a
+            neutral conclusion or no pass/fail signal; otherwise passed.'
+          enum:
+          - queued
+          - in_progress
+          - passed
+          - failed
+          - cancelled
+          - skipped
+          - neutral
+          type: string
+        url:
+          type: string
+        workflow:
+          type: string
+      required:
+      - name
+      - status
+      - required
+      type: object
     SessionPRConflictFile:
       properties:
         path:
@@ -19445,6 +19486,13 @@ components:
           type: string
         changedFiles:
           type: integer
+        checks:
+          description: 'Every check on the current head commit: failing, then queued/in
+            progress, then skipped/neutral, then passed; required checks first within
+            each group, then by name.'
+          items:
+            $ref: '#/components/schemas/SessionPRCheck'
+          type: array
         ci:
           $ref: '#/components/schemas/SessionPRCISummary'
         ciObservedAt:
@@ -19460,6 +19508,10 @@ components:
         headSha:
           type: string
         htmlUrl:
+          type: string
+        mergeStateStatus:
+          description: Raw provider merge state, e.g. GitHub CLEAN, BLOCKED, BEHIND,
+            DIRTY, UNSTABLE, DRAFT, HAS_HOOKS or UNKNOWN.
           type: string
         mergeability:
           $ref: '#/components/schemas/SessionPRMergeabilitySummary'

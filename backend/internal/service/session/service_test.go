@@ -5521,11 +5521,155 @@ func TestListPRSummariesOnlyEmitsMergeReasonsForBlockedStates(t *testing.T) {
 	for _, pr := range got {
 		byNumber[pr.Number] = pr
 	}
-	if reasons := byNumber[11].Mergeability.Reasons; len(reasons) != 0 {
-		t.Fatalf("mergeable reasons = %+v", reasons)
+	// Behind-base comes from the raw provider state alone; the other blocking
+	// reasons still wait for a blocked mergeability state.
+	if reasons := byNumber[11].Mergeability.Reasons; !sameStrings(reasons, []string{"behind_base"}) {
+		t.Fatalf("mergeable reasons = %+v, want only behind_base", reasons)
 	}
 	if reasons := byNumber[12].Mergeability.Reasons; !containsString(reasons, "behind_base") || !containsString(reasons, "review_required") {
 		t.Fatalf("blocked reasons = %+v", reasons)
+	}
+}
+
+// GitHub's BEHIND leaves the normalized mergeability unknown. A PR that is
+// only out of date with its base must still report behind_base and expose the
+// raw merge state.
+func TestListPRSummariesReportsBehindBaseFromRawMergeState(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{
+		{URL: "behind", SessionID: "mer-1", Number: 21, CI: domain.CIPassing, Review: domain.ReviewApproved, Mergeability: domain.MergeUnknown, ProviderMergeable: "MERGEABLE", ProviderMergeStateStatus: "BEHIND", UpdatedAt: now},
+		{URL: "clean", SessionID: "mer-1", Number: 22, CI: domain.CIPassing, Mergeability: domain.MergeMergeable, ProviderMergeStateStatus: "CLEAN", UpdatedAt: now.Add(time.Minute)},
+		{URL: "merged", SessionID: "mer-1", Number: 23, Merged: true, Mergeability: domain.MergeUnknown, ProviderMergeStateStatus: "BEHIND", UpdatedAt: now.Add(2 * time.Minute)},
+	}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNumber := map[int]PRSummary{}
+	for _, pr := range got {
+		byNumber[pr.Number] = pr
+	}
+	if pr := byNumber[21]; !sameStrings(pr.Mergeability.Reasons, []string{"behind_base"}) || pr.MergeStateStatus != "BEHIND" {
+		t.Fatalf("behind PR reasons = %+v mergeStateStatus = %q", pr.Mergeability.Reasons, pr.MergeStateStatus)
+	}
+	if pr := byNumber[22]; len(pr.Mergeability.Reasons) != 0 || pr.MergeStateStatus != "CLEAN" {
+		t.Fatalf("clean PR reasons = %+v mergeStateStatus = %q", pr.Mergeability.Reasons, pr.MergeStateStatus)
+	}
+	if pr := byNumber[23]; len(pr.Mergeability.Reasons) != 0 {
+		t.Fatalf("merged PR reasons = %+v, want none", pr.Mergeability.Reasons)
+	}
+}
+
+func TestListPRSummariesListsCurrentHeadChecksInMergeBoxOrder(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/30"
+	noHeadURL := "https://github.com/acme/repo/pull/31"
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{
+		{URL: prURL, SessionID: "mer-1", Number: 30, HeadSHA: "HEAD1", CI: domain.CIFailing, ProviderMergeStateStatus: "BLOCKED", Mergeability: domain.MergeBlocked, UpdatedAt: now},
+		{URL: noHeadURL, SessionID: "mer-1", Number: 31, UpdatedAt: now.Add(time.Minute)},
+	}}
+	started := now.Add(-5 * time.Minute)
+	completed := now.Add(-time.Minute)
+	stList.checks[prURL] = []domain.PullRequestCheck{
+		{Name: "stale-fail", CommitHash: "old-head", Status: domain.PRCheckFailed, Conclusion: "failure"},
+		{Name: "lint", CommitHash: "head1", Status: domain.PRCheckPassed, Conclusion: "success"},
+		{Name: "build", CommitHash: "head1", Status: domain.PRCheckPassed, Conclusion: "success", Required: true},
+		{Name: "docs", CommitHash: "head1", Status: domain.PRCheckSkipped, Conclusion: "skipped"},
+		{Name: "format", CommitHash: "head1", Status: domain.PRCheckPassed, Conclusion: "neutral"},
+		{Name: "e2e", CommitHash: "head1", Status: domain.PRCheckInProgress},
+		{Name: "deploy", CommitHash: "head1", Status: domain.PRCheckQueued, Required: true},
+		{
+			Name: "unit", CommitHash: "head1", Status: domain.PRCheckFailed, Conclusion: "failure",
+			Workflow: "CI", URL: "https://ci.example/unit", StartedAt: started, CompletedAt: completed,
+		},
+		{Name: "smoke", CommitHash: "head1", Status: domain.PRCheckCancelled, Conclusion: "cancelled", Required: true},
+		{Name: "mystery", CommitHash: "head1", Status: domain.PRCheckUnknown},
+		{Name: "ci/legacy", CommitHash: "head1", Status: domain.PRCheckPassed, Conclusion: "success", Description: "All green"},
+	}
+	stList.checks[noHeadURL] = []domain.PullRequestCheck{{Name: "orphan", CommitHash: "x", Status: domain.PRCheckPassed}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNumber := map[int]PRSummary{}
+	for _, pr := range got {
+		byNumber[pr.Number] = pr
+	}
+	checks := byNumber[30].Checks
+	type nameState struct {
+		name  string
+		state PRCheckState
+	}
+	var gotOrder []nameState
+	for _, ch := range checks {
+		gotOrder = append(gotOrder, nameState{ch.Name, ch.Status})
+	}
+	wantOrder := []nameState{
+		{"smoke", PRCheckStateCancelled},
+		{"unit", PRCheckStateFailed},
+		{"deploy", PRCheckStateQueued},
+		{"e2e", PRCheckStateInProgress},
+		{"docs", PRCheckStateSkipped},
+		{"format", PRCheckStateNeutral},
+		{"mystery", PRCheckStateNeutral},
+		{"build", PRCheckStatePassed},
+		{"ci/legacy", PRCheckStatePassed},
+		{"lint", PRCheckStatePassed},
+	}
+	if fmt.Sprint(gotOrder) != fmt.Sprint(wantOrder) {
+		t.Fatalf("checks order =\n%v\nwant\n%v", gotOrder, wantOrder)
+	}
+	unit := checks[1]
+	if unit.Workflow != "CI" || unit.URL != "https://ci.example/unit" || unit.Conclusion != "failure" || unit.Required ||
+		!unit.StartedAt.Equal(started) || !unit.CompletedAt.Equal(completed) {
+		t.Fatalf("unit check = %+v", unit)
+	}
+	if !checks[0].Required || checks[8].Description != "All green" {
+		t.Fatalf("check details not carried: %+v", checks)
+	}
+	if byNumber[30].MergeStateStatus != "BLOCKED" {
+		t.Fatalf("mergeStateStatus = %q, want BLOCKED", byNumber[30].MergeStateStatus)
+	}
+	if byNumber[31].Checks != nil {
+		t.Fatalf("PR without a head SHA checks = %+v, want none", byNumber[31].Checks)
+	}
+}
+
+// Alias rows describe the same head; the primary (freshest) alias wins when
+// both recorded the same check name.
+func TestListPRSummariesPrefersPrimaryAliasCheckRows(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	oldURL := "https://github.com/old-owner/repo/pull/40"
+	newURL := "https://github.com/new-owner/repo/pull/40"
+	alias := func(url string, at time.Time) domain.PullRequest {
+		return domain.PullRequest{URL: url, SessionID: "mer-1", Number: 40, Provider: "github", Host: "github.com", SourceBranch: "feat", TargetBranch: "main", HeadSHA: "same-head", UpdatedAt: at}
+	}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{alias(oldURL, now), alias(newURL, now.Add(time.Minute))}}
+	stList.checks[oldURL] = []domain.PullRequestCheck{
+		{Name: "build", CommitHash: "same-head", Status: domain.PRCheckInProgress},
+		{Name: "old-only", CommitHash: "same-head", Status: domain.PRCheckPassed},
+	}
+	stList.checks[newURL] = []domain.PullRequestCheck{{Name: "build", CommitHash: "same-head", Status: domain.PRCheckPassed, Conclusion: "success"}}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Checks) != 2 {
+		t.Fatalf("summaries = %+v", got)
+	}
+	for _, ch := range got[0].Checks {
+		if ch.Name == "build" && ch.Status != PRCheckStatePassed {
+			t.Fatalf("build = %+v, want the primary alias row", ch)
+		}
 	}
 }
 

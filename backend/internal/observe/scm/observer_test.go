@@ -371,6 +371,24 @@ func TestDomainFromObservationPreservesStableIdentityAndAliases(t *testing.T) {
 	}
 }
 
+func TestDomainFromObservationCarriesCheckDetails(t *testing.T) {
+	obs := testObs(1)
+	started := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	completed := started.Add(3 * time.Minute)
+	obs.CI.Checks = []ports.SCMCheckObservation{{
+		Name: "unit", Status: string(domain.PRCheckPassed), Conclusion: "success", ProviderID: "99",
+		Workflow: "CI", Description: "ok", Required: true, StartedAt: started, CompletedAt: completed,
+	}}
+	_, checks, _, _, _ := domainFromObservation("p-1", domain.SessionRecord{}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v", checks)
+	}
+	got := checks[0]
+	if got.Workflow != "CI" || got.Description != "ok" || !got.Required || !got.StartedAt.Equal(started) || !got.CompletedAt.Equal(completed) || got.Details != "99" {
+		t.Fatalf("check row = %+v", got)
+	}
+}
+
 func knownPR(num int) domain.PullRequest {
 	obs := testObs(num)
 	pr, _, _, _, _ := domainFromObservation("p-1", domain.SessionRecord{AutoInjectReview: true}, obs, domain.PullRequest{}, persistenceOptions{}, time.Unix(1, 0).UTC())

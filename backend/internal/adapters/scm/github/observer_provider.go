@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -234,8 +235,20 @@ func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef)
 	if len(refs) > 25 {
 		return nil, fmt.Errorf("github scm: batch size %d exceeds 25", len(refs))
 	}
-	query, aliases := buildSCMBatchQuery(refs)
+	details := !p.checkDetailsUnavailable.Load()
+	query, aliases := buildSCMBatchQuery(refs, details)
 	data, err := p.client.doGraphQL(ctx, query, nil)
+	if err != nil && details && errors.Is(err, errGraphQLForbidden) {
+		// GitHub fails the whole batch when the token cannot read one selected
+		// field (a fine-grained token without Actions read cannot see workflow
+		// runs). Required flags and workflow names are display detail, so keep
+		// observing PRs with the base check selection from now on.
+		p.checkDetailsUnavailable.Store(true)
+		p.logger.Warn("github scm: check details not readable with this token; observing checks without required flags or workflow names", "err", err)
+		details = false
+		query, aliases = buildSCMBatchQuery(refs, details)
+		data, err = p.client.doGraphQL(ctx, query, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +268,7 @@ func (p *Provider) FetchPullRequests(ctx context.Context, refs []ports.SCMPRRef)
 			continue
 		}
 		if scmContextsPaginated(pr) {
-			if err := p.fetchRemainingCheckContexts(ctx, ref, pr); err != nil {
+			if err := p.fetchRemainingCheckContexts(ctx, ref, pr, details); err != nil {
 				return nil, err
 			}
 		}
@@ -377,7 +390,9 @@ func restListPullToSCM(pull restListPull) ports.SCMPRObservation {
 	}
 }
 
-func buildSCMBatchQuery(refs []ports.SCMPRRef) (string, []string) {
+// buildSCMBatchQuery inlines each PR's number into its alias, including the
+// per-check isRequired(pullRequestNumber:) argument, so no variables are needed.
+func buildSCMBatchQuery(refs []ports.SCMPRRef, details bool) (string, []string) {
 	aliases := make([]string, len(refs))
 	var b strings.Builder
 	b.WriteString("query{\n")
@@ -385,28 +400,44 @@ func buildSCMBatchQuery(refs []ports.SCMPRRef) (string, []string) {
 		alias := fmt.Sprintf("pr%d", i)
 		aliases[i] = alias
 		_, _ = fmt.Fprintf(&b, "%s: repository(owner:%s,name:%s){ pullRequest(number:%d){ %s } }\n",
-			alias, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmPRFields())
+			alias, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmPRFields(ref.Number, details))
 	}
 	b.WriteString("}")
 	return b.String(), aliases
 }
 
-func scmPRFields() string {
-	return strings.ReplaceAll(`
+func scmPRFields(prNumber int, details bool) string {
+	return `
 number id url state isDraft merged closed title additions deletions changedFiles
 mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
 createdAt updatedAt mergedAt closedAt
 author{ login avatarUrl }
 mergeCommit{ oid }
-commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:CONTEXT_LIMIT){ nodes{
-  __typename
-  ... on CheckRun { name status conclusion detailsUrl url databaseId }
-  ... on StatusContext { context state targetUrl }
+commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:` + strconv.Itoa(scmBatchCheckContextLimit) + `){ nodes{` +
+		scmCheckContextFields(prNumber, details) + `
 } pageInfo{ hasNextPage endCursor } } } } } }
-`, "CONTEXT_LIMIT", strconv.Itoa(scmBatchCheckContextLimit))
+`
 }
 
-func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SCMPRRef, pr map[string]any) error {
+// scmCheckContextFields selects one statusCheckRollup context node. With
+// details it adds the required flag for this PR, run times, the Actions
+// workflow name and a commit status description. These are scalar or nested
+// object fields, not connections, so they leave the query's node count and
+// rate-limit cost unchanged.
+func scmCheckContextFields(prNumber int, details bool) string {
+	if !details {
+		return `
+  __typename
+  ... on CheckRun { name status conclusion detailsUrl url databaseId }
+  ... on StatusContext { context state targetUrl }`
+	}
+	return fmt.Sprintf(`
+  __typename
+  ... on CheckRun { name status conclusion detailsUrl url databaseId startedAt completedAt isRequired(pullRequestNumber:%d) checkSuite{ workflowRun{ workflow{ name } } } }
+  ... on StatusContext { context state targetUrl createdAt description isRequired(pullRequestNumber:%d) }`, prNumber, prNumber)
+}
+
+func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SCMPRRef, pr map[string]any, details bool) error {
 	contexts := statusContexts(pr)
 	if contexts == nil {
 		return nil
@@ -416,7 +447,7 @@ func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SC
 		return fmt.Errorf("github scm: paginated check contexts for %s#%d missing end cursor", repoFullName(ref.Repo), ref.Number)
 	}
 	for {
-		query := buildCheckContextsQuery(ref, cursor)
+		query := buildCheckContextsQuery(ref, cursor, details)
 		data, err := p.client.doGraphQL(ctx, query, nil)
 		if err != nil {
 			return fmt.Errorf("github scm: fetch remaining check contexts for %s#%d: %w", repoFullName(ref.Repo), ref.Number, err)
@@ -442,16 +473,13 @@ func (p *Provider) fetchRemainingCheckContexts(ctx context.Context, ref ports.SC
 	return nil
 }
 
-func buildCheckContextsQuery(ref ports.SCMPRRef, cursor string) string {
+func buildCheckContextsQuery(ref ports.SCMPRRef, cursor string, details bool) string {
 	return fmt.Sprintf(`query{
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){
-  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:%d, after:%s){ nodes{
-    __typename
-    ... on CheckRun { name status conclusion detailsUrl url databaseId }
-    ... on StatusContext { context state targetUrl }
+  commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:%d, after:%s){ nodes{%s
   } pageInfo{ hasNextPage endCursor } } } } } }
 } }
-}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmBatchCheckContextLimit, graphQLString(cursor))
+}`, graphQLString(ref.Repo.Owner), graphQLString(ref.Repo.Name), ref.Number, scmBatchCheckContextLimit, graphQLString(cursor), scmCheckContextFields(ref.Number, details))
 }
 
 func statusContexts(pr map[string]any) map[string]any {
@@ -575,11 +603,25 @@ func scmChecksFromGraphQL(pr map[string]any) []ports.SCMCheckObservation {
 			if id := int64(num(n["databaseId"])); id > 0 {
 				ch.ProviderID = strconv.FormatInt(id, 10)
 			}
+			ch.Workflow = checkRunWorkflowName(n)
+			ch.Required = boolv(n["isRequired"])
+			ch.StartedAt = parseGitHubTime(str(n["startedAt"]))
+			ch.CompletedAt = parseGitHubTime(str(n["completedAt"]))
 		case "StatusContext":
 			ch.Name = str(n["context"])
 			ch.Status = string(checkStatusFromGraphQL(n))
 			ch.Conclusion = strings.ToLower(str(n["state"]))
 			ch.URL = str(n["targetUrl"])
+			ch.Description = str(n["description"])
+			ch.Required = boolv(n["isRequired"])
+			// A commit status carries only the time its latest state was
+			// posted: the start of a pending status, the end of a final one.
+			at := parseGitHubTime(str(n["createdAt"]))
+			if domain.PRCheckStatus(ch.Status) == domain.PRCheckInProgress {
+				ch.StartedAt = at
+			} else {
+				ch.CompletedAt = at
+			}
 		default:
 			continue
 		}
@@ -589,6 +631,15 @@ func scmChecksFromGraphQL(pr map[string]any) []ports.SCMCheckObservation {
 		out = append(out, ch)
 	}
 	return out
+}
+
+// checkRunWorkflowName returns the GitHub Actions workflow that produced a
+// check run; empty for checks from other apps.
+func checkRunWorkflowName(n map[string]any) string {
+	suite, _ := n["checkSuite"].(map[string]any)
+	run, _ := suite["workflowRun"].(map[string]any)
+	workflow, _ := run["workflow"].(map[string]any)
+	return str(workflow["name"])
 }
 
 func failedSCMChecks(checks []ports.SCMCheckObservation) []ports.SCMCheckObservation {

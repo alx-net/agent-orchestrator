@@ -1843,6 +1843,54 @@ func TestWriteSCMObservationPersistsMetadataChecksReviewsAndComments(t *testing.
 	}
 }
 
+// Check details are provider facts: a later observation of the same check row
+// must refresh them, and created_at keeps the first-seen time.
+func TestUpsertPRCheckRefreshesCheckDetails(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
+	firstSeen := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	started := firstSeen.Add(time.Minute)
+	pr := domain.PullRequest{URL: "https://github.com/o/r/pull/2", SessionID: r.ID, Number: 2, HeadSHA: "h1", UpdatedAt: firstSeen}
+
+	running := domain.PullRequestCheck{
+		Name: "test", CommitHash: "h1", Status: domain.PRCheckInProgress, CreatedAt: firstSeen,
+		Workflow: "CI", Description: "Running", StartedAt: started,
+	}
+	if err := s.WriteSCMObservation(ctx, pr, []domain.PullRequestCheck{running}, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListChecks(ctx, pr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Workflow != "CI" || got[0].Description != "Running" || got[0].Required ||
+		!got[0].StartedAt.Equal(started) || !got[0].CompletedAt.IsZero() {
+		t.Fatalf("first check observation = %+v", got)
+	}
+
+	completed := started.Add(4 * time.Minute)
+	done := running
+	done.Status = domain.PRCheckPassed
+	done.Conclusion = "success"
+	done.Description = "Passed"
+	done.Required = true
+	done.CompletedAt = completed
+	done.CreatedAt = completed
+	if err := s.WriteSCMObservation(ctx, pr, []domain.PullRequestCheck{done}, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ListChecks(ctx, pr.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Status != domain.PRCheckPassed || !got[0].Required || got[0].Description != "Passed" ||
+		!got[0].StartedAt.Equal(started) || !got[0].CompletedAt.Equal(completed) || !got[0].CreatedAt.Equal(firstSeen) {
+		t.Fatalf("refreshed check observation = %+v", got)
+	}
+}
+
 func TestUpsertPRReviewUpdatesBody(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
