@@ -450,7 +450,7 @@ const MainAgentCardView = memo(function MainAgentCardView({
 						</span>
 					) : null}
 					{decision ? (
-						<span className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug text-foreground" data-testid="main-agent-decision">
+						<span className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug text-foreground" data-testid="main-agent-decision">
 							<span className="mr-1.5 text-2xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
 							{decision.text}
 						</span>
@@ -757,8 +757,12 @@ function NotesTimeline({
 						}
 						const { note } = entry;
 						return (
-							<li className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-xs leading-snug" data-note-kind={note.kind} key={`note:${index}`}>
-								<time className="pt-px text-2xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
+							<li
+								className={cn("grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 leading-snug", note.kind === "decision" ? "text-sm" : "text-xs")}
+								data-note-kind={note.kind}
+								key={`note:${index}`}
+							>
+								<time className="text-2xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
 								<span className={cn("min-w-0 break-words", note.kind === "decision" ? "font-medium text-foreground" : "text-muted-foreground")}>
 									<span className={note.kind === "decision" ? "mr-1.5 text-2xs font-normal text-muted-foreground" : "sr-only"}>
 										{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
