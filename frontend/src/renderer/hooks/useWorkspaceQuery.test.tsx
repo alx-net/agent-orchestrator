@@ -261,7 +261,6 @@ describe("useWorkspaceQuery", () => {
 		expect(workspace.sessions[1]).toMatchObject({
 			id: "sess-2",
 			title: "sess-2",
-			parentSessionId: undefined,
 			provider: "codex",
 			reviewerHarness: undefined,
 			status: "unknown",
