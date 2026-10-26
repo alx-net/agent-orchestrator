@@ -91,12 +91,11 @@ func (f *citationFormatter) observeItem(threadID, turnID string, item codexproto
 	key := citationTurnKey{threadID: threadID, turnID: turnID}
 	if f.sources[key] == nil {
 		f.sources[key] = make(map[string]citation.Source)
-		turns := append(f.turns[threadID], turnID)
-		if len(turns) > citationTurnsPerThread {
+		f.turns[threadID] = append(f.turns[threadID], turnID)
+		if turns := f.turns[threadID]; len(turns) > citationTurnsPerThread {
 			delete(f.sources, citationTurnKey{threadID: threadID, turnID: turns[0]})
-			turns = turns[1:]
+			f.turns[threadID] = turns[1:]
 		}
-		f.turns[threadID] = turns
 	}
 	for _, raw := range item.Results {
 		var result struct {
