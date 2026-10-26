@@ -100,6 +100,11 @@ func (s FallbackTokenSource) InvalidateToken() {
 
 const defaultGHTokenCacheTTL = 5 * time.Minute
 
+// ghAuthTokenTimeout bounds `gh auth token`. Token holds its mutex across the
+// call and the poll ctx carries no deadline, so a wedged gh would otherwise
+// stall every GitHub request behind it.
+const ghAuthTokenTimeout = 10 * time.Second
+
 // GHTokenSource shells out to `gh auth token` when env vars are not
 // configured. It memoizes the result for TokenTTL so we don't fork-exec on
 // every request, but the Client invalidates the cache on auth failures so a
@@ -170,6 +175,8 @@ func (s *GHTokenSource) ttl() time.Duration {
 }
 
 func ghAuthToken(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghAuthTokenTimeout)
+	defer cancel()
 	out, err := aoprocess.CommandContext(ctx, "gh", "auth", "token").Output()
 	if err != nil {
 		return "", err

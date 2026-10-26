@@ -40,6 +40,9 @@ const (
 	maxBufferedPartialBytes = 16 * 1024
 	failedStatusRetention   = 5 * time.Minute
 	processRegistryFile     = "preview-processes.json"
+	// previewWaitDelay bounds cmd.Wait after the preview process exits: a
+	// grandchild still holding the log pipe must not hang the waiter forever.
+	previewWaitDelay = 5 * time.Second
 )
 
 // State is the lifecycle state of a managed preview process.
@@ -283,6 +286,7 @@ func (m *Manager) Start(
 	logs := newLineBuffer(maxBufferedLogLines)
 	cmd.Stdout = logs
 	cmd.Stderr = logs
+	cmd.WaitDelay = previewWaitDelay
 
 	run := &serverRun{
 		projectEnv: agentlaunch.MergeEnv(projectEnv, nil),

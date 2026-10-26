@@ -316,10 +316,10 @@ func (b *Broker) serveConn(ctx context.Context, conn net.Conn) {
 		go b.runLiveness(ctx, conn)
 	}
 
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
+	// ctx is the long-lived Serve context; release the watcher when this
+	// connection ends so replaced runtimes do not leak one callback each.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	for scanner.Scan() {
 		var msg wireMessage

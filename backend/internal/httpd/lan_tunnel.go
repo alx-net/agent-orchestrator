@@ -19,6 +19,14 @@ import (
 // request inside it, exactly as if it had arrived directly.
 const lanTunnelPath = "/api/v1/tunnel"
 
+// Inner HTTP/2 server liveness: an idle tunnel is closed, and a quiet one is
+// pinged and dropped when the ping goes unanswered.
+const (
+	lanTunnelIdleTimeout  = 5 * time.Minute
+	lanTunnelPingInterval = 30 * time.Second
+	lanTunnelPingTimeout  = 15 * time.Second
+)
+
 func (m *LANManager) serveTunnel(w http.ResponseWriter, r *http.Request) {
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
@@ -49,7 +57,16 @@ func (m *LANManager) serveTunnel(w http.ResponseWriter, r *http.Request) {
 			m.handler.ServeHTTP(w, r)
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return base },
+		// A phone that vanishes leaves the tunnel half-open (behind cloudflared
+		// the TCP side stays healthy), so neither end ever reads EOF. Close a
+		// tunnel with no open streams, and ping a quiet one so a dead peer is
+		// detected even while a long-lived stream keeps it from going idle.
+		IdleTimeout: lanTunnelIdleTimeout,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: lanTunnelPingInterval,
+			PingTimeout:     lanTunnelPingTimeout,
+		},
+		BaseContext: func(net.Listener) context.Context { return base },
 	}
 	srv.Protocols = new(http.Protocols)
 	srv.Protocols.SetUnencryptedHTTP2(true)

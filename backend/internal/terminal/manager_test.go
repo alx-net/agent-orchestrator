@@ -582,6 +582,30 @@ func TestLastInputAtReadsWithoutBlockingInput(t *testing.T) {
 	}
 }
 
+func TestLastInputAtDroppedWhenLastViewerLeaves(t *testing.T) {
+	pty := newFakePTY()
+	mgr := NewManager(&fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{pty}}}, nil, testLogger(), WithHeartbeat(0))
+	defer mgr.Close()
+
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgOpen}
+	recv(t, conn, chTerminal, msgOpened, time.Second)
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("x"))}
+	eventually(t, time.Second, func() bool { return !mgr.LastInputAt("t1").IsZero() })
+
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgClose}
+	eventually(t, time.Second, func() bool {
+		mgr.inputMu.Lock()
+		defer mgr.inputMu.Unlock()
+		_, ok := mgr.lastInputAt["t1"]
+		return !ok
+	})
+}
+
 // nextTerminal returns the next frame on conn.out (no skipping), so callers can
 // assert frame ordering rather than just presence.
 func nextTerminal(t *testing.T, c *fakeConn) serverMsg {

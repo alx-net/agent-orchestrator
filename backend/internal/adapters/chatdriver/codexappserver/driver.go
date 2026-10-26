@@ -760,7 +760,9 @@ func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*pr
 			// Closing stdin is the graceful shutdown; kill only if it lingers.
 			_ = stdin.Close()
 			done := make(chan struct{})
-			go func() { _, _ = cmd.Process.Wait(); close(done) }()
+			// cmd.Wait (not Process.Wait) also closes the stdio pipes; nothing
+			// else waits on cmd, and stop runs at most once.
+			go func() { _ = cmd.Wait(); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):

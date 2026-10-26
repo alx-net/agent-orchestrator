@@ -397,6 +397,10 @@ func (m *Manager) leaveTerminal(id string, c *connState) {
 	delete(s.members, c)
 	if len(s.members) == 0 {
 		delete(m.shared, id)
+		// Lock order sharedMu -> inputMu; inputMu is never held across sharedMu.
+		m.inputMu.Lock()
+		delete(m.lastInputAt, id)
+		m.inputMu.Unlock()
 		return
 	}
 	m.reconcileLocked(id, s, false)

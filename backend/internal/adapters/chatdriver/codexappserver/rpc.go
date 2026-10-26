@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -206,7 +207,9 @@ func (c *conn) readLoop(r io.Reader) {
 	for {
 		line, err := readFrame(br)
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			// os.ErrClosed is cmd.Wait closing stdout after a deliberate stop:
+			// a clean end, not a read failure.
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 				c.readErr = err
 			}
 			return

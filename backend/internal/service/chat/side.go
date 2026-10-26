@@ -335,7 +335,14 @@ func (s *Service) WatchSideChat(ctx context.Context, session domain.SessionID, s
 	}
 	s.sides.subscribers[sideID][ch] = struct{}{}
 	s.sides.mu.Unlock()
-	cancel := func() { s.sides.mu.Lock(); delete(s.sides.subscribers[sideID], ch); s.sides.mu.Unlock() }
+	cancel := func() {
+		s.sides.mu.Lock()
+		defer s.sides.mu.Unlock()
+		delete(s.sides.subscribers[sideID], ch)
+		if len(s.sides.subscribers[sideID]) == 0 {
+			delete(s.sides.subscribers, sideID)
+		}
+	}
 	return side.Generation, ch, cancel, nil
 }
 
