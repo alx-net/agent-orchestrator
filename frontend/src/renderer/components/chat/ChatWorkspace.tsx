@@ -157,6 +157,7 @@ import { SessionStartup } from "./SessionStartup";
 import { ActivityRun } from "./ActivityRun";
 import { SubagentBoard } from "./SubagentBoard";
 import { activeSubagentCount, subagentAskPrefix, useSubagentBoard, type SubagentCard } from "../../lib/subagent-board";
+import { useAgentBoardControls } from "../../hooks/useAgentBoardControls";
 import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
@@ -1657,6 +1658,20 @@ function ChatWorkspaceContent({
 		if (composer.isEmpty()) composer.setDraft(subagentAskPrefix(card.title ?? t("subagents.untitled")));
 		else composer.focus();
 	}, [t]);
+	// Stepping in from a card: a steer straight into the running main turn, or a
+	// message to one subagent's inbox. Subagents are reached through the daemon
+	// that runs them, which a cloud session does not have.
+	const boardControls = useAgentBoardControls({
+		sessionId: session && !session.cloud ? session.id : undefined,
+		hostId: activeRemoteHostId,
+		steer: onSteer && turn?.state === "running" ? steer : undefined,
+		cards: subagentCards,
+		mainSent: mainAgent.sent,
+	});
+	const subagentBoardControls = useMemo(
+		() => newWorkDisabled || openingStarting ? { states: boardControls.states } : boardControls,
+		[boardControls, newWorkDisabled, openingStarting],
+	);
 	const [emptyChatPlaceholder] = useState(
 		() => sessionRole === "orchestrator"
 			? "Ask anything about this project"
@@ -1950,6 +1965,7 @@ function ChatWorkspaceContent({
 									<SubagentBoard
 										activeTurnId={turn?.state === "running" ? turn.id : undefined}
 										cards={subagentCards}
+										controls={subagentBoardControls}
 										main={mainAgent}
 										mode={snapshot.mode}
 										onAskMainAgent={askAboutSubagent}

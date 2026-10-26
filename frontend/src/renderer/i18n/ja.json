@@ -3516,5 +3516,19 @@
 	"subagents.task": "タスク",
 	"subagents.report": "最終レポート",
 	"subagents.failure": "エラー",
-	"subagents.untitled": "サブエージェント"
+	"subagents.untitled": "サブエージェント",
+	"subagents.message": "サブエージェントにメッセージ",
+	"subagents.steerMain": "メインエージェントに指示",
+	"subagents.messagePlaceholder": "変えてほしいことを伝える",
+	"subagents.send": "送信",
+	"subagents.stopSubagent": "サブエージェントを停止",
+	"subagents.stopSubagentHint": "このサブエージェントだけを停止します。メインエージェントは続行します",
+	"subagents.stopping": "停止中…",
+	"subagents.you": "あなた:",
+	"subagents.sent.sending": "送信中…",
+	"subagents.sent.queued": "次のステップを待っています",
+	"subagents.sent.delivered": "届きました",
+	"subagents.sent.dropped": "未配信 — 先に完了しました",
+	"subagents.error.finished": "このサブエージェントはすでに完了しています",
+	"subagents.error.failed": "送信できませんでした。もう一度お試しください。"
 }

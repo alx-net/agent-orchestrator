@@ -3583,5 +3583,19 @@
 	"subagents.task": "Tâche",
 	"subagents.report": "Rapport final",
 	"subagents.failure": "Erreur",
-	"subagents.untitled": "Sous-agent"
+	"subagents.untitled": "Sous-agent",
+	"subagents.message": "Écrire au sous-agent",
+	"subagents.steerMain": "Guider l’agent principal",
+	"subagents.messagePlaceholder": "Dites-lui quoi changer",
+	"subagents.send": "Envoyer",
+	"subagents.stopSubagent": "Arrêter le sous-agent",
+	"subagents.stopSubagentHint": "Arrête seulement ce sous-agent ; l’agent principal continue",
+	"subagents.stopping": "Arrêt en cours…",
+	"subagents.you": "Vous :",
+	"subagents.sent.sending": "envoi…",
+	"subagents.sent.queued": "en attente de sa prochaine étape",
+	"subagents.sent.delivered": "remis",
+	"subagents.sent.dropped": "non remis : il a terminé avant",
+	"subagents.error.finished": "Ce sous-agent a déjà terminé",
+	"subagents.error.failed": "L’envoi a échoué. Réessayez."
 }

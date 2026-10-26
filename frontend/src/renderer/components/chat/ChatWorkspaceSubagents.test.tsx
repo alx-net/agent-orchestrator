@@ -7,6 +7,14 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+
+const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+
+vi.mock("../../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../../lib/api-client")>(),
+	apiClient: { POST: postMock },
+}));
+
 import { ChatWorkspace } from "./ChatWorkspace";
 import { chatFixture } from "../../lib/chat-fixture";
 import { lexicalEditorText } from "../../test/lexical";
@@ -126,9 +134,10 @@ describe("ChatWorkspace agents board", () => {
 		);
 	});
 
-	it("starts a draft about the subagent and stops the main turn from a card", async () => {
+	it("starts a draft about the subagent, stops only it from its card, and stops the turn from the main card", async () => {
 		const user = userEvent.setup();
 		const onInterrupt = vi.fn();
+		postMock.mockResolvedValueOnce({ data: { ok: true }, error: undefined, response: { status: 202 } });
 		render(<ChatWorkspace snapshot={withSubagent()} session={session} onInterrupt={onInterrupt} />);
 		await user.click(screen.getByRole("tab", { name: /Agents/ }));
 		const board = screen.getByTestId("chat-subagents-panel");
@@ -138,9 +147,43 @@ describe("ChatWorkspace agents board", () => {
 		const field = screen.getByLabelText("Message the agent");
 		await waitFor(() => expect(lexicalEditorText(field)).toBe('About the subagent "Audit the auth flow": '));
 
-		await user.click(within(subagent).getByRole("button", { name: "Stop turn" }));
-		expect(onInterrupt).toHaveBeenCalledTimes(1);
+		// A subagent's own stop leaves the main turn running.
+		expect(within(subagent).queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+		await user.click(within(subagent).getByRole("button", { name: "Stop subagent" }));
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/stop", {
+			params: { path: { sessionId: session.id, toolUseId: "agent-1" } },
+		});
+		expect(onInterrupt).not.toHaveBeenCalled();
 		await user.click(within(within(board).getByRole("article", { name: "Main agent" })).getByRole("button", { name: "Stop turn" }));
-		expect(onInterrupt).toHaveBeenCalledTimes(2);
+		expect(onInterrupt).toHaveBeenCalledTimes(1);
+	});
+
+	it("steers the running main turn from the main card instead of queueing behind it", async () => {
+		const user = userEvent.setup();
+		const onSteer = vi.fn(async () => ({ status: "accepted" as const }));
+		const onSend = vi.fn();
+		render(<ChatWorkspace snapshot={withSubagent()} session={session} onSend={onSend} onSteer={onSteer} />);
+		await user.click(screen.getByRole("tab", { name: /Agents/ }));
+		const main = within(screen.getByTestId("chat-subagents-panel")).getByRole("article", { name: "Main agent" });
+
+		await user.click(within(main).getByRole("button", { name: "Steer main agent" }));
+		await user.type(within(main).getByRole("textbox", { name: "Steer main agent" }), "Keep the v1 route{Enter}");
+		expect(onSteer).toHaveBeenCalledWith("Keep the v1 route", undefined, expect.any(String), undefined);
+		expect(onSend).not.toHaveBeenCalled();
+		// Beside the fixture's own earlier steers into this turn.
+		await waitFor(() => expect(
+			within(main).getAllByTestId("sent-message").find((row) => row.textContent?.includes("Keep the v1 route")),
+		).toHaveTextContent("Keep the v1 route· delivered"));
+	});
+
+	it("offers no subagent stop or message for a cloud session, which keeps stopping the turn", async () => {
+		const user = userEvent.setup();
+		const cloud: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		render(<ChatWorkspace snapshot={withSubagent()} session={cloud} onInterrupt={vi.fn()} />);
+		await user.click(screen.getByRole("tab", { name: /Agents/ }));
+		const subagent = within(screen.getByTestId("chat-subagents-panel")).getByRole("article", { name: "Audit the auth flow" });
+		expect(within(subagent).queryByRole("button", { name: "Stop subagent" })).not.toBeInTheDocument();
+		expect(within(subagent).queryByRole("button", { name: "Message subagent" })).not.toBeInTheDocument();
+		expect(within(subagent).getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
 	});
 });

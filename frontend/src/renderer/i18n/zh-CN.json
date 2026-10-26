@@ -3498,5 +3498,19 @@
 	"subagents.task": "任务",
 	"subagents.report": "最终报告",
 	"subagents.failure": "错误",
-	"subagents.untitled": "子代理"
+	"subagents.untitled": "子代理",
+	"subagents.message": "给子代理发消息",
+	"subagents.steerMain": "引导主代理",
+	"subagents.messagePlaceholder": "告诉它要改什么",
+	"subagents.send": "发送",
+	"subagents.stopSubagent": "停止子代理",
+	"subagents.stopSubagentHint": "只停止这个子代理；主代理继续运行",
+	"subagents.stopping": "正在停止…",
+	"subagents.you": "你：",
+	"subagents.sent.sending": "发送中…",
+	"subagents.sent.queued": "等待它的下一步",
+	"subagents.sent.delivered": "已送达",
+	"subagents.sent.dropped": "未送达——它已先完成",
+	"subagents.error.finished": "这个子代理已经完成",
+	"subagents.error.failed": "没有发送成功，请重试。"
 }

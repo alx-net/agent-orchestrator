@@ -315,8 +315,25 @@ export interface CommandDetail {
 	progressAt?: number;
 	lastToolName?: string;
 	progressToolUses?: number;
+	/**
+	 * Messages a person sent to this subagent from the agents board, on its
+	 * Agent/Task row. A subagent reads them at its next tool call; one that finishes
+	 * first drops them.
+	 */
+	subagentInbox?: SubagentInboxEntry[];
 	terminalId?: string;
 	signal?: string;
+}
+
+/** One message in a subagent's inbox, as the daemon reports its delivery. */
+export interface SubagentInboxEntry {
+	id: string;
+	text: string;
+	state: "queued" | "delivered" | "dropped";
+	/** When it was sent, unix milliseconds. */
+	at: number;
+	/** When the subagent picked it up, unix milliseconds. */
+	deliveredAt?: number;
 }
 
 /** ACP form/URL elicitation projected into a durable AO activity. */

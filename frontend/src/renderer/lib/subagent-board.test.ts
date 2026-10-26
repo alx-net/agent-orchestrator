@@ -10,11 +10,15 @@ import type {
 } from "../types/conversation";
 import {
 	activeSubagentCount,
+	boardTimeline,
 	createSubagentBoardDeriver,
 	parseSubagentNoteLine,
 	subagentAskPrefix,
 	subagentLanes,
+	withPendingMessages,
+	withStopRequests,
 	type MainAgentSummary,
+	type SentMessage,
 	type SubagentCard,
 } from "./subagent-board";
 
@@ -462,6 +466,100 @@ describe("subagentLanes", () => {
 		expect(lanes.working.map((card) => card.id)).toEqual(["b", "e"]);
 		expect(lanes.needs_you.map((card) => card.id)).toEqual(["d"]);
 		expect(lanes.done.map((card) => card.id)).toEqual(["c", "a"]);
+	});
+});
+
+describe("messages sent from the board", () => {
+	const at = (second: number) => `2026-10-26T10:00:${String(second).padStart(2, "0")}.000Z`;
+	const sent = (id: string, second: number, state: SentMessage["state"] = "queued"): SentMessage => ({ id, text: id, state, at: at(second) });
+
+	it("reads the subagent's inbox from its Agent row, skipping entries it cannot show", () => {
+		const deriver = createSubagentBoardDeriver();
+		const turns = [turn()];
+		const sentAt = Date.parse(at(30));
+		const card = deriver.derive([parent({}, {
+			subagentInbox: [
+				{ id: "m-1", text: "Use the v2 client", state: "queued", at: sentAt },
+				{ id: "m-2", text: "Skip OAuth", state: "delivered", at: sentAt / 1000, deliveredAt: sentAt + 2000 },
+				{ id: "m-3", text: "Too late", state: "dropped", at: sentAt },
+				{ id: "", text: "no id", state: "queued", at: sentAt },
+				{ id: "m-4", text: "unknown state", state: "lost", at: sentAt },
+				"not an entry",
+			],
+		})], turns).cards[0]!;
+		expect(card.inbox).toEqual([
+			{ id: "m-1", text: "Use the v2 client", state: "queued", at: at(30) },
+			{ id: "m-2", text: "Skip OAuth", state: "delivered", at: at(30) },
+			{ id: "m-3", text: "Too late", state: "dropped", at: at(30) },
+		]);
+		// A delivery moves the card on even when the row's revision did not.
+		const delivered = deriver.derive([parent({}, {
+			subagentInbox: [{ id: "m-1", text: "Use the v2 client", state: "delivered", at: sentAt }],
+		})], turns).cards[0]!;
+		expect(delivered).not.toBe(card);
+		expect(delivered.inbox.map((message) => message.state)).toEqual(["delivered"]);
+		expect(derive([parent()])[0]!.inbox).toEqual([]);
+	});
+
+	it("lists the person's own steers into the running turn as delivered", () => {
+		const steer = (id: string, detail: Record<string, unknown>, turnId = "turn-1") => activity({
+			id,
+			turnId,
+			activityKind: "system",
+			status: "completed",
+			summary: "Steer",
+			detail: { event: "steer", text: `guidance ${id}`, ...detail } as ConversationActivity["detail"],
+		});
+		const own = steer("s1", { clientMessageId: "client-1" });
+		const main = mainOf([
+			own,
+			steer("s2", {}),
+			steer("s3", { senderSessionId: "ao-7" }),
+			steer("s4", { origin: "automation" }),
+			steer("s5", {}, "turn-0"),
+		]);
+		expect(main.sent).toEqual([
+			{ id: "client-1", text: "guidance s1", state: "delivered", at: own.createdAt },
+			expect.objectContaining({ id: "s2", text: "guidance s2" }),
+		]);
+	});
+
+	it("shows a send once the conversation echoes it, matched by id", () => {
+		const echoed = [sent("m-1", 5, "delivered")];
+		expect(withPendingMessages(echoed, [])).toBe(echoed);
+		expect(withPendingMessages(echoed, [sent("m-1", 5)])).toBe(echoed);
+		expect(withPendingMessages(echoed, [sent("m-1", 5), sent("local:2", 6)]).map((message) => message.id)).toEqual(["m-1", "local:2"]);
+	});
+
+	it("places sent messages after the lines whose block started before them", () => {
+		const notes = [
+			{ kind: "status" as const, text: "first block", at: at(1) },
+			{ kind: "decision" as const, text: "first block too", at: at(1) },
+			{ kind: "status" as const, text: "second block", at: at(9) },
+		];
+		const entries = boardTimeline(notes, [sent("late", 12), sent("early", 4), sent("same", 9)]);
+		expect(entries.map((entry) => entry.kind === "note" ? entry.note.text : entry.message.id)).toEqual([
+			"first block",
+			"first block too",
+			"early",
+			"second block",
+			"same",
+			"late",
+		]);
+		expect(boardTimeline([], [sent("only", 3)]).map((entry) => entry.kind)).toEqual(["sent"]);
+	});
+
+	it("settles a subagent the person stopped as stopped, leaving the rest alone", () => {
+		const live = { id: "a", providerItemId: "toolu-a", lane: "working", outcome: "working" } as SubagentCard;
+		const finished = { id: "b", providerItemId: "toolu-b", lane: "done", outcome: "completed" } as SubagentCard;
+		const failed = { id: "c", providerItemId: "toolu-c", lane: "done", outcome: "failed" } as SubagentCard;
+		const cards = [live, finished, failed];
+		expect(withStopRequests(cards, new Set())).toBe(cards);
+		expect(withStopRequests(cards, new Set(["toolu-a"]))).toBe(cards);
+		const result = withStopRequests(cards, new Set(["toolu-a", "toolu-b"]));
+		expect(result.map((card) => card.outcome)).toEqual(["working", "stopped", "failed"]);
+		expect(result[0]).toBe(live);
+		expect(result[2]).toBe(failed);
 	});
 });
 

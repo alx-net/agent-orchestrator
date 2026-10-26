@@ -66,7 +66,30 @@ export interface SubagentCard {
 	prompt?: string;
 	/** The subagent's final report when it completed, or its error when it failed. */
 	finalReport?: string;
+	/** What the person sent it from the board, as its inbox reports their delivery. */
+	inbox: SentMessage[];
 }
+
+/**
+ * Where a message sent from the board stands. A subagent reads its inbox at its
+ * next tool call, so a message waits until then and is dropped if it finishes
+ * first; a steer reaches the main turn once the daemon accepts it.
+ */
+export type SentMessageState = "sending" | "queued" | "delivered" | "dropped";
+
+/** A message the person sent from the board, shown among the card's updates. */
+export interface SentMessage {
+	/** The inbox entry's id for a subagent, the steer's client message id for the main agent. */
+	id: string;
+	text: string;
+	state: SentMessageState;
+	at: string;
+}
+
+/** One row of a card's updates: a line the agent wrote, or a message the person sent. */
+export type BoardTimelineEntry =
+	| { kind: "note"; note: SubagentNote }
+	| { kind: "sent"; message: SentMessage };
 
 export interface SubagentLanes {
 	working: SubagentCard[];
@@ -93,6 +116,8 @@ export interface MainAgentSummary {
 	 */
 	notes: SubagentNote[];
 	decisions: SubagentNote[];
+	/** What the person steered the running turn with. */
+	sent: SentMessage[];
 }
 
 export interface SubagentBoardModel {
@@ -265,6 +290,50 @@ function interactionLabel(activity: ConversationActivity): string | undefined {
 	return text(activity.summary) ?? text(activity.detail?.message);
 }
 
+/** Guidance a person typed into the running turn, not a steer from another AO session. */
+function isHumanSteer(activity: ConversationActivity): boolean {
+	const detail = activity.detail;
+	return detail?.event === "steer" && !detail.senderSessionId && (detail.origin ?? "human") === "human";
+}
+
+function steerMessage(activity: ConversationActivity): SentMessage {
+	return {
+		id: activity.detail?.clientMessageId ?? activity.id,
+		text: activity.detail?.text ?? activity.summary,
+		state: "delivered",
+		at: activity.createdAt,
+	};
+}
+
+const INBOX_STATES: ReadonlySet<unknown> = new Set(["queued", "delivered", "dropped"]);
+
+/** The subagent's inbox from its Agent/Task row, skipping any entry it cannot show. */
+function inboxOf(value: unknown, fallbackAt: string): SentMessage[] {
+	if (!Array.isArray(value)) return [];
+	const messages: SentMessage[] = [];
+	for (const entry of value) {
+		const row = record(entry);
+		if (!row || typeof row.id !== "string" || !row.id || typeof row.text !== "string" || !INBOX_STATES.has(row.state)) continue;
+		const ms = unixMs(row.at);
+		messages.push({
+			id: row.id,
+			text: row.text,
+			state: row.state as SentMessageState,
+			at: ms === undefined ? fallbackAt : new Date(ms).toISOString(),
+		});
+	}
+	return messages;
+}
+
+/** Changes whenever an inbox entry arrives or moves on, for the card cache. */
+function inboxSignature(value: unknown): string {
+	if (!Array.isArray(value)) return "";
+	return value.map((entry) => {
+		const row = record(entry);
+		return `${String(row?.id)}:${String(row?.state)}`;
+	}).join(",");
+}
+
 const LIVE: ReadonlySet<string> = new Set(["running", "pending"]);
 // What Claude Code's Agent tool answers for a run_in_background launch.
 const LAUNCH_NOTICE = /^\s*async agent launched/i;
@@ -312,6 +381,8 @@ interface MainInputs {
 	planRow?: ConversationActivity;
 	/** The time of the turn's newest row. */
 	newestMs: number;
+	/** The person's own steers into the turn. */
+	steers: readonly ConversationActivity[];
 }
 
 interface MessageParse {
@@ -424,8 +495,9 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : "idle";
 		const startedAt = running ? turn.startedAt ?? turn.requestedAt : undefined;
 		if (!blocked) blockedOn = undefined;
+		const steersKey = inputs.steers.map((steer) => `${steer.id}:${steer.revision}`).join(",");
 		// Unchanged inputs keep the summary's identity, so the memoized card skips the render.
-		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key].join("\u0000");
+		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key, steersKey].join("\u0000");
 		if (main?.key === key) return main.summary;
 		const summary: MainAgentSummary = {
 			state,
@@ -436,6 +508,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			blockedOn,
 			notes: shown.notes,
 			decisions: shown.notes.filter((note) => note.kind === "decision"),
+			sent: inputs.steers.map(steerMessage),
 		};
 		main = { key, summary };
 		return summary;
@@ -451,6 +524,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			let runningTool: ConversationActivity | undefined;
 			let asking: ConversationActivity | undefined;
 			let planRow: ConversationActivity | undefined;
+			const steers: ConversationActivity[] = [];
 			let newestMs = 0;
 			for (const item of items) {
 				const inTurn = turn !== undefined && item.turnId === turn.id;
@@ -474,6 +548,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 					pending.push(item);
 				} else if (inTurn && !parentOfSubagent) {
 					if (item.activityKind === "plan") planRow = item;
+					else if (isHumanSteer(item)) steers.push(item);
 					else if (TOOL_KINDS.has(item.activityKind) && LIVE.has(item.status)) {
 						runningTool = item;
 						if (item.detail?.providerToolName === "AskUserQuestion") asking = item;
@@ -483,7 +558,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 
 			// Signatures of the pending requests a subagent raised; the rest are the main agent's.
 			const claims = new Set<string>();
-			const mainAgent = () => summarize({ turn, said, pending, claims, runningTool, asking, planRow, newestMs });
+			const mainAgent = () => summarize({ turn, said, pending, claims, runningTool, asking, planRow, newestMs, steers });
 			if (parents.length === 0) {
 				narrations = new Map();
 				cards = new Map();
@@ -506,7 +581,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			for (const parent of parents) {
 				const kids = children.get(parent.providerItemId!) ?? [];
 				const turnState = parent.turnId ? turnStates.get(parent.turnId) : undefined;
-				let key = `${parent.revision}:${parent.status}|${turnState ?? ""}|${pendingKey}`;
+				let key = `${parent.revision}:${parent.status}|${turnState ?? ""}|${pendingKey}|${inboxSignature(parent.detail?.subagentInbox)}`;
 				for (const kid of kids) key += `|${kid.id}:${kid.revision}:${kid.status}`;
 				const cached = cards.get(parent.id);
 				if (cached?.key === key) {
@@ -673,6 +748,7 @@ function buildCard(
 		lastToolName: text(detail.lastToolName) ?? lastToolName,
 		prompt,
 		finalReport: report,
+		inbox: inboxOf(detail.subagentInbox, parent.createdAt),
 	};
 }
 
@@ -700,6 +776,50 @@ export function activeSubagentCount(cards: readonly SubagentCard[]): { running: 
 		if (card.lane === "needs_you") needsYou += 1;
 	}
 	return { running, needsYou };
+}
+
+/**
+ * A card's sent messages with the sends the conversation has not echoed yet. A
+ * send the echo already carries, matched by id, is shown once, as the echo.
+ */
+export function withPendingMessages(echoed: readonly SentMessage[], pending: readonly SentMessage[]): readonly SentMessage[] {
+	if (pending.length === 0) return echoed;
+	const ids = new Set(echoed.map((message) => message.id));
+	const unechoed = pending.filter((message) => !ids.has(message.id));
+	return unechoed.length === 0 ? echoed : [...echoed, ...unechoed];
+}
+
+/**
+ * Status and decision lines with the person's messages placed by when they were
+ * sent. A line carries its narration block's start time, so a message lands
+ * after every block that started before it.
+ */
+export function boardTimeline(notes: readonly SubagentNote[], sent: readonly SentMessage[]): BoardTimelineEntry[] {
+	const entries: BoardTimelineEntry[] = [];
+	const messages = [...sent].sort((a, b) => timeOf(a.at) - timeOf(b.at));
+	let next = 0;
+	for (const note of notes) {
+		const ms = timeOf(note.at);
+		while (next < messages.length && timeOf(messages[next]!.at) < ms) entries.push({ kind: "sent", message: messages[next++]! });
+		entries.push({ kind: "note", note });
+	}
+	while (next < messages.length) entries.push({ kind: "sent", message: messages[next++]! });
+	return entries;
+}
+
+/**
+ * A subagent the person stopped settles as stopped, however its call ended: the
+ * stop is why it ended. Live and untouched cards keep their identity.
+ */
+export function withStopRequests(cards: readonly SubagentCard[], stopped: ReadonlySet<string>): readonly SubagentCard[] {
+	if (stopped.size === 0) return cards;
+	let changed = false;
+	const result = cards.map((card) => {
+		if (card.lane !== "done" || card.outcome === "stopped" || !stopped.has(card.providerItemId)) return card;
+		changed = true;
+		return { ...card, outcome: "stopped" as const };
+	});
+	return changed ? result : cards;
 }
 
 /** The draft "Ask main agent" starts the composer with. */

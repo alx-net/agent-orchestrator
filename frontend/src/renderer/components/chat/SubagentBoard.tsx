@@ -9,42 +9,79 @@
  * own: nothing can be done to a finished subagent from here, and the main agent
  * already sees its failure, so a fourth lane would mostly sit empty.
  *
+ * A live card can be stepped into: the main agent's running turn is steered
+ * directly, never queued, and a running subagent gets a message it reads at its
+ * next tool call. Either can be stopped; stopping a subagent leaves the main
+ * agent running, stopping the main turn stops every subagent it started.
+ *
  * The cards read from {@link SubagentCard} and {@link MainAgentSummary}; nothing
  * here inspects the trace.
  */
 
-import { memo, useCallback, useEffect, useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+	memo,
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+	type KeyboardEvent,
+	type ReactNode,
+	type RefObject,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, CircleX, Loader2, MessageSquareReply, Square } from "lucide-react";
+import type { TFunction } from "i18next";
+import { ArrowUp, Check, ChevronRight, CircleX, CornerUpRight, Loader2, MessageSquare, MessageSquareReply, Square } from "lucide-react";
 import { cn } from "../../lib/utils";
 import {
+	boardTimeline,
 	subagentLanes,
+	withPendingMessages,
+	withStopRequests,
 	type MainAgentState,
 	type MainAgentSummary,
+	type SentMessage,
+	type SentMessageState,
 	type SubagentCard,
 	type SubagentLane,
 	type SubagentNote,
 	type SubagentOutcome,
 } from "../../lib/subagent-board";
+import {
+	EMPTY_AGENT_CONTROL,
+	MAIN_AGENT_CONTROL_KEY,
+	type AgentBoardControls,
+	type AgentControlError,
+	type AgentControlState,
+} from "../../hooks/useAgentBoardControls";
 import type { SessionMode } from "../../types/conversation";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { formatDuration, formatTime } from "./ChatTimelineItems";
 
 // The main agent's key in the board's set of open cards; no activity id looks like it.
 const MAIN_CARD_ID = "\u0000main-agent";
+const NO_MESSAGES: readonly SentMessage[] = [];
 
 export interface SubagentBoardProps {
 	cards: readonly SubagentCard[];
 	/** The main agent's card, pinned above the lanes. */
 	main?: MainAgentSummary;
 	mode: SessionMode;
-	/** The main turn in flight; only its subagents can be stopped, by stopping it. */
+	/** The main turn in flight: the main card is steered and stopped only while it runs. */
 	activeTurnId?: string;
 	onAskMainAgent?: (card: SubagentCard) => void;
 	/** Interrupts the main turn, and with it every subagent it started. */
 	onStopTurn?: () => void;
+	/**
+	 * Steering the main turn, and messaging or stopping one subagent. Without it a
+	 * subagent card falls back to stopping the main turn.
+	 */
+	controls?: AgentBoardControls;
 }
 
 const LANES: { id: SubagentLane; labelKey: "subagents.lane.working" | "subagents.lane.needsYou" | "subagents.lane.done"; dot: string; title: string }[] = [
@@ -60,9 +97,17 @@ export const SubagentBoard = memo(function SubagentBoard({
 	activeTurnId,
 	onAskMainAgent,
 	onStopTurn,
+	controls,
 }: SubagentBoardProps) {
 	const { t } = useTranslation();
-	const lanes = useMemo(() => subagentLanes(cards), [cards]);
+	const states = controls?.states;
+	// A subagent the person stopped reads as stopped once it settles.
+	const shown = useMemo(() => {
+		const stopped = new Set<string>();
+		for (const [key, state] of states ?? []) if (state.stopped) stopped.add(key);
+		return withStopRequests(cards, stopped);
+	}, [cards, states]);
+	const lanes = useMemo(() => subagentLanes(shown), [shown]);
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 	const toggle = useCallback((id: string) => {
 		setExpanded((current) => {
@@ -70,6 +115,9 @@ export const SubagentBoard = memo(function SubagentBoard({
 			if (!next.delete(id)) next.add(id);
 			return next;
 		});
+	}, []);
+	const open = useCallback((id: string) => {
+		setExpanded((current) => current.has(id) ? current : new Set(current).add(id));
 	}, []);
 	// Escape anywhere in the chat stops the turn. On the board it only folds the
 	// open cards: stopping every subagent has to be the deliberate button.
@@ -83,6 +131,7 @@ export const SubagentBoard = memo(function SubagentBoard({
 	if (mode !== "chat") return <BoardMessage>{t("subagents.needsChat")}</BoardMessage>;
 	if (cards.length === 0 && !main) return <BoardMessage>{t("subagents.empty")}</BoardMessage>;
 
+	const mainRunning = main?.turnId !== undefined && main.turnId === activeTurnId;
 	return (
 		<section
 			aria-label={t("subagents.tab")}
@@ -93,8 +142,11 @@ export const SubagentBoard = memo(function SubagentBoard({
 			{main ? (
 				<div className="shrink-0 border-b border-border-strong p-3">
 					<MainAgentCardView
+						control={states?.get(MAIN_AGENT_CONTROL_KEY) ?? EMPTY_AGENT_CONTROL}
 						expanded={expanded.has(MAIN_CARD_ID)}
-						onStopTurn={onStopTurn && main.turnId !== undefined && main.turnId === activeTurnId ? onStopTurn : undefined}
+						onOpen={open}
+						onSteer={mainRunning ? controls?.steerMain : undefined}
+						onStopTurn={onStopTurn && mainRunning ? onStopTurn : undefined}
 						onToggle={toggle}
 						summary={main}
 					/>
@@ -126,20 +178,27 @@ export const SubagentBoard = memo(function SubagentBoard({
 								{laneCards.length > 0 ? (
 									<div className="board-scrollbar px-3 py-3 @3xl/subagents:min-h-0 @3xl/subagents:flex-1 @3xl/subagents:overflow-y-auto">
 										<div className="flex flex-col gap-2.5">
-											{laneCards.map((card) => (
-												<SubagentCardView
-													card={card}
-													expanded={expanded.has(card.id)}
-													key={card.id}
-													onAsk={onAskMainAgent}
-													onStopTurn={
-														onStopTurn && card.lane !== "done" && (!card.turnId || card.turnId === activeTurnId)
-															? onStopTurn
-															: undefined
-													}
-													onToggle={toggle}
-												/>
-											))}
+											{laneCards.map((card) => {
+												const live = card.lane !== "done";
+												return (
+													<SubagentCardView
+														card={card}
+														control={states?.get(card.providerItemId) ?? EMPTY_AGENT_CONTROL}
+														expanded={expanded.has(card.id)}
+														key={card.id}
+														onAsk={onAskMainAgent}
+														onMessage={live ? controls?.messageSubagent : undefined}
+														onOpen={open}
+														onStop={live ? controls?.stopSubagent : undefined}
+														onStopTurn={
+															!controls?.stopSubagent && onStopTurn && live && (!card.turnId || card.turnId === activeTurnId)
+																? onStopTurn
+																: undefined
+														}
+														onToggle={toggle}
+													/>
+												);
+											})}
 										</div>
 									</div>
 								) : null}
@@ -160,25 +219,64 @@ function BoardMessage({ children }: { children: ReactNode }) {
 	);
 }
 
+/**
+ * Asks for the card's message field: focused at once when the card is open, or as
+ * soon as it opens.
+ */
+function useFieldFocus(expanded: boolean, field: RefObject<HTMLInputElement | null>): () => void {
+	const wanted = useRef(false);
+	useEffect(() => {
+		if (!expanded || !wanted.current) return;
+		wanted.current = false;
+		field.current?.focus();
+	}, [expanded, field]);
+	return useCallback(() => {
+		if (expanded) field.current?.focus();
+		else wanted.current = true;
+	}, [expanded, field]);
+}
+
+function errorText(t: TFunction, error: AgentControlError | undefined): string | undefined {
+	if (!error) return undefined;
+	return error.kind === "finished" ? t("subagents.error.finished") : error.message ?? t("subagents.error.failed");
+}
+
 const SubagentCardView = memo(function SubagentCardView({
 	card,
+	control,
 	expanded,
 	onAsk,
+	onMessage,
+	onOpen,
+	onStop,
 	onStopTurn,
 	onToggle,
 }: {
 	card: SubagentCard;
+	control: AgentControlState;
 	expanded: boolean;
 	onAsk?: (card: SubagentCard) => void;
+	/** Present while the subagent runs and the daemon can reach it. */
+	onMessage?: (toolUseId: string, text: string) => Promise<boolean>;
+	onOpen: (id: string) => void;
+	/** Stops this subagent only. */
+	onStop?: (toolUseId: string) => Promise<void>;
+	/** The fallback where a subagent cannot be stopped on its own. */
 	onStopTurn?: () => void;
 	onToggle: (id: string) => void;
 }) {
 	const { t } = useTranslation();
 	const detailsId = useId();
+	const toggleRef = useRef<HTMLButtonElement>(null);
+	const fieldRef = useRef<HTMLInputElement>(null);
+	const focusField = useFieldFocus(expanded, fieldRef);
 	const title = card.title ?? t("subagents.untitled");
 	const nowLine = card.lane === "needs_you"
 		? card.blockedOn ? t("subagents.waitingFor", { what: card.blockedOn }) : t("subagents.waiting")
 		: card.nowLine;
+	const stopping = card.lane !== "done" && control.stopping;
+	const sent = useMemo(() => withPendingMessages(card.inbox, control.pending), [card.inbox, control.pending]);
+	const stopError = errorText(t, control.stopError);
 	return (
 		<article
 			aria-label={title}
@@ -195,6 +293,7 @@ const SubagentCardView = memo(function SubagentCardView({
 				aria-expanded={expanded}
 				className="flex w-full min-w-0 items-start gap-2.5 rounded-lg px-3.5 pb-2 pt-2.5 text-left outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50"
 				onClick={() => onToggle(card.id)}
+				ref={toggleRef}
 				type="button"
 			>
 				<StatusGlyph outcome={card.outcome} />
@@ -220,24 +319,67 @@ const SubagentCardView = memo(function SubagentCardView({
 			<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-2xs text-muted-foreground">
 				<Elapsed durationMs={card.durationMs} live={card.lane !== "done"} startedAt={card.startedAt} />
 				<span className="tabular-nums">{t("subagents.tools", { count: card.toolCount })}</span>
+				{stopping ? <span role="status">{t("subagents.stopping")}</span> : null}
 				{/* One action slot, revealed on hover or focus without moving anything. */}
 				<span
 					className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[120ms] group-hover/subagent:opacity-100 group-focus-within/subagent:opacity-100 data-[open]:opacity-100 motion-reduce:transition-none"
 					data-open={expanded ? "" : undefined}
 				>
+					{onMessage ? (
+						<CardAction
+							disabled={stopping}
+							label={t("subagents.message")}
+							onClick={() => {
+								focusField();
+								onOpen(card.id);
+							}}
+						>
+							<MessageSquare aria-hidden="true" className="size-3.5" />
+						</CardAction>
+					) : null}
 					{onAsk ? (
 						<CardAction label={t("subagents.ask")} onClick={() => onAsk(card)}>
 							<MessageSquareReply aria-hidden="true" className="size-3.5" />
 						</CardAction>
 					) : null}
-					{onStopTurn ? (
+					{onStop ? (
+						<CardAction
+							destructive
+							disabled={stopping}
+							hint={t("subagents.stopSubagentHint")}
+							label={t("subagents.stopSubagent")}
+							onClick={() => void onStop(card.providerItemId)}
+						>
+							<Square aria-hidden="true" className="size-3" />
+						</CardAction>
+					) : onStopTurn ? (
 						<CardAction destructive hint={t("subagents.stopTurnHint")} label={t("subagents.stopTurn")} onClick={onStopTurn}>
 							<Square aria-hidden="true" className="size-3" />
 						</CardAction>
 					) : null}
 				</span>
 			</div>
-			{expanded ? <SubagentDetails card={card} id={detailsId} /> : null}
+			{stopError ? (
+				<p className="border-t border-border px-3.5 py-2 text-xs text-destructive" role="alert">{stopError}</p>
+			) : null}
+			{expanded ? (
+				<SubagentDetails
+					card={card}
+					field={onMessage ? (
+						<AgentMessageField
+							disabled={stopping}
+							error={errorText(t, control.sendError)}
+							fieldRef={fieldRef}
+							label={t("subagents.message")}
+							onCancel={() => toggleRef.current?.focus()}
+							onSend={(text) => onMessage(card.providerItemId, text)}
+							sending={control.sending}
+						/>
+					) : null}
+					id={detailsId}
+					sent={sent}
+				/>
+			) : null}
 		</article>
 	);
 });
@@ -248,12 +390,19 @@ const SubagentCardView = memo(function SubagentCardView({
  * before any subagent starts.
  */
 const MainAgentCardView = memo(function MainAgentCardView({
+	control,
 	expanded,
+	onOpen,
+	onSteer,
 	onStopTurn,
 	onToggle,
 	summary,
 }: {
+	control: AgentControlState;
 	expanded: boolean;
+	onOpen: (id: string) => void;
+	/** Steers the running turn; present only while it runs and can be steered. */
+	onSteer?: (text: string) => Promise<boolean>;
 	/** Present only while the turn runs. */
 	onStopTurn?: () => void;
 	onToggle: (id: string) => void;
@@ -261,12 +410,16 @@ const MainAgentCardView = memo(function MainAgentCardView({
 }) {
 	const { t } = useTranslation();
 	const detailsId = useId();
+	const toggleRef = useRef<HTMLButtonElement>(null);
+	const fieldRef = useRef<HTMLInputElement>(null);
+	const focusField = useFieldFocus(expanded, fieldRef);
 	const title = t("subagents.main");
 	const needsYou = summary.state === "needs_you";
 	const nowLine = needsYou
 		? summary.blockedOn ? t("subagents.waitingFor", { what: summary.blockedOn }) : t("subagents.waiting")
 		: summary.nowLine;
 	const decision = summary.decisions.at(-1);
+	const sent = useMemo(() => withPendingMessages(summary.sent, control.pending), [summary.sent, control.pending]);
 	return (
 		<article
 			aria-label={title}
@@ -282,6 +435,7 @@ const MainAgentCardView = memo(function MainAgentCardView({
 				aria-expanded={expanded}
 				className="flex w-full min-w-0 items-start gap-2.5 rounded-lg px-3.5 pb-2 pt-2.5 text-left outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50"
 				onClick={() => onToggle(MAIN_CARD_ID)}
+				ref={toggleRef}
 				type="button"
 			>
 				<StatusGlyph outcome={summary.state} />
@@ -314,6 +468,17 @@ const MainAgentCardView = memo(function MainAgentCardView({
 						className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[120ms] group-hover/subagent:opacity-100 group-focus-within/subagent:opacity-100 data-[open]:opacity-100 motion-reduce:transition-none"
 						data-open={expanded ? "" : undefined}
 					>
+						{onSteer ? (
+							<CardAction
+								label={t("subagents.steerMain")}
+								onClick={() => {
+									focusField();
+									onOpen(MAIN_CARD_ID);
+								}}
+							>
+								<CornerUpRight aria-hidden="true" className="size-3.5" />
+							</CardAction>
+						) : null}
 						{onStopTurn ? (
 							<CardAction destructive hint={t("subagents.stopTurnHint")} label={t("subagents.stopTurn")} onClick={onStopTurn}>
 								<Square aria-hidden="true" className="size-3" />
@@ -323,13 +488,115 @@ const MainAgentCardView = memo(function MainAgentCardView({
 				</div>
 			) : null}
 			{expanded ? (
-				<div className="border-t border-border px-3.5 pb-3 pt-2.5" id={detailsId}>
-					<NotesTimeline className="board-scrollbar max-h-64 overflow-y-auto" notes={summary.notes} />
+				<div className="flex min-w-0 flex-col gap-3 border-t border-border px-3.5 pb-3 pt-2.5" id={detailsId}>
+					<NotesTimeline className="board-scrollbar max-h-64 overflow-y-auto" notes={summary.notes} sent={sent} />
+					{onSteer ? (
+						<AgentMessageField
+							error={errorText(t, control.sendError)}
+							fieldRef={fieldRef}
+							label={t("subagents.steerMain")}
+							onCancel={() => toggleRef.current?.focus()}
+							onSend={onSteer}
+							sending={control.sending}
+						/>
+					) : null}
 				</div>
 			) : null}
 		</article>
 	);
 });
+
+/**
+ * One line to step in with. Enter sends; Escape clears the field, then hands focus
+ * back to the card, and never stops anything. A send that did not go through
+ * puts its words back.
+ */
+function AgentMessageField({
+	disabled = false,
+	error,
+	fieldRef,
+	label,
+	onCancel,
+	onSend,
+	sending,
+}: {
+	disabled?: boolean;
+	error?: string;
+	fieldRef: RefObject<HTMLInputElement | null>;
+	label: string;
+	onCancel: () => void;
+	/** Resolves true once the message went out. */
+	onSend: (text: string) => Promise<boolean>;
+	sending: boolean;
+}) {
+	const { t } = useTranslation();
+	const id = useId();
+	const errorId = useId();
+	const [draft, setDraft] = useState("");
+	const draftRef = useRef(draft);
+	draftRef.current = draft;
+	// Two Enters before the next render must not send twice.
+	const inFlight = useRef(false);
+	const blocked = disabled || sending;
+	const submit = async () => {
+		const text = draftRef.current.trim();
+		if (!text || blocked || inFlight.current) return;
+		inFlight.current = true;
+		draftRef.current = "";
+		setDraft("");
+		try {
+			const sent = await onSend(text);
+			if (!sent && !draftRef.current) setDraft(text);
+		} finally {
+			inFlight.current = false;
+		}
+	};
+	const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+			event.preventDefault();
+			void submit();
+			return;
+		}
+		if (event.key !== "Escape") return;
+		// The board folds its cards on Escape, and the chat stops the turn; neither here.
+		event.preventDefault();
+		event.stopPropagation();
+		if (draft) setDraft("");
+		else onCancel();
+	};
+	return (
+		<div className="min-w-0">
+			<Label className="text-caption font-medium text-muted-foreground" htmlFor={id}>{label}</Label>
+			{/* The global `font: inherit` on inputs outranks a utility, so the row sets the size. */}
+			<div className="mt-1.5 flex items-center gap-1 text-xs">
+				<Input
+					aria-describedby={error ? errorId : undefined}
+					aria-invalid={error ? true : undefined}
+					autoComplete="off"
+					className="h-control-md flex-1 px-2.5 text-xs focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+					disabled={disabled}
+					enterKeyHint="send"
+					id={id}
+					onChange={(event) => setDraft(event.target.value)}
+					onKeyDown={onKeyDown}
+					placeholder={t("subagents.messagePlaceholder")}
+					ref={fieldRef}
+					value={draft}
+				/>
+				<CardAction disabled={blocked || !draft.trim()} label={t("subagents.send")} onClick={() => void submit()}>
+					{sending ? (
+						<Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+					) : (
+						<ArrowUp aria-hidden="true" className="size-3.5" />
+					)}
+				</CardAction>
+			</div>
+			{error ? (
+				<p className="mt-1.5 text-xs text-destructive" id={errorId} role="alert">{error}</p>
+			) : null}
+		</div>
+	);
+}
 
 const OUTCOME_LABEL_KEYS = {
 	working: "subagents.state.working",
@@ -366,12 +633,14 @@ function StatusGlyph({ outcome }: { outcome: SubagentOutcome | MainAgentState })
 function CardAction({
 	children,
 	destructive = false,
+	disabled = false,
 	hint,
 	label,
 	onClick,
 }: {
 	children: ReactNode;
 	destructive?: boolean;
+	disabled?: boolean;
 	hint?: string;
 	label: string;
 	onClick: () => void;
@@ -385,6 +654,7 @@ function CardAction({
 						"size-6 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-accent/50",
 						destructive && "hover:text-destructive focus-visible:text-destructive",
 					)}
+					disabled={disabled}
 					onClick={onClick}
 					size="icon-sm"
 					type="button"
@@ -436,25 +706,68 @@ function useNow(active: boolean, since: number | undefined): number {
 	return now;
 }
 
-/** Status and decision lines in the order they were written, decisions emphasized. */
-function NotesTimeline({ className, notes }: { className?: string; notes: readonly SubagentNote[] }) {
+const SENT_STATE_KEYS = {
+	sending: "subagents.sent.sending",
+	queued: "subagents.sent.queued",
+	delivered: "subagents.sent.delivered",
+	dropped: "subagents.sent.dropped",
+} as const satisfies Record<SentMessageState, string>;
+
+/**
+ * Status and decision lines in the order they were written, decisions emphasized,
+ * with what the person sent placed by when they sent it.
+ */
+function NotesTimeline({
+	className,
+	notes,
+	sent = NO_MESSAGES,
+}: {
+	className?: string;
+	notes: readonly SubagentNote[];
+	sent?: readonly SentMessage[];
+}) {
 	const { t } = useTranslation();
+	const entries = useMemo(() => boardTimeline(notes, sent), [notes, sent]);
 	return (
 		<section aria-label={t("subagents.timeline")}>
 			<h4 className="text-caption font-medium text-muted-foreground">{t("subagents.timeline")}</h4>
-			{notes.length > 0 ? (
+			{entries.length > 0 ? (
 				<ol className={cn("mt-1.5 flex flex-col gap-1.5", className)}>
-					{notes.map((note, index) => (
-						<li className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-xs leading-snug" data-note-kind={note.kind} key={index}>
-							<time className="pt-px text-2xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
-							<span className={cn("min-w-0 break-words", note.kind === "decision" ? "font-medium text-foreground" : "text-muted-foreground")}>
-								<span className={note.kind === "decision" ? "mr-1.5 text-2xs font-normal text-muted-foreground" : "sr-only"}>
-									{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
+					{entries.map((entry, index) => {
+						if (entry.kind === "sent") {
+							const { message } = entry;
+							return (
+								<li
+									className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-xs leading-snug"
+									data-sent-state={message.state}
+									data-testid="sent-message"
+									key={`sent:${message.id}`}
+								>
+									<time className="pt-px text-2xs tabular-nums text-passive" dateTime={message.at}>{formatTime(message.at)}</time>
+									<span className="min-w-0 break-words text-foreground">
+										<span className="mr-1.5 text-2xs text-muted-foreground">{t("subagents.you")}</span>
+										{message.text}
+										<span className={cn("ml-1.5 text-2xs", message.state === "dropped" ? "text-muted-foreground" : "text-passive")}>
+											<span aria-hidden="true">· </span>
+											{t(SENT_STATE_KEYS[message.state])}
+										</span>
+									</span>
+								</li>
+							);
+						}
+						const { note } = entry;
+						return (
+							<li className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-xs leading-snug" data-note-kind={note.kind} key={`note:${index}`}>
+								<time className="pt-px text-2xs tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
+								<span className={cn("min-w-0 break-words", note.kind === "decision" ? "font-medium text-foreground" : "text-muted-foreground")}>
+									<span className={note.kind === "decision" ? "mr-1.5 text-2xs font-normal text-muted-foreground" : "sr-only"}>
+										{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
+									</span>
+									{note.text}
 								</span>
-								{note.text}
-							</span>
-						</li>
-					))}
+							</li>
+						);
+					})}
 				</ol>
 			) : (
 				<p className="mt-1 text-xs text-passive">{t("subagents.noUpdates")}</p>
@@ -463,13 +776,25 @@ function NotesTimeline({ className, notes }: { className?: string; notes: readon
 	);
 }
 
-function SubagentDetails({ card, id }: { card: SubagentCard; id: string }) {
+function SubagentDetails({
+	card,
+	field,
+	id,
+	sent,
+}: {
+	card: SubagentCard;
+	/** The message field, while the subagent can still be reached. */
+	field?: ReactNode;
+	id: string;
+	sent: readonly SentMessage[];
+}) {
 	const { t } = useTranslation();
 	const [taskOpen, setTaskOpen] = useState(false);
 	const reportLabel = card.outcome === "failed" ? t("subagents.failure") : t("subagents.report");
 	return (
 		<div className="flex min-w-0 flex-col gap-3 border-t border-border px-3.5 pb-3 pt-2.5" id={id}>
-			<NotesTimeline notes={card.notes} />
+			<NotesTimeline notes={card.notes} sent={sent} />
+			{field}
 			{card.prompt ? (
 				<div className="min-w-0">
 					<button

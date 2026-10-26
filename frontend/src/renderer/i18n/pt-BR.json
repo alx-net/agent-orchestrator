@@ -3583,5 +3583,19 @@
 	"subagents.task": "Tarefa",
 	"subagents.report": "Relatório final",
 	"subagents.failure": "Erro",
-	"subagents.untitled": "Subagente"
+	"subagents.untitled": "Subagente",
+	"subagents.message": "Mensagem ao subagente",
+	"subagents.steerMain": "Orientar o agente principal",
+	"subagents.messagePlaceholder": "Diga o que mudar",
+	"subagents.send": "Enviar",
+	"subagents.stopSubagent": "Parar subagente",
+	"subagents.stopSubagentHint": "Para só este subagente; o agente principal continua",
+	"subagents.stopping": "Parando…",
+	"subagents.you": "Você:",
+	"subagents.sent.sending": "enviando…",
+	"subagents.sent.queued": "aguardando o próximo passo",
+	"subagents.sent.delivered": "entregue",
+	"subagents.sent.dropped": "não entregue: terminou antes",
+	"subagents.error.finished": "Este subagente já terminou",
+	"subagents.error.failed": "Não deu certo. Tente de novo."
 }

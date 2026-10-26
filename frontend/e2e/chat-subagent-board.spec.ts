@@ -4,28 +4,39 @@ import { installFakeAgent } from "./support/fake-bridge";
 // The Agents tab of a Claude Code chat: the main agent pinned on top with its
 // own Status:/Decision: lines, then one card per Agent/Task call, placed in
 // Working, Needs you or Done, with the subagent's lines as its "now" line and
-// timeline.
+// timeline. A live card can be stepped into: a steer straight into the main
+// turn, a message to one subagent's inbox, and a stop for that subagent alone.
 
 const sessionId = "chat-subagents";
 const startedAt = new Date(Date.now() - 4 * 60_000).toISOString();
 const at = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString();
 const migrateInput = { command: "npm run migration:create -- add_paused_at", description: "Create the migration" };
 
+/** What the person did from the board, as the fake daemon reflects it back. */
+interface BoardState {
+	inbox: { id: string; text: string; state: "queued" | "delivered" | "dropped"; at: number }[];
+	auditStopped: boolean;
+	steers: { text: string; clientMessageId: string }[];
+}
+const untouched = (): BoardState => ({ inbox: [], auditStopped: false, steers: [] });
+
 let sequence = 1;
 function activity(fields: Record<string, unknown>) {
 	return { kind: "activity", turnId: "turn-main", sequence: sequence++, revision: 1, createdAt: at(200), ...fields };
 }
 
-function snapshot() {
+function snapshot(board: BoardState = untouched()) {
 	sequence = 2;
+	const audit = board.auditStopped ? "failed" : "running";
 	const activities = [
 		// Working: narrating with Status:/Decision: lines while a Read runs.
 		activity({
-			id: "agent-audit", providerItemId: "agent-audit", activityKind: "mcp_tool", status: "running", summary: "Audit the auth flow",
+			id: "agent-audit", providerItemId: "agent-audit", activityKind: "mcp_tool", status: audit, summary: "Audit the auth flow",
 			detail: {
 				nestedAgent: true, providerToolName: "Agent", subagentType: "Explore",
 				input: { description: "Audit the auth flow", prompt: "Read backend/internal/auth and list every place a token is validated.", subagent_type: "Explore" },
 				progressSummary: "Tracing token validation through the middleware", progressAt: Date.now() - 20_000,
+				subagentInbox: board.inbox,
 			},
 		}),
 		activity({
@@ -41,7 +52,7 @@ function snapshot() {
 			},
 		}),
 		activity({
-			id: "audit-read", providerItemId: "audit-read", activityKind: "mcp_tool", status: "running", summary: "Read backend/internal/auth/token.go",
+			id: "audit-read", providerItemId: "audit-read", activityKind: "mcp_tool", status: audit, summary: "Read backend/internal/auth/token.go",
 			detail: { parentProviderItemId: "agent-audit", providerToolName: "Read", input: { file_path: "backend/internal/auth/token.go" } },
 		}),
 		// Needs you: its Bash call waits on a permission request.
@@ -77,6 +88,11 @@ function snapshot() {
 			id: "routes-voice", providerItemId: "routes-voice", activityKind: "mcp_tool", status: "completed", summary: "Subagent response",
 			detail: { nestedAgent: true, parentProviderItemId: "agent-routes", progress: "Status: Grepping the controllers\nDecision: Count only routes under /api/v1/sessions" },
 		}),
+		// The person's own steers land in the running turn as steer rows.
+		...board.steers.map((steer, index) => activity({
+			id: `steer-${index}`, activityKind: "system", status: "completed", summary: steer.text, createdAt: at(1),
+			detail: { event: "steer", origin: "human", text: steer.text, clientMessageId: steer.clientMessageId },
+		})),
 	];
 	// The main agent narrates with the same rule its subagents follow.
 	const mainVoice = {
@@ -104,15 +120,41 @@ function snapshot() {
 			mainVoice,
 		],
 		activities,
+		// Claude's steering extension, which offers a steer into the running turn.
+		capabilities: ["steer"],
 		settings: {},
 	};
 }
 
-async function installSubagentConversation(page: Page) {
+/** The board's requests to the fake daemon, in order. */
+type BoardRequest = { path: string; body: unknown };
+
+async function installSubagentConversation(page: Page, board: BoardState = untouched(), requests: BoardRequest[] = []) {
 	await installFakeAgent(page, { workers: [{ id: sessionId, title: "Add pausing to sessions", mode: "chat", provider: "claude-code" }] });
 	await page.route(`**/api/v1/sessions/${sessionId}/**`, async (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path.endsWith("/conversation") && route.request().method() === "GET") return route.fulfill({ json: snapshot() });
+		const method = route.request().method();
+		if (method === "POST" && /\/conversation\/(subagents\/|steer$)/.test(path)) {
+			const body = route.request().postDataJSON() as Record<string, unknown> | null;
+			requests.push({ path, body });
+			if (path.endsWith("/subagents/agent-audit/messages")) {
+				const id = `inbox-${board.inbox.length + 1}`;
+				board.inbox.push({ id, text: String(body?.text), state: "queued", at: Date.now() });
+				return route.fulfill({ status: 202, json: { id, state: "queued" } });
+			}
+			if (path.endsWith("/subagents/agent-audit/stop")) {
+				// It finished before reading what was still waiting for it.
+				board.auditStopped = true;
+				for (const entry of board.inbox) if (entry.state === "queued") entry.state = "dropped";
+				return route.fulfill({ status: 202, json: { ok: true } });
+			}
+			if (path.endsWith("/conversation/steer")) {
+				board.steers.push({ text: String(body?.text), clientMessageId: String(body?.clientMessageId) });
+				return route.fulfill({ status: 202, json: { providerTurnId: "provider-main", activityId: `steer-${board.steers.length - 1}` } });
+			}
+			return route.fulfill({ status: 409, json: { error: "conflict", code: "CHAT_SUBAGENT_NOT_RUNNING", message: "subagent is not running" } });
+		}
+		if (path.endsWith("/conversation") && method === "GET") return route.fulfill({ json: snapshot(board) });
 		if (path.endsWith("/conversation/models")) return route.fulfill({ json: { models: [], selected: {} } });
 		if (path.endsWith("/conversation/skills")) return route.fulfill({ json: { skills: [] } });
 		if (path.endsWith("/workspace/files")) return route.fulfill({ json: { files: [], truncated: false } });
@@ -158,4 +200,53 @@ test("the Agents tab shows the main agent and each subagent's lane, now line and
 	await main.getByRole("button", { name: /Main agent/ }).click();
 	await expect(main.getByRole("region", { name: "Updates" }).getByText("Splitting the pausing work across three subagents")).toBeVisible();
 	await capture(page, "subagent-board-3-main-agent");
+});
+
+test("a subagent is messaged and stopped on its own, and the main turn is steered, from the Agents tab @T0", async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const requests: BoardRequest[] = [];
+	await installSubagentConversation(page, untouched(), requests);
+	const paths = () => requests.map((request) => request.path);
+	const route = (suffix: string) => `/api/v1/sessions/${sessionId}/conversation/${suffix}`;
+
+	await page.getByRole("tab", { name: /Agents/ }).click();
+	const board = page.getByTestId("subagent-board");
+	const audit = board.getByRole("article", { name: "Audit the auth flow" });
+	const main = board.getByRole("article", { name: "Main agent" });
+
+	// A message reaches the subagent at its next tool call; until then it waits.
+	await audit.getByRole("button", { name: "Message subagent" }).click();
+	const field = audit.getByRole("textbox", { name: "Message subagent" });
+	await expect(field).toBeFocused();
+	await field.fill("Also check the refresh token path");
+	await field.press("Enter");
+	await expect.poll(paths).toEqual([route("subagents/agent-audit/messages")]);
+	expect(requests[0]!.body).toEqual({ text: "Also check the refresh token path" });
+	await expect(field).toHaveValue("");
+	const sent = audit.getByTestId("sent-message");
+	await expect(sent).toHaveCount(1);
+	await expect(sent).toContainText("Also check the refresh token path");
+	await expect(sent).toContainText("waiting for its next step");
+	await capture(page, "subagent-board-4-steer");
+
+	// Stopping the subagent stops it alone: the main agent keeps working.
+	await audit.getByRole("button", { name: "Stop subagent" }).click();
+	await expect.poll(paths).toEqual([route("subagents/agent-audit/messages"), route("subagents/agent-audit/stop")]);
+	await expect(audit).toHaveAttribute("data-lane", "done");
+	await expect(audit).toHaveAttribute("data-outcome", "stopped");
+	await expect(sent).toContainText("not delivered — it finished first");
+	await expect(audit.getByRole("textbox", { name: "Message subagent" })).toHaveCount(0);
+	await expect(main).toHaveAttribute("data-state", "working");
+
+	// The main agent's message is a steer into its running turn, never a queued send.
+	await main.getByRole("button", { name: "Steer main agent" }).click();
+	const steer = main.getByRole("textbox", { name: "Steer main agent" });
+	await expect(steer).toBeFocused();
+	await steer.fill("Keep the v1 pause route working");
+	await steer.press("Enter");
+	await expect.poll(paths).toContain(route("steer"));
+	expect(requests.at(-1)!.body).toMatchObject({ text: "Keep the v1 pause route working" });
+	await expect(main.getByTestId("sent-message")).toContainText("Keep the v1 pause route working");
+	await expect(main.getByTestId("sent-message")).toContainText("delivered");
+	await capture(page, "subagent-board-5-main-steer");
 });

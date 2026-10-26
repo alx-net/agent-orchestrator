@@ -3497,5 +3497,19 @@
 	"subagents.task": "Task",
 	"subagents.report": "Final report",
 	"subagents.failure": "Error",
-	"subagents.untitled": "Subagent"
+	"subagents.untitled": "Subagent",
+	"subagents.message": "Message subagent",
+	"subagents.steerMain": "Steer main agent",
+	"subagents.messagePlaceholder": "Tell it what to change",
+	"subagents.send": "Send",
+	"subagents.stopSubagent": "Stop subagent",
+	"subagents.stopSubagentHint": "Stops only this subagent; the main agent keeps going",
+	"subagents.stopping": "Stopping…",
+	"subagents.you": "You:",
+	"subagents.sent.sending": "sending…",
+	"subagents.sent.queued": "waiting for its next step",
+	"subagents.sent.delivered": "delivered",
+	"subagents.sent.dropped": "not delivered — it finished first",
+	"subagents.error.finished": "This subagent already finished",
+	"subagents.error.failed": "That didn’t go through. Try again."
 }
