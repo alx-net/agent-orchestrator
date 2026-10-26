@@ -29,7 +29,6 @@ import {
 	Archive,
 	ArrowUpRight,
 	GitPullRequest,
-	GitMerge,
 	Info,
 	Play,
 	Loader2,
@@ -52,6 +51,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { SessionArtifactsView, type ArtifactOpenRequest } from "./SessionArtifactsView";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { PullRequestMergeButton } from "./PullRequestMergeButton";
 import { CopyButton } from "./chat/CopyButton";
 import { ScriptRunPanel } from "./ScriptRunPanel";
 import { useCloudScriptRuns } from "../hooks/useCloudScriptRuns";
@@ -67,9 +67,10 @@ import {
 } from "../hooks/useSessionScmSummary";
 import { sessionWorkspaceFilesQueryKey, sessionWorkspaceHistoryQueryOptions, useSessionWorkspaceFilesChangedCount } from "../hooks/useSessionWorkspaceFiles";
 import { useCloudCp } from "../hooks/useCloudCp";
+import { usePullRequestMerge } from "../hooks/usePullRequestMerge";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
-import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, prRepositoryFromUrl, prsSpanRepositories, sessionPRDisplaySummaries } from "../lib/pr-display";
+import { prBrowserUrl, prCardPresentation, prNounKeys, prRepositoryFromUrl, prsSpanRepositories, sessionPRDisplaySummaries } from "../lib/pr-display";
 import type { SessionArtifact, WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import {
 	openPRs,
@@ -928,49 +929,8 @@ function PRSummaryCard({
 	showRepository?: boolean;
 }) {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
-	const workspaceKey = workspaceQueryKeyForHost(hostId);
-	const { client: cloudClient, baseUrl: cloudBaseUrl } = useCloudCp();
 	const presentation = prCardPresentation(pr);
-	const canMerge = prCanMerge(pr) && Boolean(pr.url && pr.headSha);
-	const mergePr = useMutation({
-		mutationFn: async () => {
-			if (usePreviewData) return;
-			if (cloudOrgId) {
-				await cloudClient.mergePullRequest(cloudOrgId, sessionId, pr.number, pr.url, pr.headSha);
-				return;
-			}
-			const { data, error } = await clientForSessionHost(hostId).POST("/api/v1/prs/{id}/merge", {
-				params: { path: { id: String(pr.number) } },
-				body: { prUrl: pr.url, expectedHeadSha: pr.headSha },
-			});
-			if (error) throw new Error(apiErrorMessage(error, t("pr.merge.failed", { number: pr.number })));
-			return data;
-		},
-		onSuccess: async (result) => {
-			if (!cloudOrgId && result?.state === "merged") {
-				queryClient.setQueryData<{ prs: SessionPRSummary[]; linkedPrs: SessionPRReference[] }>(
-					sessionScmSummaryQueryKey(sessionId, hostId),
-					(current) => current ? {
-						...current,
-						prs: current.prs.map((cached) => cached.url === pr.url ? {
-							...cached,
-							state: result.state,
-							stateChangedAt: result.stateChangedAt,
-							updatedAt: result.stateChangedAt,
-						} : cached),
-					} : current,
-				);
-				await queryClient.invalidateQueries({ queryKey: workspaceKey });
-				return;
-			}
-			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: cloudOrgId ? ["cloud-session-scm-summary", cloudBaseUrl, cloudOrgId, sessionId] : sessionScmSummaryQueryKey(sessionId, hostId) }),
-				queryClient.invalidateQueries({ queryKey: workspaceKey }),
-			]);
-		},
-	});
-	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
+	const merge = usePullRequestMerge({ cloudOrgId, hostId, pr, sessionId });
 	const viewModel: InspectorPullRequest = {
 		...pr,
 		card: presentation,
@@ -988,26 +948,8 @@ function PRSummaryCard({
 			countNounLabel={(count, noun) => `${count} ${t(prNounKeys[noun], { count })}`}
 			externalIcon={<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />}
 			externalLink={ProductExternalLink}
-			mergeAction={
-				canMerge ? (
-					<Button
-						aria-label={t("pr.merge.actionFor", { number: pr.number })}
-						className="gap-1 bg-success px-2 text-xs text-on-foreground hover:bg-success/80"
-						disabled={mergePr.isPending}
-						onClick={() => mergePr.mutate()}
-						size="sm"
-						type="button"
-					>
-						{mergePr.isPending ? (
-							<Loader2 className="size-icon-sm animate-spin" aria-hidden="true" />
-						) : (
-							<GitMerge className="size-icon-sm" aria-hidden="true" />
-						)}
-						{mergePr.isPending ? t("pr.merge.merging") : t("pr.merge.action")}
-					</Button>
-				) : undefined
-			}
-			mergeError={mergeError}
+			mergeAction={merge.canMerge ? <PullRequestMergeButton merge={merge} number={pr.number} /> : undefined}
+			mergeError={merge.error}
 			openLabel={t("inspector.openPR", { number: pr.number })}
 			openedViaLabel={t("pr.openedVia")}
 			pr={viewModel}

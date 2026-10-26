@@ -437,6 +437,8 @@ export type FakeWorker = {
 	activity?: "active" | "idle" | "waiting_input" | "exited";
 	previewUrl?: string;
 	previewRevision?: number;
+	/** The session's PR facts, as the daemon's SessionPRFacts wire shape. */
+	prs?: unknown[];
 };
 
 export type FakeAgentOptions = {
@@ -590,7 +592,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				activity: { state: w.activity ?? "active", lastActivityAt: new Date().toISOString() },
 				previewUrl: w.previewUrl,
 				previewRevision: w.previewRevision,
-				prs: [],
+				prs: w.prs ?? [],
 			});
 
 			const project: Record<string, unknown> = {
