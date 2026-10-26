@@ -164,7 +164,7 @@ func (c *conversation) beginHistoryReplay(sessionID string) {
 	c.sessionID = sessionID
 	c.activeTurn = ""
 	c.messages = make(map[string]string)
-	c.thoughts = make(map[string]string)
+	c.thoughts = make(map[string]nestedMessageState)
 	c.nestedMessages = make(map[string]nestedMessageState)
 	c.tools = make(map[string]*toolState)
 	c.mu.Unlock()
@@ -439,7 +439,7 @@ func (c *conversation) resetHistoryItems(turnID string) {
 	c.mu.Lock()
 	c.activeTurn = turnID
 	c.messages = make(map[string]string)
-	c.thoughts = make(map[string]string)
+	c.thoughts = make(map[string]nestedMessageState)
 	c.nestedMessages = make(map[string]nestedMessageState)
 	c.tools = make(map[string]*toolState)
 	c.mu.Unlock()

@@ -22,6 +22,8 @@ import {
 	patchClaudeRetryDetails,
 	patchClaudeStaleIdleDebt,
 	patchClaudeSteerSettlement,
+	patchClaudeSubagentControl,
+	patchClaudeSubagentProgress,
 	pruneNodeDistribution,
 	runtimeSourceFiles,
 } from "./build-acp-runtime-helpers.mjs";
@@ -570,6 +572,442 @@ function onMessage(message) {
 
 		expect(() => patchClaudeSteerSettlement(adapterPath)).toThrow(/steer settlement patch/);
 		expect(readFileSync(adapterPath, "utf8")).toBe(changed);
+	});
+});
+
+describe("patchClaudeSubagentProgress", () => {
+	// claude-agent-acp 0.70's query options and SDK message switch, cut down to
+	// the lines the subagent progress patch anchors on.
+	const adapterSource = `
+        const options = {
+            includePartialMessages: true,
+            forwardSubagentText,
+            mcpServers: {},
+            hooks: {
+                ...userProvidedOptions?.hooks,
+                ...(fileChangeAuditSupport
+                    ? {
+                        PreToolUse: [
+                            ...(userProvidedOptions?.hooks?.PreToolUse || []),
+                            { hooks: [fileChangeAuditSupport.preToolUseHook] },
+                        ],
+                    }
+                    : {}),
+                PostToolUse: [],
+            },
+        };
+        const onMessage = async (message) => {
+            switch (message.subtype) {
+                            case "files_persisted":
+                            case "task_progress":
+                                break;
+                            case "task_started":
+                                session.liveBackgroundTasks.set(message.task_id, {
+                                    parentToolUseId: message.tool_use_id,
+                                    isSubagent: !!message.subagent_type,
+                                });
+                                break;
+            }
+        };
+`;
+
+	function load({ userHooks, audit } = {}) {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		expect(patchClaudeSubagentProgress(adapterPath)).toBe(true);
+		expect(patchClaudeSubagentProgress(adapterPath)).toBe(false);
+		const updates = [];
+		const session = { liveBackgroundTasks: new Map() };
+		const { options, onMessage } = new Function(
+			"userProvidedOptions", "fileChangeAuditSupport", "forwardSubagentText", "session", "sendUpdate",
+			`${readFileSync(adapterPath, "utf8")}\nreturn { options, onMessage };`,
+		)(
+			userHooks ? { hooks: { PreToolUse: userHooks } } : undefined,
+			audit ? { preToolUseHook: audit } : undefined,
+			true,
+			session,
+			async (notification) => { updates.push(notification); },
+		);
+		return { options, onMessage, updates };
+	}
+
+	it("asks the SDK for subagent summaries", () => {
+		expect(load().options.agentProgressSummaries).toBe(true);
+	});
+
+	it("forwards a subagent's progress as meta on its Agent call and nothing else", async () => {
+		const { onMessage, updates } = load();
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		await onMessage({
+			subtype: "task_progress", task_id: "agent-1", session_id: "s1", description: "Scan",
+			usage: { total_tokens: 900, tool_uses: 3, duration_ms: 4000 },
+			last_tool_name: "Grep", summary: "Searching the parser for retry handling",
+		});
+		// Between summaries the SDK still reports the latest tool and count.
+		await onMessage({
+			subtype: "task_progress", task_id: "agent-1", tool_use_id: "toolu_agent", session_id: "s1",
+			usage: { total_tokens: 1200, tool_uses: 4, duration_ms: 6000 }, last_tool_name: "Read",
+		});
+
+		expect(updates).toHaveLength(2);
+		for (const { sessionId, update } of updates) {
+			expect(sessionId).toBe("s1");
+			expect(Object.keys(update).sort()).toEqual(["_meta", "sessionUpdate", "toolCallId"]);
+			expect(update.sessionUpdate).toBe("tool_call_update");
+			expect(update.toolCallId).toBe("toolu_agent");
+			expect(Object.keys(update._meta)).toEqual(["claudeCode"]);
+			expect(Object.keys(update._meta.claudeCode)).toEqual(["subagentProgress"]);
+			expect(typeof update._meta.claudeCode.subagentProgress.at).toBe("number");
+		}
+		const [first, second] = updates.map(({ update }) => {
+			const { at: _at, ...progress } = update._meta.claudeCode.subagentProgress;
+			return progress;
+		});
+		expect(first).toEqual({ summary: "Searching the parser for retry handling", lastToolName: "Grep", toolUses: 3 });
+		expect(second).toEqual({ lastToolName: "Read", toolUses: 4 });
+	});
+
+	it("ignores progress that does not belong to a subagent call", async () => {
+		const { onMessage, updates } = load();
+		await onMessage({ subtype: "task_started", task_id: "shell-1", tool_use_id: "toolu_bash" });
+		await onMessage({ subtype: "task_progress", task_id: "shell-1", usage: { tool_uses: 0 }, summary: "50%" });
+		await onMessage({ subtype: "task_progress", task_id: "unknown", usage: { tool_uses: 1 }, summary: "Working" });
+		expect(updates).toEqual([]);
+	});
+
+	it("appends the reporting rule to Agent and Task prompts after the existing hooks", async () => {
+		const userHook = { matcher: "Bash", hooks: [async () => ({})] };
+		const audit = async () => ({});
+		const { options } = load({ userHooks: [userHook], audit });
+		const [user, auditMatcher, reporting] = options.hooks.PreToolUse;
+		expect(options.hooks.PreToolUse).toHaveLength(3);
+		expect(user).toBe(userHook);
+		expect(auditMatcher.hooks).toEqual([audit]);
+		expect(reporting.matcher).toBe("Agent|Task");
+		expect(load().options.hooks.PreToolUse).toHaveLength(1);
+
+		const [hook] = reporting.hooks;
+		const input = { description: "Scan", prompt: "Find the retry loop.", subagent_type: "Explore" };
+		const result = await hook({ hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: input });
+		const { updatedInput } = result.hookSpecificOutput;
+		expect(result.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+		expect(result.hookSpecificOutput).not.toHaveProperty("permissionDecision");
+		expect(updatedInput).toEqual({ ...input, prompt: updatedInput.prompt });
+		expect(updatedInput.prompt).toBe(
+			"Find the retry loop.\n\nWhile you work, before each major step write one short line that starts with " +
+			"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
+			"starts with \"Decision:\" stating the choice and the reason in under 20 words.",
+		);
+		expect(input.prompt).toBe("Find the retry loop.");
+		expect(await hook({ hook_event_name: "PreToolUse", tool_name: "Task", tool_input: updatedInput })).toEqual({});
+		expect(await hook({ hook_event_name: "PreToolUse", tool_name: "TaskCreate", tool_input: input })).toEqual({});
+		expect(await hook({ hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { description: "x" } })).toEqual({});
+	});
+
+	it("fails packaging without modifying a changed adapter", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		for (const changed of [
+			adapterSource.replace('case "task_progress":\n', ""),
+			adapterSource.replace("forwardSubagentText,", "forwardSubagentText: true,"),
+			adapterSource.replace("{ hooks: [fileChangeAuditSupport.preToolUseHook] },", "{ hooks: [audit] },"),
+		]) {
+			writeFileSync(adapterPath, changed);
+			expect(() => patchClaudeSubagentProgress(adapterPath)).toThrow(/subagent progress patch/);
+			expect(readFileSync(adapterPath, "utf8")).toBe(changed);
+		}
+	});
+});
+
+describe("patchClaudeSubagentControl", () => {
+	// claude-agent-acp 0.70, cut down to the lines the progress and control
+	// patches anchor on: the steering constant, the initialize meta, the query
+	// hooks, the SDK task messages, and the extension-request registration.
+	const adapterSource = `
+const STEER_PRIORITY = "now";
+function initializeMeta() {
+    return {
+            _meta: {
+                steering: {
+                    supported: true,
+                },
+                goal: {},
+            },
+    };
+}
+function queryOptions(sessionId) {
+        const options = {
+            includePartialMessages: true,
+            forwardSubagentText,
+            hooks: {
+                ...userProvidedOptions?.hooks,
+                ...(fileChangeAuditSupport
+                    ? {
+                        PreToolUse: [
+                            ...(userProvidedOptions?.hooks?.PreToolUse || []),
+                            { hooks: [fileChangeAuditSupport.preToolUseHook] },
+                        ],
+                    }
+                    : {}),
+                PostToolUse: [
+                    ...(userProvidedOptions?.hooks?.PostToolUse || []),
+                    {
+                        hooks: [planModeHook],
+                    },
+                ],
+            },
+        };
+        return options;
+}
+async function onMessage(session, message) {
+            switch (message.subtype) {
+                            case "files_persisted":
+                            case "task_progress":
+                                break;
+                            case "task_started":
+                                session.liveBackgroundTasks.set(message.task_id, {
+                                    parentToolUseId: message.tool_use_id,
+                                    isSubagent: !!message.subagent_type,
+                                });
+                                break;
+                            case "task_notification":
+                                session.liveBackgroundTasks.delete(message.task_id);
+                                break;
+                            case "task_updated":
+                                if (message.patch.status === "completed" ||
+                                    message.patch.status === "failed" ||
+                                    message.patch.status === "killed") {
+                                    session.liveBackgroundTasks.delete(message.task_id);
+                                }
+                                break;
+            }
+}
+connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params));
+`;
+	const prefix =
+		"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+
+	function load({ userHooks } = {}) {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		// Same order as scripts/build-acp-runtime.mjs.
+		expect(patchClaudeSubagentProgress(adapterPath)).toBe(true);
+		expect(patchClaudeSubagentControl(adapterPath)).toBe(true);
+		expect(patchClaudeSubagentControl(adapterPath)).toBe(false);
+
+		const handlers = new Map();
+		const connection = { onRequest: (method, parser, handler) => {
+			handlers.set(method, (params) => handler({ params: parser.parse(params) }));
+			return connection;
+		} };
+		const updates = [];
+		const consumerUpdates = [];
+		const stopped = [];
+		const session = { liveBackgroundTasks: new Map(), query: { stopTask: async (taskId) => { stopped.push(taskId); } } };
+		const agent = {
+			sessions: { s1: session },
+			client: { sessionUpdate: async (notification) => { updates.push(notification); } },
+			logger: { error: () => {} },
+			goal: () => ({}),
+		};
+		const RequestError = {
+			invalidParams: (data, message) => Object.assign(new Error(message), { code: -32602, data }),
+		};
+		const planModeHook = async () => ({});
+		const adapter = new Function(
+			"connection", "agent", "GOAL_CONTROL_METHOD", "parseGoalRequest", "RequestError",
+			"userProvidedOptions", "fileChangeAuditSupport", "forwardSubagentText", "planModeHook", "sendUpdate",
+			`${readFileSync(adapterPath, "utf8")}\nreturn { initializeMeta, queryOptions, onMessage };`,
+		)(
+			connection, agent, "goal", (params) => params, RequestError,
+			userHooks ? { hooks: { PreToolUse: userHooks, PostToolUse: userHooks } } : undefined,
+			undefined, true, planModeHook,
+			async (notification) => { consumerUpdates.push(notification); },
+		);
+		const options = adapter.queryOptions.call(agent, "s1");
+		const [inboxHook] = options.hooks.PostToolUse.find((matcher) => matcher.matcher === undefined && matcher.hooks[0] !== planModeHook).hooks;
+		return {
+			adapter, options, session, updates, consumerUpdates, stopped, planModeHook, inboxHook,
+			onMessage: (message) => adapter.onMessage(session, { session_id: "s1", ...message }),
+			message: (fields) => handlers.get("_claude/subagent_message")({ sessionId: "s1", ...fields }),
+			stop: (fields) => handlers.get("_claude/subagent_stop")({ sessionId: "s1", ...fields }),
+			preToolUse: (fields) => inboxHook({ hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "toolu_read", ...fields }),
+			postToolUse: (fields) => inboxHook({ hook_event_name: "PostToolUse", tool_name: "Read", tool_use_id: "toolu_read", ...fields }),
+		};
+	}
+
+	const inboxOf = (notification) => {
+		expect(notification.sessionId).toBe("s1");
+		const { update } = notification;
+		expect(Object.keys(update).sort()).toEqual(["_meta", "sessionUpdate", "toolCallId"]);
+		expect(update.sessionUpdate).toBe("tool_call_update");
+		expect(Object.keys(update._meta.claudeCode)).toEqual(["subagentInbox"]);
+		return { toolCallId: update.toolCallId, inbox: update._meta.claudeCode.subagentInbox };
+	};
+
+	it("advertises the requests and adds its hook to both tool hook lists without a matcher", () => {
+		const userHook = { matcher: "Bash", hooks: [async () => ({})] };
+		const { adapter, options, planModeHook, inboxHook } = load({ userHooks: [userHook] });
+		expect(adapter.initializeMeta()._meta.subagentControl).toEqual({
+			supported: true, messageMethod: "_claude/subagent_message", stopMethod: "_claude/subagent_stop",
+		});
+		expect(adapter.initializeMeta()._meta.steering).toEqual({ supported: true });
+
+		const pre = options.hooks.PreToolUse;
+		expect(pre).toHaveLength(3);
+		expect(pre[0]).toBe(userHook);
+		expect(pre[1].matcher).toBeUndefined();
+		expect(pre[1].hooks).toHaveLength(1);
+		expect(pre[2].matcher).toBe("Agent|Task");
+		const post = options.hooks.PostToolUse;
+		expect(post).toHaveLength(3);
+		expect(post[0]).toBe(userHook);
+		expect(post[1].matcher).toBeUndefined();
+		expect(post[1].hooks).toEqual([inboxHook]);
+		expect(post[2].hooks).toEqual([planModeHook]);
+	});
+
+	it("hands queued messages only to the subagent whose agent_id made the call", async () => {
+		const { onMessage, message, preToolUse, postToolUse, updates } = load();
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		await onMessage({ subtype: "task_started", task_id: "agent-2", tool_use_id: "toolu_other", subagent_type: "Plan" });
+
+		expect(await message({ toolUseId: "toolu_agent", id: "m1", text: "  Skip the tests folder.  " })).toEqual({ id: "m1", state: "queued" });
+		expect(updates).toHaveLength(1);
+		const queued = inboxOf(updates[0]);
+		expect(queued.toolCallId).toBe("toolu_agent");
+		expect(queued.inbox).toHaveLength(1);
+		expect(queued.inbox[0]).toMatchObject({ id: "m1", text: "Skip the tests folder.", state: "queued" });
+		expect(typeof queued.inbox[0].at).toBe("number");
+		// A retry with the same id is the same message.
+		expect(await message({ toolUseId: "toolu_agent", id: "m1", text: "Skip the tests folder." })).toEqual({ id: "m1", state: "queued" });
+		expect(updates).toHaveLength(1);
+
+		// The main thread's calls carry no agent_id; another subagent's carry its own.
+		expect(await preToolUse({})).toEqual({});
+		expect(await preToolUse({ agent_id: "agent-2" })).toEqual({});
+		expect(await postToolUse({ agent_id: "agent-2" })).toEqual({});
+		expect(updates).toHaveLength(1);
+
+		await message({ toolUseId: "toolu_agent", id: "m2", text: "Report the file paths you find." });
+		const delivered = await preToolUse({ agent_id: "agent-1" });
+		expect(delivered).toEqual({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				additionalContext: `${prefix}Skip the tests folder.\n\n${prefix}Report the file paths you find.`,
+			},
+		});
+		const afterDelivery = inboxOf(updates.at(-1));
+		expect(afterDelivery.inbox.map(({ id, state }) => [id, state])).toEqual([["m1", "delivered"], ["m2", "delivered"]]);
+		expect(afterDelivery.inbox.every((entry) => typeof entry.deliveredAt === "number")).toBe(true);
+		expect(await preToolUse({ agent_id: "agent-1" })).toEqual({});
+
+		await message({ toolUseId: "toolu_agent", id: "m3", text: "Stop after the parser." });
+		expect(await postToolUse({ agent_id: "agent-1" })).toEqual({
+			hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: `${prefix}Stop after the parser.` },
+		});
+		expect(await message({ toolUseId: "toolu_agent", id: "m3", text: "Stop after the parser." })).toEqual({ id: "m3", state: "delivered" });
+	});
+
+	it("drops what a finished subagent never picked up and forgets it", async () => {
+		const { onMessage, message, stop, preToolUse, postToolUse, updates, consumerUpdates } = load();
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		await message({ toolUseId: "toolu_agent", id: "m1", text: "Delivered first." });
+		await preToolUse({ agent_id: "agent-1" });
+		await message({ toolUseId: "toolu_agent", id: "m2", text: "Too late." });
+
+		await onMessage({ subtype: "task_notification", task_id: "agent-1", status: "completed" });
+		expect(consumerUpdates).toHaveLength(1);
+		const dropped = inboxOf(consumerUpdates[0]);
+		expect(dropped.toolCallId).toBe("toolu_agent");
+		expect(dropped.inbox.map(({ id, state }) => [id, state])).toEqual([["m1", "delivered"], ["m2", "dropped"]]);
+		const updateCount = updates.length;
+		expect(await preToolUse({ agent_id: "agent-1" })).toEqual({});
+		expect(updates).toHaveLength(updateCount);
+		await expect(message({ toolUseId: "toolu_agent", id: "m3", text: "Anyone there?" })).rejects.toMatchObject({
+			code: -32602, data: { reason: "subagentNotRunning" },
+		});
+		await expect(stop({ toolUseId: "toolu_agent" })).rejects.toMatchObject({ data: { reason: "subagentNotRunning" } });
+
+		// A terminal task_updated ends it too; with nothing undelivered there is nothing to report.
+		await onMessage({ subtype: "task_started", task_id: "agent-2", tool_use_id: "toolu_two", subagent_type: "Plan" });
+		await onMessage({ subtype: "task_updated", task_id: "agent-2", patch: { status: "running" } });
+		expect(await message({ toolUseId: "toolu_two", id: "m4", text: "Still running." })).toEqual({ id: "m4", state: "queued" });
+		await preToolUse({ agent_id: "agent-2" });
+		await onMessage({ subtype: "task_updated", task_id: "agent-2", patch: { status: "killed" } });
+		expect(consumerUpdates).toHaveLength(1);
+		await expect(message({ toolUseId: "toolu_two", id: "m5", text: "Gone?" })).rejects.toMatchObject({ data: { reason: "subagentNotRunning" } });
+
+		// A foreground Agent call returns when its subagent is done; a background one returns at launch.
+		await onMessage({ subtype: "task_started", task_id: "agent-3", tool_use_id: "toolu_bg", subagent_type: "Explore" });
+		await onMessage({ subtype: "task_started", task_id: "agent-4", tool_use_id: "toolu_fg", subagent_type: "Explore" });
+		await message({ toolUseId: "toolu_fg", id: "m6", text: "Never read." });
+		await postToolUse({ tool_name: "Agent", tool_use_id: "toolu_bg", tool_response: { status: "async_launched", agentId: "agent-3" } });
+		await postToolUse({ tool_name: "Agent", tool_use_id: "toolu_fg", tool_response: { status: "completed", agentId: "agent-4" } });
+		expect(inboxOf(updates.at(-1)).inbox.map(({ id, state }) => [id, state])).toEqual([["m6", "dropped"]]);
+		expect(await message({ toolUseId: "toolu_bg", id: "m7", text: "Still here." })).toEqual({ id: "m7", state: "queued" });
+		await expect(message({ toolUseId: "toolu_fg", id: "m8", text: "Done?" })).rejects.toMatchObject({ data: { reason: "subagentNotRunning" } });
+	});
+
+	it("stops the subagent's task through the SDK", async () => {
+		const { onMessage, stop, stopped } = load();
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		expect(await stop({ toolUseId: "toolu_agent" })).toEqual({ ok: true });
+		expect(stopped).toEqual(["agent-1"]);
+	});
+
+	it("tracks subagent tasks only and refuses malformed requests", async () => {
+		const { onMessage, message, stop, session, updates } = load();
+		await onMessage({ subtype: "task_started", task_id: "shell-1", tool_use_id: "toolu_bash" });
+		await expect(message({ toolUseId: "toolu_bash", id: "m1", text: "Hello" })).rejects.toMatchObject({ data: { reason: "subagentNotRunning" } });
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		for (const fields of [
+			{ toolUseId: "toolu_agent", id: "m1", text: "   " },
+			{ toolUseId: "toolu_agent", text: "No id" },
+			{ toolUseId: "toolu_agent", id: "m1", text: 7 },
+		]) {
+			await expect(message(fields)).rejects.toMatchObject({ code: -32602, data: undefined });
+		}
+		for (const sessionId of [undefined, "missing", "__proto__"]) {
+			await expect(message({ sessionId, toolUseId: "toolu_agent", id: "m1", text: "Hi" })).rejects.toThrow("Live Claude session unavailable.");
+			await expect(stop({ sessionId, toolUseId: "toolu_agent" })).rejects.toThrow("Live Claude session unavailable.");
+		}
+		session.queryClosed = true;
+		await expect(stop({ toolUseId: "toolu_agent" })).rejects.toThrow("Live Claude session unavailable.");
+		expect(updates).toEqual([]);
+	});
+
+	it("reports at most the last 20 messages and keeps undelivered ones", async () => {
+		const { onMessage, message, preToolUse, updates } = load();
+		await onMessage({ subtype: "task_started", task_id: "agent-1", tool_use_id: "toolu_agent", subagent_type: "Explore" });
+		for (let n = 1; n <= 15; n++) await message({ toolUseId: "toolu_agent", id: `d${n}`, text: `delivered ${n}` });
+		await preToolUse({ agent_id: "agent-1" });
+		for (let n = 1; n <= 10; n++) await message({ toolUseId: "toolu_agent", id: `q${n}`, text: `queued ${n}` });
+		const { inbox } = inboxOf(updates.at(-1));
+		expect(inbox).toHaveLength(20);
+		expect(inbox.filter((entry) => entry.state === "queued").map((entry) => entry.id)).toEqual(
+			Array.from({ length: 10 }, (_, i) => `q${i + 1}`),
+		);
+		expect(inbox[0].id).toBe("d6");
+	});
+
+	it("fails packaging without modifying a changed adapter", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		for (const changed of [
+			adapterSource.replace('const STEER_PRIORITY = "now";', 'const STEER_PRIORITY = "later";'),
+			adapterSource.replace('                            case "task_notification":\n', ""),
+			adapterSource.replace("PostToolUse: [", "PostToolUse: hooks.post.concat(["),
+			adapterSource.replace("connection.onRequest(GOAL_CONTROL_METHOD", "connection.onNotification(GOAL_CONTROL_METHOD"),
+		]) {
+			writeFileSync(adapterPath, changed);
+			patchClaudeSubagentProgress(adapterPath);
+			const progressed = readFileSync(adapterPath, "utf8");
+			expect(() => patchClaudeSubagentControl(adapterPath)).toThrow(/subagent control patch/);
+			expect(readFileSync(adapterPath, "utf8")).toBe(progressed);
+		}
+		// Without the progress patch's PreToolUse block there is nothing to extend.
+		writeFileSync(adapterPath, adapterSource);
+		expect(() => patchClaudeSubagentControl(adapterPath)).toThrow(/subagent control patch/);
+		expect(readFileSync(adapterPath, "utf8")).toBe(adapterSource);
 	});
 });
 

@@ -2859,6 +2859,31 @@ type SteerConversationResponse struct {
 	ActivityID string `json:"activityId,omitempty"`
 }
 
+// SubagentToolUseIDParam names one subagent by the tool call that spawned it.
+type SubagentToolUseIDParam struct {
+	ToolUseID string `path:"toolUseId" description:"providerItemId of the subagent's Agent/Task activity in the conversation snapshot."`
+}
+
+// SendSubagentMessageRequest is a message for one running subagent.
+type SendSubagentMessageRequest struct {
+	// Text reaches only that subagent, at its next tool call. The main agent's
+	// turn is not steered.
+	Text string `json:"text" description:"Message for the subagent, at most 8 KiB."`
+}
+
+// SendSubagentMessageResponse names the accepted message. Its later state is
+// reported on the spawning activity's detail.subagentInbox.
+type SendSubagentMessageResponse struct {
+	ID    string `json:"id"`
+	State string `json:"state" enum:"queued,delivered,dropped"`
+}
+
+// StopSubagentResponse acknowledges a stop request. The subagent's activity
+// settles when the provider reports it stopped.
+type StopSubagentResponse struct {
+	OK bool `json:"ok"`
+}
+
 // SteerOrSendConversationResponse reports the single durable outcome selected by
 // the atomic steer-or-send operation.
 type SteerOrSendConversationResponse struct {
@@ -3199,7 +3224,11 @@ type ConversationActivityResponse struct {
 	//   reasoning    text -- streamed while the model works, replaced by the
 	//                provider's settled summary when the item completes
 	//   mcp_tool     server, toolName, namespace, arguments, result, error, success,
-	//                progress
+	//                progress. A Claude Agent/Task call also carries nestedAgent,
+	//                subagentType, progressSummary, progressAt, lastToolName,
+	//                progressToolUses, and subagentInbox[] (the last 20 messages
+	//                sent to that subagent: id, text, state queued|delivered|
+	//                dropped, at and deliveredAt in Unix milliseconds)
 	//   plan         event "plan", explanation, steps[] with text and status
 	//   auto_review  reviewId, targetItemId, actionType, command, riskLevel,
 	//                rationale, decisionSource, status, durationMs

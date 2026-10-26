@@ -368,6 +368,372 @@ export function patchClaudeSteerSettlement(adapterPath) {
 	return true;
 }
 
+const SUBAGENT_REPORTING_RULE =
+	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
+	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words.";
+
+/**
+ * Stream what a Claude subagent is doing to its Agent/Task tool call.
+ *
+ * claude-agent-acp 0.70 drops the SDK's task_progress messages, and never asks
+ * the SDK for its periodic subagent summaries. Turn the summaries on and
+ * forward each subagent's progress as a meta-only tool_call_update on the
+ * Agent/Task call that spawned it, leaving the call's status, content, and
+ * title alone. A PreToolUse hook also appends AO's Status:/Decision: reporting
+ * rule to every Agent/Task prompt, after any user and file-change-audit hooks.
+ */
+export function patchClaudeSubagentProgress(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: forward a running subagent's progress to its Agent/Task call.")) return false;
+	const patches = [
+		[
+			"            includePartialMessages: true,\n            forwardSubagentText,\n",
+			[
+				"            includePartialMessages: true,",
+				"            forwardSubagentText,",
+				"            // AO: periodic Claude-written summaries for running subagents (task_progress.summary).",
+				"            agentProgressSummaries: true,",
+				"",
+			].join("\n"),
+		],
+		[
+			[
+				"                ...(fileChangeAuditSupport",
+				"                    ? {",
+				"                        PreToolUse: [",
+				"                            ...(userProvidedOptions?.hooks?.PreToolUse || []),",
+				"                            { hooks: [fileChangeAuditSupport.preToolUseHook] },",
+				"                        ],",
+				"                    }",
+				"                    : {}),",
+			].join("\n"),
+			[
+				"                PreToolUse: [",
+				"                    ...(userProvidedOptions?.hooks?.PreToolUse || []),",
+				"                    ...(fileChangeAuditSupport ? [{ hooks: [fileChangeAuditSupport.preToolUseHook] }] : []),",
+				"                    // AO: ask every subagent for Status:/Decision: lines.",
+				"                    {",
+				'                        matcher: "Agent|Task",',
+				"                        hooks: [",
+				"                            async (input) => {",
+				`                                const rule = ${JSON.stringify(SUBAGENT_REPORTING_RULE)};`,
+				"                                const toolInput = input.tool_input;",
+				'                                if (input.hook_event_name !== "PreToolUse" || (input.tool_name !== "Agent" && input.tool_name !== "Task") ||',
+				'                                    toolInput === null || typeof toolInput !== "object" || typeof toolInput.prompt !== "string" ||',
+				"                                    toolInput.prompt.endsWith(rule)) {",
+				"                                    return {};",
+				"                                }",
+				"                                return {",
+				"                                    hookSpecificOutput: {",
+				'                                        hookEventName: "PreToolUse",',
+				"                                        updatedInput: { ...toolInput, prompt: toolInput.prompt + rule },",
+				"                                    },",
+				"                                };",
+				"                            },",
+				"                        ],",
+				"                    },",
+				"                ],",
+			].join("\n"),
+		],
+		[
+			[
+				'                            case "files_persisted":',
+				'                            case "task_progress":',
+				"                                break;",
+				'                            case "task_started":',
+			].join("\n"),
+			[
+				'                            case "files_persisted":',
+				"                                break;",
+				'                            case "task_progress": {',
+				"                                // AO: forward a running subagent's progress to its Agent/Task call.",
+				"                                // Only the meta: the call keeps its own status, content, and title.",
+				"                                const progressTask = session.liveBackgroundTasks.get(message.task_id);",
+				"                                const progressToolCallId = message.tool_use_id ?? progressTask?.parentToolUseId;",
+				"                                if (!progressToolCallId || !(progressTask?.isSubagent || message.subagent_type)) {",
+				"                                    break;",
+				"                                }",
+				"                                await sendUpdate({",
+				"                                    sessionId: message.session_id,",
+				"                                    update: {",
+				'                                        sessionUpdate: "tool_call_update",',
+				"                                        toolCallId: progressToolCallId,",
+				"                                        _meta: {",
+				"                                            claudeCode: {",
+				"                                                subagentProgress: {",
+				'                                                    ...(typeof message.summary === "string" && message.summary.trim() !== "" && { summary: message.summary }),',
+				'                                                    ...(typeof message.last_tool_name === "string" && message.last_tool_name !== "" && { lastToolName: message.last_tool_name }),',
+				"                                                    ...(Number.isFinite(message.usage?.tool_uses) && { toolUses: message.usage.tool_uses }),",
+				"                                                    at: Date.now(),",
+				"                                                },",
+				"                                            },",
+				"                                        },",
+				"                                    },",
+				"                                });",
+				"                                break;",
+				"                            }",
+				'                            case "task_started":',
+			].join("\n"),
+		],
+	];
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's subagent progress patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
+const SUBAGENT_MESSAGE_PREFIX =
+	"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+
+// Module-level helpers the subagent control patch adds after STEER_PRIORITY.
+// Kept free of template literals so the injected source reads as written.
+const SUBAGENT_CONTROL_HELPERS = [
+	"// AO: let the client message or stop one Agent/Task subagent directly.",
+	'const AO_SUBAGENT_MESSAGE_METHOD = "_claude/subagent_message";',
+	'const AO_SUBAGENT_STOP_METHOD = "_claude/subagent_stop";',
+	"const AO_SUBAGENT_INBOX_LIMIT = 20;",
+	`const AO_SUBAGENT_MESSAGE_PREFIX = ${JSON.stringify(SUBAGENT_MESSAGE_PREFIX)};`,
+	"// Running subagents by the tool_use id of the Agent/Task call that spawned them.",
+	"// Claude Code registers an Agent-tool subagent's task under the subagent's agent",
+	"// id (its task registry entry is built with id = agentId), so task_started.task_id",
+	"// is the agent_id every hook input from inside that subagent carries, the same",
+	"// invariant canUseTool's agentID attribution relies on.",
+	"function aoSubagents(session) {",
+	"    return (session.aoSubagents ??= new Map());",
+	"}",
+	"function aoTrackSubagent(session, message) {",
+	'    if (!message.subagent_type || typeof message.tool_use_id !== "string" || typeof message.task_id !== "string") {',
+	"        return;",
+	"    }",
+	"    const subagents = aoSubagents(session);",
+	"    const inbox = subagents.get(message.tool_use_id)?.inbox ?? [];",
+	"    subagents.set(message.tool_use_id, { toolUseId: message.tool_use_id, taskId: message.task_id, inbox });",
+	"}",
+	"function aoSubagentForAgent(session, agentId) {",
+	'    if (typeof agentId !== "string" || agentId === "" || !(session?.aoSubagents instanceof Map)) {',
+	"        return undefined;",
+	"    }",
+	"    for (const record of session.aoSubagents.values()) {",
+	"        if (record.taskId === agentId) {",
+	"            return record;",
+	"        }",
+	"    }",
+	"    return undefined;",
+	"}",
+	"function aoSubagentInboxUpdate(sessionId, record) {",
+	"    return {",
+	"        sessionId,",
+	"        update: {",
+	'            sessionUpdate: "tool_call_update",',
+	"            toolCallId: record.toolUseId,",
+	"            _meta: {",
+	"                claudeCode: {",
+	"                    subagentInbox: record.inbox.slice(-AO_SUBAGENT_INBOX_LIMIT).map((entry) => ({ ...entry })),",
+	"                },",
+	"            },",
+	"        },",
+	"    };",
+	"}",
+	"// Forget a finished subagent. Returns its record when that changed the inbox:",
+	"// a message the subagent never picked up is dropped, not delivered later.",
+	"function aoEndSubagent(session, { taskId, toolUseId }) {",
+	"    const record = toolUseId !== undefined ? session.aoSubagents?.get(toolUseId) : aoSubagentForAgent(session, taskId);",
+	"    if (!record) {",
+	"        return undefined;",
+	"    }",
+	"    session.aoSubagents.delete(record.toolUseId);",
+	'    const undelivered = record.inbox.filter((entry) => entry.state === "queued");',
+	"    for (const entry of undelivered) {",
+	'        entry.state = "dropped";',
+	"    }",
+	"    return undelivered.length > 0 ? record : undefined;",
+	"}",
+	"async function aoReportSubagentInbox(agent, sessionId, record) {",
+	"    try {",
+	"        await agent.client.sessionUpdate(aoSubagentInboxUpdate(sessionId, record));",
+	"    }",
+	"    catch (error) {",
+	'        agent.logger.error("Failed to report a subagent inbox:", error);',
+	"    }",
+	"}",
+	"// A PreToolUse/PostToolUse hook with no matcher. A call made inside a subagent",
+	"// carries that subagent's agent_id and is the next point at which it can read a",
+	"// message; the main thread's calls carry none, so it never receives one.",
+	"function aoSubagentInboxHook(agent, sessionId) {",
+	"    return async (input) => {",
+	"        const session = Object.hasOwn(agent.sessions, sessionId) ? agent.sessions[sessionId] : undefined;",
+	'        if (!session || input === null || typeof input !== "object") {',
+	"            return {};",
+	"        }",
+	'        if (input.hook_event_name === "PostToolUse" && (input.tool_name === "Agent" || input.tool_name === "Task") &&',
+	'            input.tool_response?.status === "completed") {',
+	"            // A foreground Agent call returns when its subagent is done; a",
+	"            // background one returns at launch (async_launched) and keeps running.",
+	"            const ended = aoEndSubagent(session, { toolUseId: input.tool_use_id });",
+	"            if (ended) {",
+	"                await aoReportSubagentInbox(agent, sessionId, ended);",
+	"            }",
+	"        }",
+	"        const record = aoSubagentForAgent(session, input.agent_id);",
+	'        const queued = record ? record.inbox.filter((entry) => entry.state === "queued") : [];',
+	"        if (queued.length === 0) {",
+	"            return {};",
+	"        }",
+	"        // Marked before any await so a parallel tool call cannot deliver them twice.",
+	"        const deliveredAt = Date.now();",
+	"        for (const entry of queued) {",
+	'            entry.state = "delivered";',
+	"            entry.deliveredAt = deliveredAt;",
+	"        }",
+	"        await aoReportSubagentInbox(agent, sessionId, record);",
+	"        return {",
+	"            hookSpecificOutput: {",
+	"                hookEventName: input.hook_event_name,",
+	'                additionalContext: queued.map((entry) => AO_SUBAGENT_MESSAGE_PREFIX + entry.text).join("\\n\\n"),',
+	"            },",
+	"        };",
+	"    };",
+	"}",
+	"function aoLiveSession(agent, params) {",
+	"    const id = params?.sessionId;",
+	'    const session = typeof id === "string" && Object.hasOwn(agent.sessions, id) ? agent.sessions[id] : undefined;',
+	"    if (!session || session.queryClosed) {",
+	'        throw RequestError.invalidParams(undefined, "Live Claude session unavailable.");',
+	"    }",
+	"    return session;",
+	"}",
+	"function aoRunningSubagent(session, params) {",
+	"    const toolUseId = params?.toolUseId;",
+	'    const record = typeof toolUseId === "string" ? session.aoSubagents?.get(toolUseId) : undefined;',
+	"    if (!record) {",
+	'        throw RequestError.invalidParams({ reason: "subagentNotRunning" }, "That subagent is not running.");',
+	"    }",
+	"    return record;",
+	"}",
+	"async function aoMessageSubagent(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const id = params?.id;",
+	'    const text = typeof params?.text === "string" ? params.text.trim() : "";',
+	'    if (typeof id !== "string" || id === "" || text === "") {',
+	'        throw RequestError.invalidParams(undefined, "A subagent message needs an id and text.");',
+	"    }",
+	"    const record = aoRunningSubagent(session, params);",
+	"    const existing = record.inbox.find((entry) => entry.id === id);",
+	"    if (existing) {",
+	"        return { id, state: existing.state };",
+	"    }",
+	'    record.inbox.push({ id, text, state: "queued", at: Date.now() });',
+	"    // Bound the record by forgetting the oldest settled entries; queued ones stay.",
+	"    while (record.inbox.length > AO_SUBAGENT_INBOX_LIMIT) {",
+	'        const settled = record.inbox.findIndex((entry) => entry.state !== "queued");',
+	"        if (settled < 0) {",
+	"            break;",
+	"        }",
+	"        record.inbox.splice(settled, 1);",
+	"    }",
+	"    await aoReportSubagentInbox(agent, params.sessionId, record);",
+	'    return { id, state: "queued" };',
+	"}",
+	"async function aoStopSubagent(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const record = aoRunningSubagent(session, params);",
+	"    // The SDK answers with a task_notification (status stopped), which ends the record.",
+	"    await session.query.stopTask(record.taskId);",
+	"    return { ok: true };",
+	"}",
+].join("\n");
+
+/**
+ * Let AO message or stop one running Claude subagent directly.
+ *
+ * claude-agent-acp 0.70 can only steer the main agent's turn. Track every
+ * Agent/Task subagent by the tool_use id of its call, keep a per-subagent inbox
+ * that the `_claude/subagent_message` extension request fills, and hand queued
+ * messages to the subagent from PreToolUse/PostToolUse hooks (no matcher) as
+ * additionalContext when the hook input's agent_id is that subagent's. The
+ * inbox state reaches AO as a meta-only tool_call_update on the Agent/Task call
+ * (`_meta.claudeCode.subagentInbox`). `_claude/subagent_stop` stops the
+ * subagent's task through the SDK. Apply after patchClaudeSubagentProgress,
+ * whose PreToolUse block this extends.
+ */
+export function patchClaudeSubagentControl(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: let the client message or stop one Agent/Task subagent directly.")) return false;
+	const ended = [
+		"                                {",
+		"                                    // AO: a settled subagent drops what it never picked up.",
+		"                                    const endedSubagent = aoEndSubagent(session, { taskId: message.task_id });",
+		"                                    if (endedSubagent) {",
+		"                                        await sendUpdate(aoSubagentInboxUpdate(message.session_id, endedSubagent));",
+		"                                    }",
+		"                                }",
+	];
+	const taskStarted = [
+		"                                session.liveBackgroundTasks.set(message.task_id, {",
+		"                                    parentToolUseId: message.tool_use_id,",
+		"                                    isSubagent: !!message.subagent_type,",
+		"                                });",
+		"",
+	].join("\n");
+	const goalRegistration = ".onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params))";
+	const steeringMeta = "                steering: {\n                    supported: true,\n                },\n";
+	const postToolUse = "                PostToolUse: [\n                    ...(userProvidedOptions?.hooks?.PostToolUse || []),\n";
+	const inboxHook = [
+		"                    // AO: hand a subagent the messages queued for it, at any tool call.",
+		"                    { hooks: [aoSubagentInboxHook(this, sessionId)] },",
+		"",
+	].join("\n");
+	const patches = [
+		['const STEER_PRIORITY = "now";\n', `const STEER_PRIORITY = "now";\n${SUBAGENT_CONTROL_HELPERS}\n`],
+		[
+			steeringMeta,
+			[
+				steeringMeta.trimEnd(),
+				"                // AO: per-subagent message and stop requests.",
+				"                subagentControl: {",
+				"                    supported: true,",
+				"                    messageMethod: AO_SUBAGENT_MESSAGE_METHOD,",
+				"                    stopMethod: AO_SUBAGENT_STOP_METHOD,",
+				"                },",
+				"",
+			].join("\n"),
+		],
+		[taskStarted, `                                aoTrackSubagent(session, message);\n${taskStarted}`],
+		['                            case "task_notification":\n', ['                            case "task_notification":', ...ended, ""].join("\n")],
+		[
+			'                                    message.patch.status === "killed") {\n',
+			['                                    message.patch.status === "killed") {', ...ended.map((line) => `    ${line}`), ""].join("\n"),
+		],
+		[
+			"                    // AO: ask every subagent for Status:/Decision: lines.\n",
+			`${inboxHook}                    // AO: ask every subagent for Status:/Decision: lines.\n`,
+		],
+		[postToolUse, postToolUse + inboxHook],
+		[
+			goalRegistration,
+			[
+				".onRequest(AO_SUBAGENT_MESSAGE_METHOD, { parse: (params) => params }, (ctx) => aoMessageSubagent(agent, ctx.params))",
+				"        .onRequest(AO_SUBAGENT_STOP_METHOD, { parse: (params) => params }, (ctx) => aoStopSubagent(agent, ctx.params))",
+				`        ${goalRegistration}`,
+			].join("\n"),
+		],
+	];
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's subagent control patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
 export function pruneNodeDistribution(nodeRoot) {
 	// The Unix archives expose npm/corepack as bin/ symlinks into lib/. Remove
 	// the entry points before their targets so packagers never see dangling
