@@ -100,6 +100,14 @@ changed_go_packages() {
     while read -r d; do [[ -d "${repo_root}/${d}" ]] && echo "./${d#backend/}"; done
 }
 
+# Packaging (and Forge) rebuild better-sqlite3 in place for Electron's ABI,
+# which breaks the Node-hosted vitest run until it is rebuilt for Node.
+ensure_node_native() {
+  (cd "${frontend}" && node -e "new (require('better-sqlite3'))(':memory:')" >/dev/null 2>&1) && return
+  say "rebuilding better-sqlite3 for Node $(node -v)"
+  (cd "${frontend}" && npm rebuild better-sqlite3 --loglevel=error >/dev/null)
+}
+
 # Fast gate for the edit loop: build everything, vet/test only what changed.
 cmd_check() {
   check_go
@@ -121,6 +129,7 @@ cmd_check() {
     { grep -E '\.(ts|tsx|css)$' || true; } | sed 's#^frontend/##' | sort -u |
     while read -r f; do [[ -f "${frontend}/${f}" ]] && echo "${f}"; done | tr '\n' ' ')"
   if [[ -n "${files// }" ]]; then
+    ensure_node_native
     say "vitest related to changed frontend files"
     # shellcheck disable=SC2086
     (cd "${frontend}" && npx vitest related --run --config vite.renderer.config.ts --passWithNoTests ${files})
@@ -132,6 +141,7 @@ cmd_check() {
 cmd_check_all() {
   cmd_setup
   (cd "${repo_root}" && npm run lint)
+  ensure_node_native
   (cd "${frontend}" && npm run typecheck && npm test)
 }
 
