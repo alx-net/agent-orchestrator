@@ -18,11 +18,12 @@ import (
 
 // Four statements keep a turn only when the active lineage holds one of its
 // messages or activities at or before the fork point. That EXISTS is
-// correlated on turn_id, which no index covers. Without a conversation_id
-// bound it scans the whole message and activity tables, and once
-// sqlite_stat1 exists the planner skip-scans (branch_id, sequence) across
+// correlated on turn_id. Before turn_id was indexed, without a conversation_id
+// bound it scanned the whole message and activity tables, and once
+// sqlite_stat1 existed the planner skip-scanned (branch_id, sequence) across
 // every branch in the database instead. Bound by conversation_id, it
-// range-seeks the (conversation_id, sequence) index.
+// range-seeks the (conversation_id, sequence) index; with the turn_id index
+// the planner may seek the turn's own rows instead. Either seek is bounded.
 const (
 	lineageMessageBound  = "lineage_message.conversation_id = conversation_turns.conversation_id"
 	lineageActivityBound = "lineage_activity.conversation_id = conversation_turns.conversation_id"
@@ -250,7 +251,7 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 					t.Fatalf("%s: %v", name, err)
 				}
 
-				// Plan: the lineage lookups seek the conversation's own range.
+				// Plan: the lineage lookups seek the conversation's or the turn's own rows.
 				plan := probe.plan(t)
 				for _, table := range []string{"lineage_message", "lineage_activity"} {
 					found := false
@@ -259,8 +260,9 @@ func TestLineageTurnQueriesAreBoundByConversation(t *testing.T) {
 							continue
 						}
 						found = true
-						if !strings.Contains(line, "conversation_id=?") || strings.Contains(line, "ANY(") || strings.HasPrefix(strings.TrimSpace(line), "SCAN") {
-							t.Errorf("%s does not seek by conversation_id: %q\nfull plan:\n%s", table, line, plan)
+						seeks := strings.Contains(line, "conversation_id=?") || strings.Contains(line, "turn_id=?")
+						if !seeks || strings.Contains(line, "ANY(") || strings.HasPrefix(strings.TrimSpace(line), "SCAN") {
+							t.Errorf("%s does not seek by conversation_id or turn_id: %q\nfull plan:\n%s", table, line, plan)
 						}
 					}
 					if !found {

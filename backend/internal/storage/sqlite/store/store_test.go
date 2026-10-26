@@ -933,6 +933,41 @@ func TestSessionCreateAssignsPerProjectID(t *testing.T) {
 	}
 }
 
+func TestListLiveSessionsSkipsTerminated(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	seedProject(t, s, "ao")
+	for _, project := range []string{"mer", "mer", "ao"} {
+		if _, err := s.CreateSession(ctx, sampleRecord(project)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended, _, err := s.GetSession(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended.IsTerminated = true
+	if err := s.UpdateSession(ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err := s.ListLiveSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []domain.SessionID
+	for _, rec := range live {
+		ids = append(ids, rec.ID)
+	}
+	if len(ids) != 2 || ids[0] != "ao-1" || ids[1] != "mer-2" {
+		t.Fatalf("live sessions = %v, want [ao-1 mer-2] in ListAllSessions order", ids)
+	}
+	if live[1].Metadata.Branch != "feat/x" || live[1].Harness != domain.HarnessClaudeCode {
+		t.Fatalf("live session record not fully decoded: %+v", live[1])
+	}
+}
+
 func TestSessionCreateAssignsStandaloneIDsWithoutProject(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
