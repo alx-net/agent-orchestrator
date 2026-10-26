@@ -9,35 +9,18 @@
  * back to those and says the list is partial instead of claiming the rest passed.
  */
 
+import type { components } from "../../api/schema";
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { prBrowserUrl, prCanMerge, prChecksUrl } from "./pr-display";
 
-// TODO(api): use generated types once openapi lands
-export type PRCheckStatus = "queued" | "in_progress" | "passed" | "failed" | "cancelled" | "skipped" | "neutral";
+export type PRCheck = components["schemas"]["SessionPRCheck"];
+export type PRCheckStatus = PRCheck["status"];
 
-// TODO(api): use generated types once openapi lands
-export interface PRCheck {
-	name: string;
-	workflow?: string;
-	status: PRCheckStatus;
-	conclusion?: string;
-	required: boolean;
-	startedAt?: string;
-	completedAt?: string;
-	url?: string;
-}
-
-// TODO(api): use generated types once openapi lands
-/** GitHub's raw merge state, passed through by the daemon. */
+/** GitHub's raw merge state as the daemon passes it through (known values). */
 export type PRMergeStateStatus = "CLEAN" | "BLOCKED" | "BEHIND" | "DIRTY" | "UNSTABLE" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN";
 
-// TODO(api): use generated types once openapi lands
-/** The PR summary with the fields the merge box reads ahead of the generated schema. */
-export type MergeBoxPR = SessionPRSummary & {
-	/** Every check on the head commit, pre-sorted failing → running → skipped → passed, required first. */
-	checks?: PRCheck[];
-	mergeStateStatus?: PRMergeStateStatus;
-};
+/** The PR summary the merge box reads: every head-commit check plus the raw merge state. */
+export type MergeBoxPR = SessionPRSummary;
 
 export type CheckGroupKey = "failing" | "running" | "skipped" | "passed";
 
