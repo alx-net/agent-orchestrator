@@ -1660,9 +1660,10 @@ function ChatWorkspaceContent({
 	}, [t]);
 	// Stepping in from a card: a steer straight into the running main turn, or a
 	// message to one subagent's inbox. Subagents are reached through the daemon
-	// that runs them, which a cloud session does not have.
+	// that runs them, which a cloud session does not have, and only when the
+	// bridge advertises the subagents extension.
 	const boardControls = useAgentBoardControls({
-		sessionId: session && !session.cloud ? session.id : undefined,
+		sessionId: session && !session.cloud && can(snapshot, "subagents") ? session.id : undefined,
 		hostId: activeRemoteHostId,
 		steer: onSteer && turn?.state === "running" ? steer : undefined,
 		cards: subagentCards,

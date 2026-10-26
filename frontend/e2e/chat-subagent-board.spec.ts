@@ -121,7 +121,7 @@ function snapshot(board: BoardState = untouched()) {
 		],
 		activities,
 		// Claude's steering extension, which offers a steer into the running turn.
-		capabilities: ["steer"],
+		capabilities: ["steer", "subagents"],
 		settings: {},
 	};
 }

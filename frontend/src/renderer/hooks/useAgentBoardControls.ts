@@ -12,7 +12,6 @@
  */
 
 import { QueryClientContext } from "@tanstack/react-query";
-import type { Client } from "openapi-fetch";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiErrorMessage } from "../lib/api-client";
@@ -21,59 +20,11 @@ import type { SentMessage, SubagentCard } from "../lib/subagent-board";
 import type { ChatSteerOutcome } from "../types/conversation";
 import { conversationQueryKey, refreshRemoteConversation } from "./useConversation";
 
-// TODO(api): switch to generated types once openapi lands
-export interface SubagentMessageRequest {
-	text: string;
-}
-export interface SubagentMessageResponse {
-	id: string;
-	state: "queued";
-}
-export interface SubagentStopResponse {
-	ok: true;
-}
+export type SubagentMessageResponse = components["schemas"]["SendSubagentMessageResponse"];
 
-type APIError = components["schemas"]["APIError"];
-type JSONResponse<T> = { headers: { [name: string]: unknown }; content: { "application/json": T } };
-type SubagentErrors = {
-	400: JSONResponse<APIError>;
-	404: JSONResponse<APIError>;
-	409: JSONResponse<APIError>;
-	422: JSONResponse<APIError>;
-	500: JSONResponse<APIError>;
-};
-type SubagentPathParameters = {
-	query?: never;
-	header?: never;
-	path: { sessionId: string; toolUseId: string };
-	cookie?: never;
-};
-type NoParameters = { query?: never; header?: never; path?: never; cookie?: never };
-
-/** The two subagent routes, shaped as openapi-typescript would generate them. */
-interface SubagentPaths {
-	"/api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/messages": {
-		parameters: NoParameters;
-		post: {
-			parameters: SubagentPathParameters;
-			requestBody: { content: { "application/json": SubagentMessageRequest } };
-			responses: { 202: JSONResponse<SubagentMessageResponse> } & SubagentErrors;
-		};
-	};
-	"/api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/stop": {
-		parameters: NoParameters;
-		post: {
-			parameters: SubagentPathParameters;
-			requestBody?: never;
-			responses: { 202: JSONResponse<SubagentStopResponse> } & SubagentErrors;
-		};
-	};
-}
-
-// The session's own daemon client, with its base URL and error handling; only the
-// path types are local until the routes are in the generated schema.
-function subagentClient(hostId?: string): Client<SubagentPaths> {
-	return clientForSessionHost(hostId) as unknown as Client<SubagentPaths>;
+// The session's own daemon client, with its base URL and error handling.
+function subagentClient(hostId?: string) {
+	return clientForSessionHost(hostId);
 }
 
 /** A refused subagent request, with the daemon's status and error envelope. */

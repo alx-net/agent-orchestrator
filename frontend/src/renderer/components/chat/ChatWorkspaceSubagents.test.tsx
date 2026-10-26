@@ -83,7 +83,14 @@ function withSubagent({ keepPending = false }: { keepPending?: boolean } = {}): 
 	};
 	// The fixture's pending approval would take the composer's place.
 	const items = keepPending ? chatFixture.items : chatFixture.items.filter((item) => item.kind !== "activity" || item.status !== "pending");
-	return { ...chatFixture, harness: "claude-code", items: [...items, agent, voice, reply], latestSequence: chatFixture.latestSequence + 3 };
+	return {
+		...chatFixture,
+		harness: "claude-code",
+		// The patched Claude bridge advertises per-subagent messaging and stop.
+		capabilities: [...(chatFixture.capabilities ?? []), "subagents"],
+		items: [...items, agent, voice, reply],
+		latestSequence: chatFixture.latestSequence + 3,
+	};
 }
 
 describe("ChatWorkspace agents board", () => {
@@ -156,6 +163,16 @@ describe("ChatWorkspace agents board", () => {
 		expect(onInterrupt).not.toHaveBeenCalled();
 		await user.click(within(within(board).getByRole("article", { name: "Main agent" })).getByRole("button", { name: "Stop turn" }));
 		expect(onInterrupt).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the turn-wide stop on subagent cards when the bridge cannot reach one subagent", async () => {
+		const user = userEvent.setup();
+		const snapshot = withSubagent();
+		render(<ChatWorkspace snapshot={{ ...snapshot, capabilities: snapshot.capabilities?.filter((c) => c !== "subagents") }} session={session} />);
+		await user.click(screen.getByRole("tab", { name: /Agents/ }));
+		const subagent = within(screen.getByTestId("chat-subagents-panel")).getByRole("article", { name: "Audit the auth flow" });
+		expect(within(subagent).queryByRole("button", { name: "Stop subagent" })).not.toBeInTheDocument();
+		expect(within(subagent).queryByRole("button", { name: "Message subagent" })).not.toBeInTheDocument();
 	});
 
 	it("steers the running main turn from the main card instead of queueing behind it", async () => {
