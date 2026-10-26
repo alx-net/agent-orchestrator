@@ -156,7 +156,7 @@ import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { SessionStartup } from "./SessionStartup";
 import { ActivityRun } from "./ActivityRun";
 import { SubagentBoard } from "./SubagentBoard";
-import { activeSubagentCount, subagentAskPrefix, useSubagentCards, type SubagentCard } from "../../lib/subagent-board";
+import { activeSubagentCount, subagentAskPrefix, useSubagentBoard, type SubagentCard } from "../../lib/subagent-board";
 import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
@@ -943,10 +943,11 @@ function ChatWorkspaceContent({
 	// session temporarily becomes terminated and later returns.
 	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
-	// The subagent board shares the chat tab's body: it covers the timeline and
-	// leaves the composer where it is, so stepping in never leaves the board.
-	// Read from the raw items, not the timeline's readable subset.
-	const subagentCards = useSubagentCards(snapshot.items, snapshot.turns);
+	// The agents board (the main agent and its subagents) shares the chat tab's
+	// body: it covers the timeline and leaves the composer where it is, so
+	// stepping in never leaves the board. Read from the raw items, not the
+	// timeline's readable subset.
+	const { cards: subagentCards, main: mainAgent } = useSubagentBoard(snapshot.items, snapshot.turns);
 	const subagentCounts = useMemo(() => activeSubagentCount(subagentCards), [subagentCards]);
 	// Claude Code is the chat agent that runs subagents; another agent gets the
 	// board once one appears.
@@ -1767,7 +1768,7 @@ function ChatWorkspaceContent({
 				subagentsTab={subagentBoardAvailable ? {
 					active: subagentBoardActive,
 					running: subagentCounts.running,
-					needsYou: subagentCounts.needsYou,
+					needsYou: subagentCounts.needsYou + (mainAgent.state === "needs_you" ? 1 : 0),
 					onSelect: openSubagentBoard,
 				} : undefined}
 				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
@@ -1949,6 +1950,7 @@ function ChatWorkspaceContent({
 									<SubagentBoard
 										activeTurnId={turn?.state === "running" ? turn.id : undefined}
 										cards={subagentCards}
+										main={mainAgent}
 										mode={snapshot.mode}
 										onAskMainAgent={askAboutSubagent}
 										onStopTurn={turn && !newWorkDisabled && !openingStarting ? stableInterrupt : undefined}

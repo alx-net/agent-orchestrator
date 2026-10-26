@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityStatus, ConversationActivity, ConversationItem, ConversationTurn, TurnState } from "../types/conversation";
+import type {
+	ActivityStatus,
+	ConversationActivity,
+	ConversationItem,
+	ConversationMessage,
+	ConversationPlan,
+	ConversationTurn,
+	TurnState,
+} from "../types/conversation";
 import {
 	activeSubagentCount,
 	createSubagentBoardDeriver,
 	parseSubagentNoteLine,
 	subagentAskPrefix,
 	subagentLanes,
+	type MainAgentSummary,
 	type SubagentCard,
 } from "./subagent-board";
 
@@ -67,7 +76,32 @@ function turn(state: TurnState = "running"): ConversationTurn {
 }
 
 function derive(items: ConversationItem[], turns: ConversationTurn[] = [turn()]): SubagentCard[] {
-	return createSubagentBoardDeriver().derive(items, turns);
+	return createSubagentBoardDeriver().derive(items, turns).cards;
+}
+
+function said(id: string, text: string, overrides: Partial<ConversationMessage> = {}): ConversationMessage {
+	sequence += 1;
+	return {
+		kind: "message",
+		id,
+		turnId: "turn-1",
+		sequence,
+		revision: 1,
+		role: "assistant",
+		origin: "provider",
+		text,
+		streaming: false,
+		createdAt: new Date(Date.parse("2026-10-26T10:00:00.000Z") + sequence * 1000).toISOString(),
+		...overrides,
+	};
+}
+
+function mainOf(items: ConversationItem[], turns: ConversationTurn[] = [turn()]): MainAgentSummary {
+	return createSubagentBoardDeriver().derive(items, turns).main;
+}
+
+function planned(step: string): ConversationPlan {
+	return { steps: [{ text: "Read the code", status: "completed" }, { text: step, status: "in_progress" }, { text: "Ship", status: "pending" }] };
 }
 
 describe("parseSubagentNoteLine", () => {
@@ -254,12 +288,12 @@ describe("createSubagentBoardDeriver", () => {
 		const agent = parent();
 		const first = narration("n1", "Status: Reading\nDecision: Use");
 		const turns = [turn()];
-		const before = deriver.derive([agent, first], turns)[0]!;
+		const before = deriver.derive([agent, first], turns).cards[0]!;
 		expect(before.notes.map((note) => note.text)).toEqual(["Reading", "Use"]);
-		expect(deriver.derive([agent, first], turns)[0]).toBe(before);
+		expect(deriver.derive([agent, first], turns).cards[0]).toBe(before);
 
 		const grown = { ...first, revision: 2, detail: { ...first.detail, progress: "Status: Reading\nDecision: Use the cookie\nStatus: Testing" } };
-		const after = deriver.derive([agent, grown], turns)[0]!;
+		const after = deriver.derive([agent, grown], turns).cards[0]!;
 		expect(after).not.toBe(before);
 		expect(after.notes.map((note) => [note.kind, note.text])).toEqual([
 			["status", "Reading"],
@@ -270,11 +304,148 @@ describe("createSubagentBoardDeriver", () => {
 
 		// A settle can rewrite the block; the parse starts over.
 		const settled = { ...first, revision: 3, status: "completed" as const, detail: { ...first.detail, progress: "Decision: Ship it" } };
-		expect(deriver.derive([agent, settled], turns)[0]!.notes.map((note) => note.text)).toEqual(["Ship it"]);
+		expect(deriver.derive([agent, settled], turns).cards[0]!.notes.map((note) => note.text)).toEqual(["Ship it"]);
 	});
 
 	it("returns nothing when the conversation has no subagents", () => {
 		expect(derive([tool("t1", "ls", "completed")])).toEqual([]);
+	});
+});
+
+describe("main agent summary", () => {
+	const topLevelTool = (id: string, summary: string, status: ActivityStatus = "running") =>
+		activity({ id, providerItemId: id, activityKind: "command", status, summary, detail: { providerToolName: "Bash" } as ConversationActivity["detail"] });
+
+	it("reads its status and decision lines from its own assistant messages", () => {
+		const message = said("m1", "Looking at the board.\nStatus: Reading the board code\nDecision: Reuse the line parser, because it is incremental\n");
+		const main = mainOf([
+			said("u1", "Status: not the agent", { role: "user", origin: "human" }),
+			message,
+			parent(),
+			narration("n1", "Status: A subagent line\n"),
+		]);
+		expect(main).toMatchObject({
+			state: "working",
+			turnId: "turn-1",
+			startedAt: "2026-10-26T10:00:00.000Z",
+			nowLine: "Reading the board code",
+			nowSource: "status",
+		});
+		expect(main.notes).toEqual([
+			{ kind: "status", text: "Reading the board code", at: message.createdAt },
+			{ kind: "decision", text: "Reuse the line parser, because it is incremental", at: message.createdAt },
+		]);
+		expect(main.decisions.map((note) => note.text)).toEqual(["Reuse the line parser, because it is incremental"]);
+	});
+
+	it("shows the newest of its plan step, its status line and its running tool", () => {
+		const deriver = createSubagentBoardDeriver();
+		const withPlan = (step: string): ConversationTurn[] => [{ ...turn(), plan: planned(step) }];
+		const status = said("m1", "Status: Reading the board code\n");
+		// A step already in progress when the turn arrives is as old as the turn.
+		expect(deriver.derive([status], withPlan("Write the derivation")).main).toMatchObject({
+			nowLine: "Reading the board code",
+			nowSource: "status",
+		});
+
+		const npm = topLevelTool("npm", "npm test");
+		// Newer, but a subagent's tool and the agent's thinking are not what the main agent runs.
+		const nested = tool("nested", "rg token", "running");
+		const thinking = activity({ id: "think", providerItemId: "think", activityKind: "reasoning", summary: "Thinking" });
+		expect(deriver.derive([status, npm, nested, thinking], withPlan("Write the derivation")).main).toMatchObject({
+			nowLine: "npm test",
+			nowSource: "tool",
+		});
+
+		// The step moves on while the turn is watched, after everything already shown.
+		const finished = { ...npm, revision: 2, status: "completed" as const };
+		expect(deriver.derive([status, finished, nested, thinking], withPlan("Update the e2e spec")).main).toMatchObject({
+			nowLine: "Update the e2e spec",
+			nowSource: "plan",
+		});
+
+		const next = said("m2", "Status: Running the e2e spec");
+		expect(deriver.derive([status, finished, nested, thinking, next], withPlan("Update the e2e spec")).main).toMatchObject({
+			nowLine: "Running the e2e spec",
+			nowSource: "status",
+		});
+	});
+
+	it("needs you only for a request that no subagent raised", () => {
+		const input = { command: "rm -rf build" };
+		const subagentAsks = [
+			parent(),
+			tool("t1", "rm -rf build", "pending", { input }),
+			activity({
+				id: "approval",
+				providerItemId: "request-1",
+				activityKind: "approval",
+				status: "pending",
+				summary: "Run rm -rf build",
+				detail: { providerToolName: "Bash", input } as ConversationActivity["detail"],
+			}),
+		];
+		const board = createSubagentBoardDeriver().derive(subagentAsks, [turn()]);
+		expect(board.cards[0]!.lane).toBe("needs_you");
+		expect(board.main).toMatchObject({ state: "working", blockedOn: undefined });
+
+		const own = activity({
+			id: "own",
+			providerItemId: "request-2",
+			activityKind: "approval",
+			status: "pending",
+			summary: "Edit README.md",
+			detail: { providerToolName: "Edit", input: { file_path: "README.md" } } as ConversationActivity["detail"],
+		});
+		expect(mainOf([...subagentAsks, own])).toMatchObject({ state: "needs_you", blockedOn: "Edit README.md" });
+
+		// With no subagent at all, and a question carrying no tool input to match.
+		const question = activity({ id: "question", providerItemId: "question", activityKind: "user_input", status: "pending", summary: "Which branch?" });
+		expect(mainOf([question])).toMatchObject({ state: "needs_you", blockedOn: "Which branch?" });
+		expect(mainOf([{ ...question, status: "resolved" as const }])).toMatchObject({ state: "working", blockedOn: undefined });
+	});
+
+	it("is idle between turns and falls back to the previous turn's lines", () => {
+		const earlier: ConversationTurn = { id: "turn-0", state: "completed", requestedAt: "2026-10-26T09:00:00.000Z" };
+		const items = [
+			said("m0", "Decision: Add a migration, since the column is new\nStatus: Wrote the migration\n", { turnId: "turn-0" }),
+			said("m1", "Here is the answer."),
+		];
+		const idle = mainOf(items, [earlier, turn("completed")]);
+		expect(idle).toMatchObject({ state: "idle", turnId: "turn-1", startedAt: undefined, nowLine: "Wrote the migration", nowSource: "status" });
+		expect(idle.notes.map((note) => [note.kind, note.text, note.at])).toEqual([
+			["decision", "Add a migration, since the column is new", items[0]!.createdAt],
+			["status", "Wrote the migration", items[0]!.createdAt],
+		]);
+		expect(idle.decisions).toHaveLength(1);
+
+		// A turn with lines of its own shows only those.
+		const own = mainOf([...items, said("m2", "Status: Answering\n")], [earlier, turn("completed")]);
+		expect(own.notes.map((note) => note.text)).toEqual(["Answering"]);
+
+		// A new turn that has said nothing keeps the last lines, but not as its now line.
+		const next = mainOf(items, [earlier, turn("completed"), { id: "turn-2", state: "running", requestedAt: "2026-10-26T11:00:00.000Z" }]);
+		expect(next).toMatchObject({ state: "working", turnId: "turn-2", startedAt: "2026-10-26T11:00:00.000Z", nowLine: undefined });
+		expect(next.notes.map((note) => note.text)).toEqual(["Add a migration, since the column is new", "Wrote the migration"]);
+	});
+
+	it("parses streamed messages incrementally and keeps an unchanged summary", () => {
+		const deriver = createSubagentBoardDeriver();
+		const turns = [turn()];
+		const streaming = said("m1", "Status: Reading\nDecision: Use", { streaming: true });
+		const before = deriver.derive([streaming], turns).main;
+		expect(before.notes.map((note) => note.text)).toEqual(["Reading", "Use"]);
+		expect(deriver.derive([streaming], turns).main).toBe(before);
+
+		const grown = { ...streaming, revision: 2, text: `${streaming.text} the cookie\nStatus: Testing` };
+		const after = deriver.derive([grown], turns).main;
+		expect(after).not.toBe(before);
+		expect(after.notes.map((note) => [note.kind, note.text])).toEqual([
+			["status", "Reading"],
+			["decision", "Use the cookie"],
+			["status", "Testing"],
+		]);
+		expect(after.nowLine).toBe("Testing");
 	});
 });
 

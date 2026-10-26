@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SubagentCard } from "../../lib/subagent-board";
+import type { MainAgentSummary, SubagentCard } from "../../lib/subagent-board";
 import { TooltipProvider } from "../ui/tooltip";
 import { SubagentBoard } from "./SubagentBoard";
 
@@ -44,6 +44,21 @@ const done = card({
 });
 const failed = card({ id: "d", title: "Run the e2e suite", lane: "done", outcome: "failed", turnId: "turn-0" });
 
+const mainWorking: MainAgentSummary = {
+	state: "working",
+	turnId: "turn-1",
+	startedAt: new Date(Date.now() - 125_000).toISOString(),
+	nowLine: "Wiring the board into the chat",
+	nowSource: "status",
+	notes: [
+		{ kind: "status", text: "Reading the board code", at: "2026-10-26T10:00:01.000Z" },
+		{ kind: "decision", text: "Reuse the card timeline, since it already emphasizes decisions", at: "2026-10-26T10:00:02.000Z" },
+		{ kind: "status", text: "Wiring the board into the chat", at: "2026-10-26T10:00:03.000Z" },
+	],
+	decisions: [{ kind: "decision", text: "Reuse the card timeline, since it already emphasizes decisions", at: "2026-10-26T10:00:02.000Z" }],
+};
+const mainIdle: MainAgentSummary = { state: "idle", turnId: "turn-1", notes: [], decisions: [] };
+
 function renderBoard(ui: ReactElement) {
 	return render(<TooltipProvider>{ui}</TooltipProvider>);
 }
@@ -55,9 +70,52 @@ describe("SubagentBoard", () => {
 	});
 
 	it("says the board needs chat mode in a terminal session", () => {
-		renderBoard(<SubagentBoard cards={[working]} mode="tui" />);
-		expect(screen.getByRole("status")).toHaveTextContent("The subagent board needs chat mode.");
+		renderBoard(<SubagentBoard cards={[working]} main={mainWorking} mode="tui" />);
+		expect(screen.getByRole("status")).toHaveTextContent("The agents board needs chat mode.");
 		expect(screen.queryByTestId("subagent-card")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("main-agent-card")).not.toBeInTheDocument();
+	});
+
+	it("pins the main agent above the lanes with its now line and latest decision", async () => {
+		const user = userEvent.setup();
+		const onStopTurn = vi.fn();
+		renderBoard(<SubagentBoard activeTurnId="turn-1" cards={[working]} main={mainWorking} mode="chat" onStopTurn={onStopTurn} />);
+		const main = screen.getByRole("article", { name: "Main agent" });
+		// Before the lanes in reading order.
+		expect(main.compareDocumentPosition(screen.getAllByTestId("subagent-lane")[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(main).toHaveAttribute("data-state", "working");
+		expect(within(main).getByText("Working")).toHaveClass("sr-only");
+		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Wiring the board into the chat");
+		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent("Reuse the card timeline, since it already emphasizes decisions");
+		expect(within(main).getByText("2m")).toBeInTheDocument();
+
+		await user.click(within(main).getByRole("button", { name: "Stop turn" }));
+		expect(onStopTurn).toHaveBeenCalledTimes(1);
+
+		const toggle = within(main).getByRole("button", { name: /Main agent/ });
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		const updates = within(main).getByRole("region", { name: "Updates" });
+		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "decision", "status"]);
+		fireEvent.keyDown(toggle, { key: "Escape" });
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("shows the main agent before any subagent starts, without a stop when no turn runs", () => {
+		renderBoard(<SubagentBoard activeTurnId={undefined} cards={[]} main={mainIdle} mode="chat" onStopTurn={vi.fn()} />);
+		const main = screen.getByRole("article", { name: "Main agent" });
+		expect(main).toHaveAttribute("data-state", "idle");
+		expect(within(main).getByText("Idle")).toHaveClass("sr-only");
+		expect(within(main).queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("No subagents yet");
+		expect(screen.queryByTestId("subagent-lane")).not.toBeInTheDocument();
+	});
+
+	it("says what the main agent is waiting for", () => {
+		renderBoard(<SubagentBoard cards={[]} main={{ ...mainWorking, state: "needs_you", blockedOn: "Edit README.md" }} mode="chat" />);
+		const main = screen.getByRole("article", { name: "Main agent" });
+		expect(main).toHaveAttribute("data-state", "needs_you");
+		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Waiting for you: Edit README.md");
 	});
 
 	it("places cards in working, needs you and done lanes with counts", () => {

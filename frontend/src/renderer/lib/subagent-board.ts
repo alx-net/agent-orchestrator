@@ -1,6 +1,7 @@
 /**
- * The subagent board's view model: one card per Claude Code subagent (an Agent
- * or Task tool call) in a chat, derived from the conversation's raw items.
+ * The agents board's view model: one card per Claude Code subagent (an Agent
+ * or Task tool call) in a chat, plus a summary of the main agent itself, derived
+ * from the conversation's raw items.
  *
  * Built from `snapshot.items`, never from the timeline's readable subset: the
  * Agent/Task row arrives as a `reasoning` activity (the ACP bridge files the
@@ -17,7 +18,13 @@
  */
 
 import { useMemo, useRef } from "react";
-import type { ConversationActivity, ConversationItem, ConversationTurn } from "../types/conversation";
+import {
+	activityPlan,
+	type ConversationActivity,
+	type ConversationItem,
+	type ConversationMessage,
+	type ConversationTurn,
+} from "../types/conversation";
 
 export type SubagentLane = "working" | "needs_you" | "done";
 export type SubagentOutcome = "working" | "needs_you" | "completed" | "failed" | "stopped";
@@ -65,6 +72,32 @@ export interface SubagentLanes {
 	working: SubagentCard[];
 	needs_you: SubagentCard[];
 	done: SubagentCard[];
+}
+
+export type MainAgentState = "working" | "needs_you" | "idle";
+
+/** The main agent's own card: a now line and timeline read from its assistant messages. */
+export interface MainAgentSummary {
+	state: MainAgentState;
+	/** The running turn, else the latest one that ran. */
+	turnId?: string;
+	/** When the running turn started; absent while no turn runs. */
+	startedAt?: string;
+	nowLine?: string;
+	nowSource?: "status" | "plan" | "tool";
+	/** What the main agent is waiting on when it needs you. */
+	blockedOn?: string;
+	/**
+	 * Status and decision lines from the turn's assistant messages, in order. A turn
+	 * that wrote none shows the newest earlier turn's lines.
+	 */
+	notes: SubagentNote[];
+	decisions: SubagentNote[];
+}
+
+export interface SubagentBoardModel {
+	cards: SubagentCard[];
+	main: MainAgentSummary;
 }
 
 const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
@@ -236,9 +269,55 @@ const LIVE: ReadonlySet<string> = new Set(["running", "pending"]);
 // What Claude Code's Agent tool answers for a run_in_background launch.
 const LAUNCH_NOTICE = /^\s*async agent launched/i;
 const TURN_LIVE: ReadonlySet<string> = new Set(["running", "queued"]);
+// The main agent's own tool calls, for its now line.
+const TOOL_KINDS: ReadonlySet<string> = new Set(["command", "file_change", "mcp_tool"]);
 
 export interface SubagentBoardDeriver {
-	derive(items: readonly ConversationItem[], turns: readonly ConversationTurn[]): SubagentCard[];
+	derive(items: readonly ConversationItem[], turns: readonly ConversationTurn[]): SubagentBoardModel;
+}
+
+/**
+ * The turn the main agent's card describes: the running one, else the latest
+ * that ran. A queued turn has not started and a rolled-back one left history.
+ */
+function mainTurn(turns: readonly ConversationTurn[]): ConversationTurn | undefined {
+	const running = turns.find((turn) => turn.state === "running");
+	if (running) return running;
+	let latest: ConversationTurn | undefined;
+	let latestMs = Number.NEGATIVE_INFINITY;
+	for (const turn of turns) {
+		if (turn.state === "queued" || turn.rolledBack || (turn.state === "cancelled" && !turn.startedAt)) continue;
+		const ms = timeOf(turn.startedAt ?? turn.requestedAt);
+		if (ms >= latestMs) {
+			latest = turn;
+			latestMs = ms;
+		}
+	}
+	return latest;
+}
+
+/** What one pass collects for the main agent's card. */
+interface MainInputs {
+	turn?: ConversationTurn;
+	/** Assistant messages by turn; turns in the order they first spoke. */
+	said: ReadonlyMap<string, ConversationMessage[]>;
+	/** Top-level pending approvals and questions. */
+	pending: readonly ConversationActivity[];
+	/** Signatures of the pending requests a subagent raised. */
+	claims: ReadonlySet<string>;
+	/** The turn's newest running top-level tool call. */
+	runningTool?: ConversationActivity;
+	/** A running AskUserQuestion call, which waits on the person. */
+	asking?: ConversationActivity;
+	planRow?: ConversationActivity;
+	/** The time of the turn's newest row. */
+	newestMs: number;
+}
+
+interface MessageParse {
+	revision: number;
+	length: number;
+	parse: NarrationParse;
 }
 
 /**
@@ -247,16 +326,145 @@ export interface SubagentBoardDeriver {
  */
 export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 	let narrations = new Map<string, NarrationParse>();
-	let cards = new Map<string, { key: string; card: SubagentCard }>();
+	let cards = new Map<string, { key: string; card: SubagentCard; claims: readonly string[] }>();
+	let messages = new Map<string, MessageParse>();
+	let main: { key: string; summary: MainAgentSummary } | undefined;
+	// When the in-progress plan step was first seen. A plan update adds no row of
+	// its own, so a step that changes while its turn is watched takes the time of
+	// the turn's newest row; one already set when the turn arrives is as old as the plan.
+	let planStep: { turnId: string; text: string; ms: number } | undefined;
+	let watchedTurnId: string | undefined;
+
+	// Status and decision lines of one turn's messages, parsed once per streamed chunk.
+	function notesOf(said: readonly ConversationMessage[] | undefined, nextMessages: Map<string, MessageParse>) {
+		const notes: SubagentNote[] = [];
+		for (const message of said ?? []) {
+			const cached = messages.get(message.id);
+			const entry = cached?.revision === message.revision && cached.length === message.text.length
+				? cached
+				: { revision: message.revision, length: message.text.length, parse: parseNarration(cached?.parse, message.text) };
+			nextMessages.set(message.id, entry);
+			const { complete, tail } = entry.parse;
+			for (const line of tail ? [...complete, tail] : complete) notes.push({ kind: line.kind, text: line.text, at: message.createdAt });
+		}
+		// Equal keys mean equal notes, and every turn without notes has the same ones.
+		const key = notes.length === 0
+			? ""
+			: (said ?? []).map((message) => `${message.id}:${message.revision}:${message.text.length}`).join(",");
+		return { notes, key };
+	}
+
+	function summarize(inputs: MainInputs): MainAgentSummary {
+		const { turn } = inputs;
+		const running = turn?.state === "running";
+		// A request that matches no subagent's call is the main agent's own.
+		let blocked = false;
+		let blockedOn: string | undefined;
+		for (const request of inputs.pending) {
+			const signature = toolSignature(request);
+			if (signature && inputs.claims.has(signature)) continue;
+			blocked = true;
+			blockedOn ??= interactionLabel(request);
+		}
+		if (running && inputs.asking) {
+			blocked = true;
+			blockedOn ??= text(inputs.asking.summary);
+		}
+
+		const nextMessages = new Map<string, MessageParse>();
+		const current = notesOf(turn ? inputs.said.get(turn.id) : undefined, nextMessages);
+		let shown = current;
+		if (shown.notes.length === 0) {
+			const earlier = [...inputs.said.keys()];
+			for (let index = earlier.length - 1; index >= 0; index -= 1) {
+				if (earlier[index] === turn?.id) continue;
+				const candidate = notesOf(inputs.said.get(earlier[index]!), nextMessages);
+				if (candidate.notes.length === 0) continue;
+				shown = candidate;
+				break;
+			}
+		}
+		messages = nextMessages;
+
+		let nowLine: string | undefined;
+		let nowSource: MainAgentSummary["nowSource"];
+		if (running) {
+			const plan = turn.plan?.steps.length ? turn.plan : inputs.planRow ? activityPlan(inputs.planRow) : undefined;
+			const step = text(plan?.steps.find((entry) => entry.status === "in_progress")?.text);
+			if (!step) planStep = undefined;
+			else if (planStep?.turnId !== turn.id || planStep.text !== step) {
+				const ms = watchedTurnId === turn.id
+					? inputs.newestMs
+					: timeOf(inputs.planRow?.createdAt ?? turn.startedAt ?? turn.requestedAt);
+				planStep = { turnId: turn.id, text: step, ms };
+			}
+			// The most recent of its plan step, what it said, and what it is running.
+			// A tie goes to the plan step: one stamped with the newest row changed after it.
+			let bestMs = Number.NEGATIVE_INFINITY;
+			const consider = (candidate: string | undefined, ms: number, source: NonNullable<MainAgentSummary["nowSource"]>) => {
+				if (!candidate || ms <= bestMs) return;
+				bestMs = ms;
+				nowLine = candidate;
+				nowSource = source;
+			};
+			if (planStep) consider(planStep.text, planStep.ms, "plan");
+			const status = current.notes.findLast((note) => note.kind === "status");
+			if (status) consider(status.text, timeOf(status.at), "status");
+			if (inputs.runningTool) consider(text(inputs.runningTool.summary), timeOf(inputs.runningTool.createdAt), "tool");
+		} else {
+			planStep = undefined;
+			const status = shown.notes.findLast((note) => note.kind === "status");
+			if (status) {
+				nowLine = status.text;
+				nowSource = "status";
+			}
+		}
+		watchedTurnId = turn?.id;
+
+		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : "idle";
+		const startedAt = running ? turn.startedAt ?? turn.requestedAt : undefined;
+		if (!blocked) blockedOn = undefined;
+		// Unchanged inputs keep the summary's identity, so the memoized card skips the render.
+		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key].join("\u0000");
+		if (main?.key === key) return main.summary;
+		const summary: MainAgentSummary = {
+			state,
+			turnId: turn?.id,
+			startedAt,
+			nowLine,
+			nowSource,
+			blockedOn,
+			notes: shown.notes,
+			decisions: shown.notes.filter((note) => note.kind === "decision"),
+		};
+		main = { key, summary };
+		return summary;
+	}
 
 	return {
 		derive(items, turns) {
+			const turn = mainTurn(turns);
 			const parents: ConversationActivity[] = [];
 			const children = new Map<string, ConversationActivity[]>();
 			const pending: ConversationActivity[] = [];
+			const said = new Map<string, ConversationMessage[]>();
+			let runningTool: ConversationActivity | undefined;
+			let asking: ConversationActivity | undefined;
+			let planRow: ConversationActivity | undefined;
+			let newestMs = 0;
 			for (const item of items) {
-				if (item.kind !== "activity") continue;
-				if (isSubagentParent(item)) parents.push(item);
+				const inTurn = turn !== undefined && item.turnId === turn.id;
+				if (inTurn) newestMs = Math.max(newestMs, timeOf(item.createdAt));
+				if (item.kind === "message") {
+					if (item.role !== "assistant" || !item.turnId) continue;
+					const list = said.get(item.turnId);
+					if (list) list.push(item);
+					else said.set(item.turnId, [item]);
+					continue;
+				}
+				// Annotated so a false result does not narrow `item` away below.
+				const parentOfSubagent: boolean = isSubagentParent(item);
+				if (parentOfSubagent) parents.push(item);
 				const parentId = item.detail?.parentProviderItemId;
 				if (parentId) {
 					const list = children.get(parentId);
@@ -264,15 +472,25 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 					else children.set(parentId, [item]);
 				} else if (isPendingInteraction(item)) {
 					pending.push(item);
+				} else if (inTurn && !parentOfSubagent) {
+					if (item.activityKind === "plan") planRow = item;
+					else if (TOOL_KINDS.has(item.activityKind) && LIVE.has(item.status)) {
+						runningTool = item;
+						if (item.detail?.providerToolName === "AskUserQuestion") asking = item;
+					}
 				}
 			}
+
+			// Signatures of the pending requests a subagent raised; the rest are the main agent's.
+			const claims = new Set<string>();
+			const mainAgent = () => summarize({ turn, said, pending, claims, runningTool, asking, planRow, newestMs });
 			if (parents.length === 0) {
 				narrations = new Map();
 				cards = new Map();
-				return [];
+				return { cards: [], main: mainAgent() };
 			}
 
-			const turnStates = new Map(turns.map((turn) => [turn.id, turn.state]));
+			const turnStates = new Map(turns.map((entry) => [entry.id, entry.state]));
 			// A permission request does not name the subagent that raised it. It carries
 			// the tool's input, which matches the subagent's pending call exactly.
 			const pendingBySignature = new Map<string, string>();
@@ -283,7 +501,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			const pendingKey = pending.map((request) => `${request.id}:${request.revision}`).join(",");
 
 			const nextNarrations = new Map<string, NarrationParse>();
-			const nextCards = new Map<string, { key: string; card: SubagentCard }>();
+			const nextCards = new Map<string, { key: string; card: SubagentCard; claims: readonly string[] }>();
 			const result: SubagentCard[] = [];
 			for (const parent of parents) {
 				const kids = children.get(parent.providerItemId!) ?? [];
@@ -298,19 +516,22 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 					}
 					nextCards.set(parent.id, cached);
 					result.push(cached.card);
+					for (const claim of cached.claims) claims.add(claim);
 					continue;
 				}
+				const cardClaims: string[] = [];
 				const card = buildCard(parent, kids, turnState, pendingBySignature, (kid) => {
 					const parse = parseNarration(narrations.get(kid.id), narrationText(kid));
 					nextNarrations.set(kid.id, parse);
 					return parse;
-				});
-				nextCards.set(parent.id, { key, card });
+				}, cardClaims);
+				nextCards.set(parent.id, { key, card, claims: cardClaims });
 				result.push(card);
+				for (const claim of cardClaims) claims.add(claim);
 			}
 			narrations = nextNarrations;
 			cards = nextCards;
-			return result;
+			return { cards: result, main: mainAgent() };
 		},
 	};
 }
@@ -321,6 +542,8 @@ function buildCard(
 	turnState: string | undefined,
 	pendingBySignature: ReadonlyMap<string, string>,
 	parse: (narration: ConversationActivity) => NarrationParse,
+	/** Receives the signature of each pending request this subagent raised. */
+	claims: string[],
 ): SubagentCard {
 	const detail = parent.detail ?? {};
 	const input = record(detail.input);
@@ -370,6 +593,7 @@ function buildCard(
 		if (signature && pendingBySignature.has(signature)) {
 			blocked = true;
 			blockedOn ??= text(pendingBySignature.get(signature)) ?? text(kid.summary);
+			claims.push(signature);
 		}
 	}
 
@@ -382,6 +606,7 @@ function buildCard(
 	if (parentSignature && pendingBySignature.has(parentSignature)) {
 		blocked = true;
 		blockedOn ??= text(pendingBySignature.get(parentSignature));
+		claims.push(parentSignature);
 	}
 	const parentSettledOk = parent.status === "completed" || parent.status === "resolved" || parent.status === "recovered";
 	// A backgrounded subagent's call completes as soon as it launches; its work and
@@ -482,8 +707,8 @@ export function subagentAskPrefix(title: string): string {
 	return `About the subagent "${title}": `;
 }
 
-/** Cards for one surface, memoized on the snapshot's items and turns. */
-export function useSubagentCards(items: readonly ConversationItem[], turns: readonly ConversationTurn[]): SubagentCard[] {
+/** The board for one surface, memoized on the snapshot's items and turns. */
+export function useSubagentBoard(items: readonly ConversationItem[], turns: readonly ConversationTurn[]): SubagentBoardModel {
 	const deriver = useRef<SubagentBoardDeriver | null>(null);
 	deriver.current ??= createSubagentBoardDeriver();
 	return useMemo(() => deriver.current!.derive(items, turns), [items, turns]);

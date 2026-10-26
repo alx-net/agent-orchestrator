@@ -238,47 +238,57 @@ func TestClaudeSessionMetaAddsPlanGuidanceWhenTodoToolsAreEnabled(t *testing.T) 
 		}
 		return prompt["append"].(string)
 	}
-	if got := appended(acpdriver.LaunchConfig{}); got != claudePlanGuidance {
-		t.Fatalf("append = %q, want just the plan guidance", got)
+	if got := appended(acpdriver.LaunchConfig{}); got != claudePlanGuidance+"\n\n"+claudeStatusGuidance {
+		t.Fatalf("append = %q, want the plan guidance then the status guidance", got)
 	}
-	if got := appended(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"}); got != "AO standing instructions\n\n"+claudePlanGuidance {
-		t.Fatalf("append = %q, want the standing instructions then the plan guidance", got)
+	want := "AO standing instructions\n\n" + claudePlanGuidance + "\n\n" + claudeStatusGuidance
+	if got := appended(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"}); got != want {
+		t.Fatalf("append = %q, want the standing instructions, the plan guidance, then the status guidance", got)
 	}
 }
 
 func TestClaudeSessionMetaOmitsPlanGuidanceWhenTodoToolsAreOff(t *testing.T) {
+	appended := func(t *testing.T, cfg acpdriver.LaunchConfig) string {
+		t.Helper()
+		prompt, ok := claudeSessionMeta(cfg)["systemPrompt"].(map[string]any)
+		if !ok {
+			t.Fatalf("no systemPrompt for %+v", cfg)
+		}
+		return prompt["append"].(string)
+	}
 	for _, off := range []string{"0", "false", "No", "OFF"} {
 		t.Run("project env "+off, func(t *testing.T) {
 			t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "")
 			env := map[string]string{"CLAUDE_CODE_ENABLE_TODO_TOOLS": off}
-			if got := claudeSessionMeta(acpdriver.LaunchConfig{Env: env}); got != nil {
-				t.Fatalf("meta = %#v, want none: the to-do tools are off", got)
+			if got := appended(t, acpdriver.LaunchConfig{Env: env}); got != claudeStatusGuidance {
+				t.Fatalf("append = %q, want only the status guidance: the to-do tools are off", got)
 			}
-			prompt := claudeSessionMeta(acpdriver.LaunchConfig{Env: env, SystemPrompt: "AO standing instructions"})["systemPrompt"].(map[string]any)
-			if prompt["append"] != "AO standing instructions" {
-				t.Fatalf("append = %q, want only the standing instructions", prompt["append"])
+			got := appended(t, acpdriver.LaunchConfig{Env: env, SystemPrompt: "AO standing instructions"})
+			if got != "AO standing instructions\n\n"+claudeStatusGuidance {
+				t.Fatalf("append = %q, want the standing instructions then the status guidance", got)
 			}
 		})
 	}
 	t.Run("daemon env", func(t *testing.T) {
 		t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "0")
-		if got := claudeSessionMeta(acpdriver.LaunchConfig{}); got != nil {
-			t.Fatalf("meta = %#v, want none: the to-do tools are off", got)
+		if got := appended(t, acpdriver.LaunchConfig{}); got != claudeStatusGuidance {
+			t.Fatalf("append = %q, want only the status guidance: the to-do tools are off", got)
 		}
 	})
 }
 
 func TestClaudeSessionMetaAppendsWithoutReplacingPreset(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "0")
-	if got := claudeSessionMeta(acpdriver.LaunchConfig{}); got != nil {
-		t.Fatalf("empty prompt metadata = %#v", got)
+	if got := claudeSessionMeta(acpdriver.LaunchConfig{DisableTools: true}); got["systemPrompt"] != nil {
+		t.Fatalf("empty background prompt metadata = %#v", got)
 	}
 	meta := claudeSessionMeta(acpdriver.LaunchConfig{SystemPrompt: "AO standing instructions"})
 	prompt, ok := meta["systemPrompt"].(map[string]any)
 	if !ok {
 		t.Fatalf("systemPrompt = %#v", meta["systemPrompt"])
 	}
-	if prompt["type"] != "preset" || prompt["preset"] != "claude_code" || prompt["append"] != "AO standing instructions" {
+	want := "AO standing instructions\n\n" + claudeStatusGuidance
+	if prompt["type"] != "preset" || prompt["preset"] != "claude_code" || prompt["append"] != want {
 		t.Fatalf("systemPrompt = %#v", prompt)
 	}
 	if options := claudeNestedMap(claudeNestedMap(meta, "claudeCode"), "options"); options["tools"] != nil {

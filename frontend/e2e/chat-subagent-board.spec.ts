@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
-// The Subagents tab of a Claude Code chat: one card per Agent/Task call, placed
-// in Working, Needs you or Done, with the subagent's own Status:/Decision:
-// lines as its "now" line and timeline.
+// The Agents tab of a Claude Code chat: the main agent pinned on top with its
+// own Status:/Decision: lines, then one card per Agent/Task call, placed in
+// Working, Needs you or Done, with the subagent's lines as its "now" line and
+// timeline.
 
 const sessionId = "chat-subagents";
 const startedAt = new Date(Date.now() - 4 * 60_000).toISOString();
@@ -77,6 +78,17 @@ function snapshot() {
 			detail: { nestedAgent: true, parentProviderItemId: "agent-routes", progress: "Status: Grepping the controllers\nDecision: Count only routes under /api/v1/sessions" },
 		}),
 	];
+	// The main agent narrates with the same rule its subagents follow.
+	const mainVoice = {
+		kind: "message", id: "main-voice", turnId: "turn-main", sequence: sequence++, revision: 1, role: "assistant", origin: "provider",
+		text: [
+			"I'll split this across subagents.",
+			"Status: Splitting the pausing work across three subagents",
+			"Decision: Run the audit and the migration in parallel, since they touch different packages",
+			"Status: Waiting on the migration subagent",
+		].join("\n"),
+		streaming: true, createdAt: at(30),
+	};
 	return {
 		conversationId: "conversation-chat-subagents",
 		sessionId,
@@ -89,6 +101,7 @@ function snapshot() {
 		turns: [{ id: "turn-main", state: "running", providerTurnId: "provider-main", requestedAt: startedAt, startedAt }],
 		messages: [
 			{ kind: "message", id: "user-main", turnId: "turn-main", sequence: 1, revision: 0, role: "user", origin: "human", text: "Add pausing to sessions", streaming: false, createdAt: startedAt },
+			mainVoice,
 		],
 		activities,
 		settings: {},
@@ -115,17 +128,22 @@ async function capture(page: Page, name: string) {
 	if (directory) await page.screenshot({ path: `${directory}/${name}.png` });
 }
 
-test("the Subagents tab shows each subagent's lane, now line and decisions @T0", async ({ page }) => {
+test("the Agents tab shows the main agent and each subagent's lane, now line and decisions @T0", async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await installSubagentConversation(page);
 
-	const tab = page.getByRole("tab", { name: /Subagents/ });
+	const tab = page.getByRole("tab", { name: /Agents/ });
 	await expect(tab).toBeVisible();
 	await tab.click();
 	await expect(tab).toHaveAttribute("aria-selected", "true");
 
 	const board = page.getByTestId("subagent-board");
 	const card = (title: string) => board.getByRole("article", { name: title });
+	// The main agent's newest Status: line and latest Decision: line, above the lanes.
+	const main = card("Main agent");
+	await expect(main).toHaveAttribute("data-state", "working");
+	await expect(main.getByTestId("main-agent-now")).toHaveText("Waiting on the migration subagent");
+	await expect(main.getByTestId("main-agent-decision")).toContainText("Run the audit and the migration in parallel, since they touch different packages");
 	await expect(card("Audit the auth flow")).toHaveAttribute("data-lane", "working");
 	await expect(card("Write the paused_at migration")).toHaveAttribute("data-lane", "needs_you");
 	await expect(card("Map the session routes")).toHaveAttribute("data-lane", "done");
@@ -136,4 +154,8 @@ test("the Subagents tab shows each subagent's lane, now line and decisions @T0",
 	await card("Audit the auth flow").getByText("Audit the auth flow").click();
 	await expect(card("Audit the auth flow").getByText("Start from the HTTP middleware, since every route passes through it")).toBeVisible();
 	await capture(page, "subagent-board-2-expanded");
+
+	await main.getByRole("button", { name: /Main agent/ }).click();
+	await expect(main.getByRole("region", { name: "Updates" }).getByText("Splitting the pausing work across three subagents")).toBeVisible();
+	await capture(page, "subagent-board-3-main-agent");
 });
