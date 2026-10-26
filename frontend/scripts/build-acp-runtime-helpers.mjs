@@ -368,6 +368,125 @@ export function patchClaudeSteerSettlement(adapterPath) {
 	return true;
 }
 
+const SUBAGENT_REPORTING_RULE =
+	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
+	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words.";
+
+/**
+ * Stream what a Claude subagent is doing to its Agent/Task tool call.
+ *
+ * claude-agent-acp 0.70 drops the SDK's task_progress messages, and never asks
+ * the SDK for its periodic subagent summaries. Turn the summaries on and
+ * forward each subagent's progress as a meta-only tool_call_update on the
+ * Agent/Task call that spawned it, leaving the call's status, content, and
+ * title alone. A PreToolUse hook also appends AO's Status:/Decision: reporting
+ * rule to every Agent/Task prompt, after any user and file-change-audit hooks.
+ */
+export function patchClaudeSubagentProgress(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: forward a running subagent's progress to its Agent/Task call.")) return false;
+	const patches = [
+		[
+			"            includePartialMessages: true,\n            forwardSubagentText,\n",
+			[
+				"            includePartialMessages: true,",
+				"            forwardSubagentText,",
+				"            // AO: periodic Claude-written summaries for running subagents (task_progress.summary).",
+				"            agentProgressSummaries: true,",
+				"",
+			].join("\n"),
+		],
+		[
+			[
+				"                ...(fileChangeAuditSupport",
+				"                    ? {",
+				"                        PreToolUse: [",
+				"                            ...(userProvidedOptions?.hooks?.PreToolUse || []),",
+				"                            { hooks: [fileChangeAuditSupport.preToolUseHook] },",
+				"                        ],",
+				"                    }",
+				"                    : {}),",
+			].join("\n"),
+			[
+				"                PreToolUse: [",
+				"                    ...(userProvidedOptions?.hooks?.PreToolUse || []),",
+				"                    ...(fileChangeAuditSupport ? [{ hooks: [fileChangeAuditSupport.preToolUseHook] }] : []),",
+				"                    // AO: ask every subagent for Status:/Decision: lines.",
+				"                    {",
+				'                        matcher: "Agent|Task",',
+				"                        hooks: [",
+				"                            async (input) => {",
+				`                                const rule = ${JSON.stringify(SUBAGENT_REPORTING_RULE)};`,
+				"                                const toolInput = input.tool_input;",
+				'                                if (input.hook_event_name !== "PreToolUse" || (input.tool_name !== "Agent" && input.tool_name !== "Task") ||',
+				'                                    toolInput === null || typeof toolInput !== "object" || typeof toolInput.prompt !== "string" ||',
+				"                                    toolInput.prompt.endsWith(rule)) {",
+				"                                    return {};",
+				"                                }",
+				"                                return {",
+				"                                    hookSpecificOutput: {",
+				'                                        hookEventName: "PreToolUse",',
+				"                                        updatedInput: { ...toolInput, prompt: toolInput.prompt + rule },",
+				"                                    },",
+				"                                };",
+				"                            },",
+				"                        ],",
+				"                    },",
+				"                ],",
+			].join("\n"),
+		],
+		[
+			[
+				'                            case "files_persisted":',
+				'                            case "task_progress":',
+				"                                break;",
+				'                            case "task_started":',
+			].join("\n"),
+			[
+				'                            case "files_persisted":',
+				"                                break;",
+				'                            case "task_progress": {',
+				"                                // AO: forward a running subagent's progress to its Agent/Task call.",
+				"                                // Only the meta: the call keeps its own status, content, and title.",
+				"                                const progressTask = session.liveBackgroundTasks.get(message.task_id);",
+				"                                const progressToolCallId = message.tool_use_id ?? progressTask?.parentToolUseId;",
+				"                                if (!progressToolCallId || !(progressTask?.isSubagent || message.subagent_type)) {",
+				"                                    break;",
+				"                                }",
+				"                                await sendUpdate({",
+				"                                    sessionId: message.session_id,",
+				"                                    update: {",
+				'                                        sessionUpdate: "tool_call_update",',
+				"                                        toolCallId: progressToolCallId,",
+				"                                        _meta: {",
+				"                                            claudeCode: {",
+				"                                                subagentProgress: {",
+				'                                                    ...(typeof message.summary === "string" && message.summary.trim() !== "" && { summary: message.summary }),',
+				'                                                    ...(typeof message.last_tool_name === "string" && message.last_tool_name !== "" && { lastToolName: message.last_tool_name }),',
+				"                                                    ...(Number.isFinite(message.usage?.tool_uses) && { toolUses: message.usage.tool_uses }),",
+				"                                                    at: Date.now(),",
+				"                                                },",
+				"                                            },",
+				"                                        },",
+				"                                    },",
+				"                                });",
+				"                                break;",
+				"                            }",
+				'                            case "task_started":',
+			].join("\n"),
+		],
+	];
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's subagent progress patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
 export function pruneNodeDistribution(nodeRoot) {
 	// The Unix archives expose npm/corepack as bin/ symlinks into lib/. Remove
 	// the entry points before their targets so packagers never see dangling

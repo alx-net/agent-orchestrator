@@ -28,7 +28,7 @@ func TestExtensionMethodReaderRoutesOnlyConfiguredLegacyMethodsThroughSDK(t *tes
 		pendingInputs:  make(map[string]*parkedInput),
 		capabilities:   make(ports.ChatCapabilities),
 		messages:       make(map[string]string),
-		thoughts:       make(map[string]string),
+		thoughts:       make(map[string]nestedMessageState),
 		nestedMessages: make(map[string]nestedMessageState),
 		tools:          make(map[string]*toolState),
 		events:         make(chan ports.ChatEvent, 16),
