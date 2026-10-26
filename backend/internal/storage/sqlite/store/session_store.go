@@ -905,6 +905,20 @@ func (s *Store) ListAllSessions(ctx context.Context) ([]domain.SessionRecord, er
 	return mapListAllSessionsRows(rows), nil
 }
 
+// ListLiveSessions returns every non-terminated session across all projects,
+// in ListAllSessions order.
+func (s *Store) ListLiveSessions(ctx context.Context) ([]domain.SessionRecord, error) {
+	rows, err := s.qr.ListLiveSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list live sessions: %w", err)
+	}
+	out := make([]domain.SessionRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, rowToRecord(gen.GetSessionRow(r)))
+	}
+	return out, nil
+}
+
 // ListChatHibernationCandidates avoids decoding inactive sessions and activity JSON.
 func (s *Store) ListChatHibernationCandidates(ctx context.Context) ([]domain.SessionID, error) {
 	ids, err := s.qr.ListChatHibernationCandidates(ctx)

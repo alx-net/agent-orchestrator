@@ -3,10 +3,17 @@
 package processalive
 
 import (
+	"os"
 	"os/exec"
 	"testing"
 	"time"
 )
+
+func TestAliveReportsRunningProcess(t *testing.T) {
+	if isZombie(os.Getpid()) || !Alive(os.Getpid()) {
+		t.Fatal("current process reported as zombie or not alive")
+	}
+}
 
 func TestAliveReportsZombieAsDead(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")

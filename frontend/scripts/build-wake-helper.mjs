@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, copyFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,11 +24,30 @@ export function buildWakeHelper({ arch = process.arch, platform = process.platfo
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`macOS wake helper compilation failed (${result.status})`);
   copyFileSync(path.join(frontend, "native/wake-helper/THIRD_PARTY_NOTICES.md"), path.join(path.dirname(output), "THIRD_PARTY_NOTICES.md"));
+  try { writeFileSync(wakeHelperStampPath(arch, output), String(statSync(output).mtimeMs)); } catch {}
+}
+function wakeHelperStampPath(arch, output) {
+  const key = createHash("sha1").update(output).digest("hex").slice(0, 12);
+  return path.join(homedir(), ".ao/build-cache/wake-helper", arch, `${key}.stamp`);
+}
+// Dev launches only: the -O Swift compile costs ~10s, so reuse the binary when
+// this checkout last built it for this arch and no Swift source is newer. The
+// stamp records the output mtime, so a cross-arch package build invalidates it.
+export function wakeHelperIsCurrent(arch = process.arch, root = frontend) {
+  const { output, args } = wakeHelperBuildOptions(arch, root);
+  try {
+    const built = statSync(output).mtimeMs;
+    if (readFileSync(wakeHelperStampPath(arch, output), "utf8") !== String(built)) return false;
+    if (!existsSync(path.join(path.dirname(output), "THIRD_PARTY_NOTICES.md"))) return false;
+    return args.filter((arg) => arg.endsWith(".swift")).every((src) => statSync(src).mtimeMs <= built);
+  } catch {
+    return false;
+  }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === "--if-supported") {
-    if (process.platform === "darwin") buildWakeHelper();
+    if (process.platform === "darwin" && !wakeHelperIsCurrent()) buildWakeHelper();
     process.exit(0);
   }
   if (args.length !== 0 && (args.length !== 2 || args[0] !== "--arch")) throw new Error("Usage: build-wake-helper.mjs [--arch arm64|x64]");

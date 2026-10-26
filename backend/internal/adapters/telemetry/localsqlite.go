@@ -18,6 +18,9 @@ const (
 	localRetention       = 30 * 24 * time.Hour
 	localPruneEvery      = time.Hour
 	localPruneBatchLimit = int64(1000)
+	// localPruneMaxBatches bounds one prune pass so a large backlog drains over
+	// a few passes instead of stalling the sink worker in one long loop.
+	localPruneMaxBatches = 50
 )
 
 type localStore interface {
@@ -135,7 +138,17 @@ func (s *LocalSQLiteSink) maybePrune() {
 		return
 	}
 	s.lastPrune = now
-	if _, err := s.store.PruneTelemetryEventsBefore(context.Background(), now.Add(-localRetention), localPruneBatchLimit); err != nil {
-		s.log.Warn("telemetry local sink prune failed", "error", err)
+	before := now.Add(-localRetention)
+	// Each batch is its own short delete; keep going while batches come back
+	// full so pruning keeps up with more than one batch of events per hour.
+	for range localPruneMaxBatches {
+		deleted, err := s.store.PruneTelemetryEventsBefore(context.Background(), before, localPruneBatchLimit)
+		if err != nil {
+			s.log.Warn("telemetry local sink prune failed", "error", err)
+			return
+		}
+		if deleted < localPruneBatchLimit {
+			return
+		}
 	}
 }

@@ -1,4 +1,4 @@
-import { createCipheriv, createHash } from "node:crypto";
+import { createCipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -6,7 +6,13 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserHistoryStore } from "./browser-history-store";
-import { BrowserProfileImportService, decryptWindowsChromiumCookie, readMacChromiumPassword } from "./browser-profile-import";
+import {
+	BrowserProfileImportService,
+	decryptMacChromiumCookie,
+	decryptWindowsChromiumCookie,
+	deriveMacChromiumCookieKey,
+	readMacChromiumPassword,
+} from "./browser-profile-import";
 import { BrowserProfileStore } from "./browser-profile-store";
 import { BROWSER_PROFILE_MAX_COUNT } from "../shared/browser-profiles";
 
@@ -813,6 +819,24 @@ describe("BrowserProfileImportService", () => {
 
 		expect(decryptWindowsChromiumCookie(encrypted, key, host)).toBe("usable-cookie-value");
 		expect(decryptWindowsChromiumCookie(encrypted, key, ".wrong.example")).not.toBe("usable-cookie-value");
+	});
+
+	it("decrypts macOS Chromium cookies with the Safe Storage key derived once", () => {
+		const host = ".example.com";
+		const password = Buffer.from("safe-storage-password");
+		const key = deriveMacChromiumCookieKey(password);
+		// Same PBKDF2 parameters the per-cookie derivation used.
+		expect(key).toEqual(pbkdf2Sync(password, "saltysalt", 1_003, 16, "sha1"));
+		const encrypt = (value: Buffer) => {
+			const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+			return Buffer.concat([Buffer.from("v10"), cipher.update(value), cipher.final()]);
+		};
+
+		const hashed = encrypt(Buffer.concat([createHash("sha256").update(host).digest(), Buffer.from("mac-cookie-value")]));
+		expect(decryptMacChromiumCookie(hashed, key, host)).toBe("mac-cookie-value");
+		expect(decryptMacChromiumCookie(encrypt(Buffer.from("legacy-value")), key, host)).toBe("legacy-value");
+		expect(decryptMacChromiumCookie(Buffer.from("v20-app-bound"), key, host)).toBeNull();
+		expect(decryptMacChromiumCookie(hashed, deriveMacChromiumCookieKey(Buffer.from("wrong")), host)).not.toBe("mac-cookie-value");
 	});
 
 	it("imports a transaction-consistent Firefox snapshot while the source databases are open", async () => {

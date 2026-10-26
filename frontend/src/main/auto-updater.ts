@@ -6,8 +6,8 @@ import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
 import { startMacUpdateProgress } from "./mac-update-progress";
 import { markUpdateRelaunch } from "./update-relaunch-flag";
-import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { accessSync, constants as fsConstants, existsSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
+import { lstat, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import semver from "semver";
@@ -256,27 +256,28 @@ function macShipItDir(): string | undefined {
 }
 
 // Bytes under the staging area, bounded so a poll can't walk a huge tree.
-// undefined means no readable signal.
-function shipItStagingBytes(dir: string | undefined): number | undefined {
+// undefined means no readable signal. Async so the walk never blocks the main
+// thread.
+async function shipItStagingBytes(dir: string | undefined): Promise<number | undefined> {
   if (dir === undefined) return undefined;
   let total = 0;
   let seen = 0;
   const budget = 20_000;
-  const walk = (d: string): void => {
+  const walk = async (d: string): Promise<void> => {
     let names: string[];
-    try { names = readdirSync(d); } catch { return; }
+    try { names = await readdir(d); } catch { return; }
     for (const name of names) {
       if (seen >= budget) return;
       seen += 1;
       const full = path.join(d, name);
       let st;
-      try { st = lstatSync(full); } catch { continue; }
+      try { st = await lstat(full); } catch { continue; }
       if (st.isSymbolicLink()) continue;
-      if (st.isDirectory()) walk(full);
+      if (st.isDirectory()) await walk(full);
       else total += st.size;
     }
   };
-  walk(dir);
+  await walk(dir);
   return seen === 0 ? undefined : total;
 }
 
@@ -309,10 +310,11 @@ function blockNativePreparation(message: string): void {
 
 // Test seam: override the filesystem probes to drive the watchdog
 // deterministically. A fresh module import restores the defaults.
-let readStagingBytes: (dir: string | undefined) => number | undefined = shipItStagingBytes;
+type StagingBytesProbe = (dir: string | undefined) => number | undefined | Promise<number | undefined>;
+let readStagingBytes: StagingBytesProbe = shipItStagingBytes;
 let stagingDiskIsFull: (requiredBytes: number) => boolean = insufficientDiskForStaging;
 export function __setStagingProbesForTesting(probes: {
-  readStagingBytes?: (dir: string | undefined) => number | undefined;
+  readStagingBytes?: StagingBytesProbe;
   stagingDiskIsFull?: (requiredBytes: number) => boolean;
 }): void {
   if (probes.readStagingBytes) readStagingBytes = probes.readStagingBytes;
@@ -362,8 +364,22 @@ function beginNativePreparation(version: string, archiveBytes?: number): void {
   // signal never engages and every stage falls back to the flat no-signal cap.
   let stagingDir = macShipItDir();
   const startedAt = Date.now();
-  let lastBytes = readStagingBytes(stagingDir);
+  let lastBytes: number | undefined;
+  // Last finished reading. A tick never waits on (or stacks) a slow walk, so
+  // the time caps below keep applying even if a read stalls.
+  let latestBytes: number | undefined;
   let lastProgressAt = startedAt;
+  let probing = false;
+  const probe = (onBytes: (bytes: number | undefined) => void): void => {
+    if (probing) return;
+    probing = true;
+    if (stagingDir === undefined) stagingDir = macShipItDir();
+    void Promise.resolve()
+      .then(() => readStagingBytes(stagingDir))
+      .then(onBytes, () => undefined)
+      .finally(() => { probing = false; });
+  };
+  probe((bytes) => { lastBytes = bytes; latestBytes = bytes; });
   const trip = (): void => {
     // No cancel API, so never stage again on top of a stalled request even if
     // its JS transfer settles later; recovery is a clean relaunch.
@@ -374,13 +390,7 @@ function beginNativePreparation(version: string, archiveBytes?: number): void {
   };
   const watchdog = setInterval(() => {
     const now = Date.now();
-    if (stagingDir === undefined) stagingDir = macShipItDir();
-    const bytes = readStagingBytes(stagingDir);
-    if (bytes !== undefined && (lastBytes === undefined || bytes > lastBytes)) {
-      lastBytes = bytes;
-      lastProgressAt = now;
-    }
-    const haveSignal = bytes !== undefined;
+    const haveSignal = latestBytes !== undefined;
     // A byte plateau only counts as a stall once it has outlasted the
     // signature-verification grace, so a legitimate verify phase is not mistaken
     // for a wedge.
@@ -394,7 +404,15 @@ function beginNativePreparation(version: string, archiveBytes?: number): void {
       (!haveSignal && now - startedAt >= STAGE_NO_SIGNAL_CAP_MS)
     ) {
       trip();
+      return;
     }
+    probe((bytes) => {
+      latestBytes = bytes;
+      if (bytes !== undefined && (lastBytes === undefined || bytes > lastBytes)) {
+        lastBytes = bytes;
+        lastProgressAt = Date.now();
+      }
+    });
   }, STAGE_POLL_INTERVAL_MS);
   watchdog.unref?.();
   nativePreparation = preparation;

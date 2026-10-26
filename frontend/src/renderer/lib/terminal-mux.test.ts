@@ -9,6 +9,7 @@ import {
 	muxUrlFromApiBase,
 	openFrame,
 	resizeFrame,
+	subscribeById,
 } from "./terminal-mux";
 
 describe("terminal-mux framing", () => {
@@ -51,6 +52,28 @@ describe("terminal-mux framing", () => {
 
 	it("uses the current origin for a relative dev API base", () => {
 		expect(muxUrlFromApiBase("")).toBe("ws://localhost:3000/mux");
+	});
+});
+
+describe("subscribeById", () => {
+	it("drops a pane's entry with its last listener", () => {
+		const listeners = new Map<string, Set<() => void>>();
+		const first = subscribeById(listeners, "pane-1", () => {});
+		const second = subscribeById(listeners, "pane-1", () => {});
+		first();
+		expect(listeners.get("pane-1")?.size).toBe(1);
+		second();
+		expect(listeners.has("pane-1")).toBe(false);
+	});
+
+	it("leaves a newer subscription alone when a stale unsubscribe runs again", () => {
+		const listeners = new Map<string, Set<() => void>>();
+		const stale = subscribeById(listeners, "pane-1", () => {});
+		stale();
+		const listener = () => {};
+		subscribeById(listeners, "pane-1", listener);
+		stale();
+		expect(listeners.get("pane-1")?.has(listener)).toBe(true);
 	});
 });
 

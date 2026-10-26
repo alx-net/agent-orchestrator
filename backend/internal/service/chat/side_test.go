@@ -65,6 +65,39 @@ func TestSideCompactionUsesOnlySideProviderAndRejectsBusyTurn(t *testing.T) {
 	}
 }
 
+func TestWatchSideChatCancelDropsEmptySubscriberSet(t *testing.T) {
+	ctx := context.Background()
+	svc := New(Options{AppRunID: "launch-1", Sessions: sideSessionReader{}})
+	store := svc.sides.store
+	_, _ = store.ClaimSideLaunch(ctx, "launch-1", time.Now().UTC())
+	side := domain.SideConversation{PolicyVersion: 1, ID: "side-1", SessionID: "session-1", MainConversationID: "main-1", AppRunID: "launch-1", Generation: "g", State: "opening"}
+	if _, _, err := store.CreateSideConversation(ctx, side); err != nil {
+		t.Fatal(err)
+	}
+	_, _, cancelA, err := svc.WatchSideChat(ctx, side.SessionID, side.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, cancelB, err := svc.WatchSideChat(ctx, side.SessionID, side.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelA()
+	svc.sides.mu.Lock()
+	remaining := len(svc.sides.subscribers[side.ID])
+	svc.sides.mu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("subscribers after first cancel = %d, want 1", remaining)
+	}
+	cancelB()
+	svc.sides.mu.Lock()
+	_, ok := svc.sides.subscribers[side.ID]
+	svc.sides.mu.Unlock()
+	if ok {
+		t.Fatal("empty subscriber set was left in the map")
+	}
+}
+
 func (*deferredSideTestConversation) ProviderConversationID() string       { return "provider-side-1" }
 func (*deferredSideTestConversation) Capabilities() ports.ChatCapabilities { return nil }
 func (c *deferredSideTestConversation) SendTurn(context.Context, ports.ChatUserMessage) (ports.ChatTurnRef, error) {

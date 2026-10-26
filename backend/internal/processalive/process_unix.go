@@ -5,12 +5,8 @@
 package processalive
 
 import (
-	"bytes"
 	"errors"
-	"strconv"
 	"syscall"
-
-	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // Alive reports whether pid maps to a running process. EPERM counts as alive:
@@ -26,12 +22,4 @@ func Alive(pid int) bool {
 		return false
 	}
 	return !isZombie(pid)
-}
-
-func isZombie(pid int) bool {
-	out, err := aoprocess.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	return bytes.HasPrefix(bytes.TrimSpace(out), []byte("Z"))
 }

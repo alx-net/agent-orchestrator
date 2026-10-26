@@ -458,6 +458,50 @@ func TestHandleEventReclaimsWatchBudgetOnRemoveAndRename(t *testing.T) {
 	}
 }
 
+func TestReleaseDropsWatchedSubdirectoriesOfRenamedDirectory(t *testing.T) {
+	root := t.TempDir()
+	moved := filepath.Join(root, "moved")
+	nested := filepath.Join(moved, "a", "b")
+	sibling := filepath.Join(root, "moved-sibling")
+	for _, dir := range []string{nested, sibling} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 8)
+	for _, dir := range []string{root, moved, filepath.Join(moved, "a"), nested, sibling} {
+		if err := limiter.add(context.Background(), dir); err != nil {
+			t.Fatalf("add %s: %v", dir, err)
+		}
+	}
+	if limiter.used != 5 {
+		t.Fatalf("limiter budget after adds = %d, want 5", limiter.used)
+	}
+
+	handleEvent(context.Background(), limiter, root, gitWorkspace{}, fsnotify.Event{Name: moved, Op: fsnotify.Rename})
+
+	if limiter.used != 2 || len(limiter.watched) != 2 {
+		t.Fatalf("after Rename used=%d watched=%v, want root and sibling only", limiter.used, limiter.watched)
+	}
+	for _, dir := range []string{root, sibling} {
+		if _, ok := limiter.watched[dir]; !ok {
+			t.Fatalf("%s was released by an unrelated rename", dir)
+		}
+	}
+	for _, dir := range watcher.WatchList() {
+		if dir == moved || strings.HasPrefix(dir, moved+string(filepath.Separator)) {
+			t.Fatalf("watch list still contains %q under the renamed directory", dir)
+		}
+	}
+}
+
 func TestLimiterAddIsIdempotent(t *testing.T) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

@@ -1023,6 +1023,15 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 			[uiSessionId]: activateSessionFile(current[uiSessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [setActiveShellTerminal, uiSessionId]);
+	// Stable props for the memoized chat surface.
+	const openReviewerChat = useCallback(
+		(target: { reviewId: string }) => selectReviewerChat(target.reviewId),
+		[selectReviewerChat],
+	);
+	const chatInterfaceSwitch = useMemo(
+		() => ({ control: interfaceUi.switchControl, errorNotice: interfaceUi.switchErrorNotice }),
+		[interfaceUi.switchControl, interfaceUi.switchErrorNotice],
+	);
 	// Reveal the requested transcript before it scrolls to the palette hit.
 	const chatFocusRequest = useUiStore((state) => {
 		const request = state.chatMessageFocusRequest;
@@ -1492,7 +1501,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 				switchControl={interfaceUi.switchControl}
 			/>
 		);
-	const sessionHeaderActions = (
+	const sessionHeaderActions = useMemo(() => (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"
 			data-compact-session-chrome="false"
@@ -1500,7 +1509,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 			{hostId ? <span className="max-w-40 truncate px-3 text-xs text-muted-foreground" title={hostId}>{hostLabel ?? hostId}</span> : null}
 			<ShellTopbar embedded />
 		</div>
-	);
+	), [hostId, hostLabel]);
 	const sessionTabActionWide = false;
 
 	// The pane shows one terminal at a time, so selecting a shell or the reviewer
@@ -1988,7 +1997,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									reviewerChat={reviewerChat}
 									reviewerChatSelected={Boolean(reviewerChatId)}
 									onOpenReviewerTerminal={selectReviewerTerminal}
-									onOpenReviewerChat={(target) => selectReviewerChat(target.reviewId)}
+									onOpenReviewerChat={openReviewerChat}
 									onSessionRenamed={refreshWorkspaces}
 									reviewerTarget={
 										routedTerminalTarget.kind === "reviewer" ? routedTerminalTarget : undefined
@@ -2020,7 +2029,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									agentResuming={quietResume}
 									newWorkDisabled={interfaceUi.newWorkDisabled}
 									onConversationWorkChange={interfaceUi.onConversationWorkChange}
-									interfaceSwitch={{ control: interfaceUi.switchControl, errorNotice: interfaceUi.switchErrorNotice }}
+									interfaceSwitch={chatInterfaceSwitch}
 									onOpenShell={addShellTerminal}
 									openingShell={openShellTerminal.isPending}
 									shellError={

@@ -69,8 +69,10 @@ const cacheKey = `${process.platform}-${process.arch}-r${BUILD_REVISION}-${SOURC
 // Keep source/build caches outside frontend/: Electron Packager treats that
 // directory as the app root and would otherwise copy hundreds of megabytes of
 // intermediate objects into app.asar in addition to the tiny extraResource.
-const cacheRoot = join(repoRoot, ".cache", "bundled-tmux", cacheKey);
-const downloadsRoot = join(repoRoot, ".cache", "bundled-tmux", "downloads");
+// AO_BUILD_CACHE_DIR (e.g. ~/.ao/build-cache) shares one build across worktrees.
+const tmuxCacheBase = join(process.env.AO_BUILD_CACHE_DIR || join(repoRoot, ".cache"), "bundled-tmux");
+const cacheRoot = join(tmuxCacheBase, cacheKey);
+const downloadsRoot = join(tmuxCacheBase, "downloads");
 const sourceRoot = join(cacheRoot, "src");
 const prefix = join(cacheRoot, "prefix");
 const cachedBinary = join(cacheRoot, "tmux");

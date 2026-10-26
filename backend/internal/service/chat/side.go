@@ -335,7 +335,14 @@ func (s *Service) WatchSideChat(ctx context.Context, session domain.SessionID, s
 	}
 	s.sides.subscribers[sideID][ch] = struct{}{}
 	s.sides.mu.Unlock()
-	cancel := func() { s.sides.mu.Lock(); delete(s.sides.subscribers[sideID], ch); s.sides.mu.Unlock() }
+	cancel := func() {
+		s.sides.mu.Lock()
+		defer s.sides.mu.Unlock()
+		delete(s.sides.subscribers[sideID], ch)
+		if len(s.sides.subscribers[sideID]) == 0 {
+			delete(s.sides.subscribers, sideID)
+		}
+	}
 	return side.Generation, ch, cancel, nil
 }
 
@@ -1311,6 +1318,10 @@ func (m *sideManager) runTurn(runtime *sideRuntime, side domain.SideConversation
 	runtime.providerTurnID = ""
 	runtime.messageText = make(map[string]string)
 	runtime.messageIDs = make(map[string]string)
+	// Activities are turn-scoped like messages: each row carries its TurnID and
+	// attach seeds these maps from the active turn only.
+	runtime.activityIDs = make(map[string]string)
+	runtime.activityText = make(map[string]string)
 	runtime.mu.Unlock()
 	if len(turn.References) > 0 && turn.RetryOfTurnID == "" {
 		refs := make([]ports.ChatExcerptReference, 0, len(turn.References))

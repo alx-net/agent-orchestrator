@@ -84,6 +84,9 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	// PR row before calling lifecycle, so the store already reflects this
 	// transition when sessionComplete reads it.
 	if o.Merged || o.Closed {
+		// A merged/closed PR queues no further nudges, so its dedup entries can
+		// leave memory; pr.last_nudge_signature still holds them for a reopen.
+		m.forgetPRReactions(o.URL)
 		rec, ok, err := m.store.GetSession(ctx, id)
 		if err != nil || !ok {
 			return err
@@ -1042,6 +1045,49 @@ func (m *Manager) persistPRSignaturesLocked(ctx context.Context, prURL string) e
 		return err
 	}
 	return m.store.UpdatePRLastNudgeSignature(ctx, prURL, string(raw))
+}
+
+// forgetPRReactions drops prURL's in-memory reaction-dedup entries so they do
+// not accumulate for the daemon's lifetime. Every mutation of a PR-keyed entry
+// is persisted to pr.last_nudge_signature (sendOnce, rearmMergeConflict), and
+// clearing loaded makes the next reaction lazily reload it. A PR with a re-arm
+// still owed a durable write keeps its entries: there memory is newer than
+// disk.
+func (m *Manager) forgetPRReactions(prURL string) {
+	if prURL == "" {
+		return
+	}
+	m.react.mu.Lock()
+	defer m.react.mu.Unlock()
+	// Entries for prURL only exist once loaded is set (sendOnce and the re-arm
+	// both load first), so an unloaded PR has nothing to scan.
+	if !m.react.loaded[prURL] || m.react.pendingRearm[prURL] {
+		return
+	}
+	for k := range m.react.seen {
+		if reactionKeyTargetsPR(k, prURL) {
+			delete(m.react.seen, k)
+		}
+	}
+	for k := range m.react.attempts {
+		if reactionKeyTargetsPR(k, prURL) {
+			delete(m.react.attempts, k)
+		}
+	}
+	delete(m.react.loaded, prURL)
+}
+
+// forgetSessionPRReactions drops the in-memory reaction-dedup entries of every
+// PR the session owns. Best-effort: a store error only leaves memory in place.
+func (m *Manager) forgetSessionPRReactions(ctx context.Context, id domain.SessionID) {
+	prs, err := m.store.ListPRsBySession(ctx, id)
+	if err != nil {
+		slog.Default().Debug("lifecycle: list PRs to forget reaction state", "session", id, "err", err)
+		return
+	}
+	for _, pr := range prs {
+		m.forgetPRReactions(pr.URL)
+	}
 }
 
 // reactionKeyTargetsPR matches the "<type>:<url>[:<extra>]" reaction keys used

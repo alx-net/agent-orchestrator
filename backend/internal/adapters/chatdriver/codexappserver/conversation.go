@@ -771,6 +771,7 @@ func (c *conversation) ResolveRequest(ctx context.Context, requestID string, dec
 // reconstruct them. AO echoes what the provider sent rather than rebuilding it.
 type parkedRequest struct {
 	ch      chan ports.ChatDecision
+	done    chan struct{} // closed by discardPending; never carries a decision
 	method  string
 	offered map[string]json.RawMessage
 }
@@ -842,7 +843,8 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 		c.mu.Unlock()
 		return nil, errConversationClosed
 	}
-	c.pending[requestID] = &parkedRequest{ch: ch, method: req.Method, offered: offered}
+	parked := &parkedRequest{ch: ch, done: make(chan struct{}), method: req.Method, offered: offered}
+	c.pending[requestID] = parked
 	c.mu.Unlock()
 
 	c.emit(ports.ChatEvent{
@@ -860,6 +862,11 @@ func (c *conversation) handleServerRequest(ctx context.Context, req serverReques
 	select {
 	case decision := <-ch:
 		return approvalReply(req.Method, decision), nil
+
+	case <-parked.done:
+		// The provider resolved the request itself (serverRequest/resolved), so
+		// nothing is waiting on an answer; release this handler now.
+		return nil, errors.New("request resolved by provider")
 
 	case <-time.After(approvalWait):
 		c.discardPending(requestID)
@@ -989,10 +996,17 @@ func (c *conversation) ReloadMCPServers(ctx context.Context) (ports.ChatMCPReloa
 	return ports.ChatMCPReloadResult{Servers: servers, Authoritative: true}, nil
 }
 
+// discardPending drops a parked request and wakes its handler. Only the caller
+// that removes the entry closes done, and ResolveRequest removes it before
+// sending, so a parked request is either answered or discarded, never both.
 func (c *conversation) discardPending(requestID string) {
 	c.mu.Lock()
+	parked, ok := c.pending[requestID]
 	delete(c.pending, requestID)
 	c.mu.Unlock()
+	if ok {
+		close(parked.done)
+	}
 }
 
 // failPendingApprovals unblocks every parked handler when the controller ends.

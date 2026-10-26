@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserHistoryStore, type BrowserHistoryEntry } from "./browser-history-store";
 
 const profileId = "11111111-1111-4111-8111-111111111111";
@@ -65,5 +65,74 @@ describe("BrowserHistoryStore", () => {
 
 		const reloaded = new BrowserHistoryStore({ stateDir });
 		expect(await reloaded.suggest(profileId, "example")).toHaveLength(2);
+	});
+
+	it("coalesces navigation records into one compact write that drain flushes", async () => {
+		const stateDir = await temporaryState();
+		let clock = Date.parse("2026-03-01T00:00:00.000Z");
+		const store = new BrowserHistoryStore({ stateDir, now: () => new Date((clock += 1_000)), writeDelayMs: 60_000 });
+		const file = path.join(stateDir, "browser-history", `${profileId}.json`);
+
+		await store.record(profileId, "https://first.example/", "First", true);
+		await store.record(profileId, "https://second.example/", "Second", true);
+		await store.record(profileId, "https://first.example/", "First again", true);
+		await store.record(profileId, "https://second.example/", "", false);
+		await expect(stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+		expect(await store.suggest(profileId, "https://")).toEqual([
+			{ url: "https://second.example/", title: "Second" },
+			{ url: "https://first.example/", title: "First again" },
+		]);
+
+		await store.drain();
+		const raw = await readFile(file, "utf8");
+		expect(raw).not.toContain("\n ");
+		expect(JSON.parse(raw)).toEqual({
+			version: 1,
+			entries: [
+				{ url: "https://second.example/", title: "Second", lastVisited: "2026-03-01T00:00:04.000Z", visitCount: 1 },
+				{ url: "https://first.example/", title: "First again", lastVisited: "2026-03-01T00:00:03.000Z", visitCount: 2 },
+			],
+		});
+	});
+
+	it("writes coalesced records after the delay without a drain", async () => {
+		const stateDir = await temporaryState();
+		const store = new BrowserHistoryStore({ stateDir, writeDelayMs: 10 });
+		const file = path.join(stateDir, "browser-history", `${profileId}.json`);
+
+		await store.record(profileId, "https://later.example/", "Later", true);
+		await vi.waitFor(async () => {
+			const parsed = JSON.parse(await readFile(file, "utf8")) as { entries: BrowserHistoryEntry[] };
+			expect(parsed.entries.map((entry) => entry.url)).toEqual(["https://later.example/"]);
+		});
+	});
+
+	it("reads legacy pretty-printed history files and keeps them sorted on record", async () => {
+		const stateDir = await temporaryState();
+		const directory = path.join(stateDir, "browser-history");
+		await mkdir(directory, { recursive: true });
+		await writeFile(path.join(directory, `${profileId}.json`), `${JSON.stringify({
+			version: 1,
+			entries: [
+				{ url: "https://older.example/", title: "Older", lastVisited: "2026-01-01T00:00:00.000Z", visitCount: 1 },
+				{ url: "https://newer.example/", title: "Newer", lastVisited: "2026-02-01T00:00:00.000Z", visitCount: 3 },
+			],
+		}, null, 2)}\n`);
+		const store = new BrowserHistoryStore({
+			stateDir,
+			now: () => new Date("2026-01-15T00:00:00.000Z"),
+			writeDelayMs: 60_000,
+		});
+
+		await store.record(profileId, "https://middle.example/", "Middle", true);
+		await store.drain();
+		const parsed = JSON.parse(await readFile(path.join(directory, `${profileId}.json`), "utf8")) as {
+			entries: BrowserHistoryEntry[];
+		};
+		expect(parsed.entries.map((entry) => entry.url)).toEqual([
+			"https://newer.example/",
+			"https://middle.example/",
+			"https://older.example/",
+		]);
 	});
 });

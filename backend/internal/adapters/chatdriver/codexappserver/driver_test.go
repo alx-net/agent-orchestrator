@@ -1279,6 +1279,44 @@ func TestBackgroundRefusesNetworkPermissionAndApprovalRequests(t *testing.T) {
 	}
 }
 
+// A request Codex resolves itself (serverRequest/resolved) must release its
+// parked handler instead of leaving it blocked for approvalWait.
+func TestDiscardPendingReleasesParkedHandler(t *testing.T) {
+	conv := &conversation{pending: map[string]*parkedRequest{}, events: make(chan ports.ChatEvent, 4)}
+	type outcome struct {
+		result any
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := conv.handleServerRequest(context.Background(), serverRequest{
+			Method: "item/commandExecution/requestApproval", ID: json.RawMessage(`42`),
+			Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","availableDecisions":["accept","cancel"]}`),
+		})
+		done <- outcome{result, err}
+	}()
+	select {
+	case ev := <-conv.events:
+		if ev.Kind != ports.ChatEventApprovalRequested {
+			t.Fatalf("event = %v, want approval requested", ev.Kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request was never parked")
+	}
+	conv.discardPending("42")
+	select {
+	case got := <-done:
+		if got.result != nil || got.err == nil {
+			t.Fatalf("discarded request = %#v, %v; want no decision and an error", got.result, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parked handler still blocked after discardPending")
+	}
+	if err := conv.ResolveRequest(context.Background(), "42", ports.ChatDecision{ID: "accept"}); !errors.Is(err, ports.ErrChatRequestNotPending) {
+		t.Fatalf("resolve after discard = %v, want not pending", err)
+	}
+}
+
 func TestEnvSliceIsSortedForReproducibleRelaunch(t *testing.T) {
 	// Sortedness is still the contract: a relaunch should be byte-identical so a
 	// process diff is readable. What changed is that the overlay is merged over the

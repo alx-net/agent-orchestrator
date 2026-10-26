@@ -58,6 +58,7 @@ import {
 	BoardSessionCardAdapter,
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
+import type { SessionArchiveChoice } from "./SessionArchiveDialog";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -98,18 +99,27 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 	const boardActionsInPanel = usesBoardActionsInPanel();
 	/** Bell lives in the board action row when the shell topbar does not host it. */
 	const boardOwnsNotificationCenter = isLinuxPlatform() || boardActionsInPanel;
-	const all = localWorkspaceQuery.data ?? [];
-	const workspaces = hostId
-		? remoteProjectQuery.data ? [remoteProjectQuery.data] : []
-		: projectId ? all.filter((candidate) => candidate.id === projectId) : all;
+	// The derivations below are memoized so an unchanged session keeps its
+	// object and its memoized card skips the re-render.
+	const localData = localWorkspaceQuery.data;
+	const remoteData = remoteProjectQuery.data;
+	const workspaces = useMemo(() => {
+		const all = localData ?? [];
+		return hostId
+			? remoteData ? [remoteData] : []
+			: projectId ? all.filter((candidate) => candidate.id === projectId) : all;
+	}, [hostId, localData, projectId, remoteData]);
 	const workspace = projectId ? workspaces[0] : undefined;
 	// Board chrome stays route-oriented; project context remains in the sidebar.
 	const boardLabel = t("shell.board");
-	const liveSessions = workspaces.flatMap((workspace) => workerSessions(workspace.sessions));
+	const liveSessions = useMemo(() => workspaces.flatMap((workspace) => workerSessions(workspace.sessions)), [workspaces]);
 	const demoWorkspaceId = projectId ?? workspaces[0]?.id;
-	const sessions = !hostId && usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
-		? demoBoardSessions(demoWorkspaceId)
-		: liveSessions;
+	const sessions = useMemo(
+		() => !hostId && usesPreviewWorkspaceData && demoWorkspaceId && liveSessions.length === 0
+			? demoBoardSessions(demoWorkspaceId)
+			: liveSessions,
+		[demoWorkspaceId, hostId, liveSessions],
+	);
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
 	const projectActions = useProjectOrchestratorAction({
 		projectId,
@@ -123,14 +133,17 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const setOrchestratorStartupError = useUiStore((state) => state.setOrchestratorStartupError);
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
-	const archived = sessions
-		.filter(isArchivedSession)
-		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-	const activeSessions = sessions.filter((candidate) => !isArchivedSession(candidate));
-	const boardSessions = activeSessions.map((session) =>
-		session.status === "no_signal" || session.displayStatus === "No signal"
-			? { ...session, kanbanColumn: "building" as const }
-			: session,
+	const archived = useMemo(
+		() => sessions.filter(isArchivedSession).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+		[sessions],
+	);
+	const boardSessions = useMemo(
+		() => sessions.filter((candidate) => !isArchivedSession(candidate)).map((session) =>
+			session.status === "no_signal" || session.displayStatus === "No signal"
+				? { ...session, kanbanColumn: "building" as const }
+				: session,
+		),
+		[sessions],
 	);
 	const boardLabels = sessionsBoardLabels(t);
 	const presentation = useBoardPresentation({
@@ -167,7 +180,11 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 	}, [sessions, memoryBySession, pressure]);
 	// The bar hosts the memory indicator too, so it stays up with an empty archive.
 	const hasArchive = archived.length > 0 || hasMemory;
-	const terminateSession = useTerminateSession();
+	const { mutate: terminateMutate } = useTerminateSession();
+	const terminateSession = useCallback(
+		(session: WorkspaceSession, { deleteArtifacts }: SessionArchiveChoice) => terminateMutate({ ...session, deleteArtifacts }),
+		[terminateMutate],
+	);
 	const activeScopeRef = useRef(scopeKey);
 	activeScopeRef.current = scopeKey;
 
@@ -327,10 +344,10 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 							<BoardSessionCardAdapter
 								memory={memoryBySession?.get(session.id)}
 								memoryTone={chipToneOf(session)}
-								onOpen={() => openSession(session)}
-								onOpenArtifact={(path) => openSessionArtifact(session, path)}
-								onOpenArtifacts={() => openSessionArtifacts(session)}
-								onTerminate={!hostId || connected ? ({ deleteArtifacts }) => terminateSession.mutate({ ...session, deleteArtifacts }) : undefined}
+								onOpen={openSession}
+								onOpenArtifact={openSessionArtifact}
+								onOpenArtifacts={openSessionArtifacts}
+								onTerminate={!hostId || connected ? terminateSession : undefined}
 								session={session}
 							/>
 						)}

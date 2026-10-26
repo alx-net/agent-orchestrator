@@ -1238,6 +1238,72 @@ func TestIsSupervisedProcessAliveFindsExactDescendant(t *testing.T) {
 	}
 }
 
+// psCountingRunner answers pane-pid lookups with pane 100 and serves psOut (or
+// psErr) for ps, counting the full-table scans.
+type psCountingRunner struct {
+	psCalls int
+	psOut   string
+	psErr   error
+}
+
+func (f *psCountingRunner) Run(_ context.Context, _ []string, name string, _ ...string) ([]byte, error) {
+	if name != "ps" {
+		return []byte("100\n"), nil
+	}
+	f.psCalls++
+	if f.psErr != nil {
+		return nil, f.psErr
+	}
+	return []byte(f.psOut), nil
+}
+
+func TestSupervisedProbesShareOneProcessSnapshotWithinTTL(t *testing.T) {
+	r, _ := newTestRuntime(0)
+	fr := &psCountingRunner{psOut: "100 1 /bin/sh -c launch\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-1 -- codex\n102 101 codex\n"}
+	r.runner = fr
+	now := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return now }
+	ctx := context.Background()
+	ref := ports.SupervisedProcessRef{SessionID: "sess-1", LaunchID: "launch-1"}
+	probe := func() (bool, error) {
+		return r.IsSupervisedProcessAlive(ctx, ports.RuntimeHandle{ID: "sess-1"}, ref)
+	}
+
+	for range 3 {
+		if alive, err := probe(); err != nil || !alive {
+			t.Fatalf("probe = (%v, %v), want (true, nil)", alive, err)
+		}
+	}
+	if fr.psCalls != 1 {
+		t.Fatalf("ps calls = %d, want one shared scan within the TTL", fr.psCalls)
+	}
+
+	now = now.Add(processSnapshotTTL)
+	if _, err := probe(); err != nil || fr.psCalls != 2 {
+		t.Fatalf("after TTL: err=%v ps calls=%d, want a fresh scan", err, fr.psCalls)
+	}
+
+	r.invalidateProcessSnapshot()
+	if _, err := probe(); err != nil || fr.psCalls != 3 {
+		t.Fatalf("after spawn invalidation: err=%v ps calls=%d, want a fresh scan", err, fr.psCalls)
+	}
+
+	// A failed scan surfaces as a probe error, never as "dead", and is not
+	// cached: the next probe scans again.
+	now = now.Add(processSnapshotTTL)
+	fr.psErr = errors.New("ps failed")
+	if alive, err := probe(); err == nil || alive {
+		t.Fatalf("probe with failing ps = (%v, %v), want an error", alive, err)
+	}
+	if alive, err := probe(); err == nil || alive || fr.psCalls != 5 {
+		t.Fatalf("second failing probe = (%v, %v) ps calls=%d, want an uncached error", alive, err, fr.psCalls)
+	}
+	fr.psErr = nil
+	if alive, err := probe(); err != nil || !alive || fr.psCalls != 6 {
+		t.Fatalf("recovered probe = (%v, %v) ps calls=%d, want a fresh successful scan", alive, err, fr.psCalls)
+	}
+}
+
 func TestIsExactSupervisedProcessAliveTreatsMissingSessionAsDead(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{[]byte("can't find session: sess-1")}

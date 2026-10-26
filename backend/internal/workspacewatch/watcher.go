@@ -82,23 +82,29 @@ func (l *dirWatchLimiter) add(ctx context.Context, dir string) error {
 	return nil
 }
 
-// release drops the watch on dir and returns its budget so it can be reused.
-// It is a no-op for paths this limiter never watched (regular files, ignored
-// directories, already-released paths) and safe to call on a nil limiter.
-// Best-effort: fsnotify may have already dropped the watch implicitly (for
-// example on Rename); reclaiming the accounting slot is what matters.
+// release drops the watch on dir and every watched directory below it, and
+// returns their budget so it can be reused. A Rename reports only the moved
+// directory, so its subdirectories must be released here or their descriptors
+// and slots would leak. It is a no-op for paths this limiter never watched
+// (regular files, ignored directories, already-released paths) and safe to
+// call on a nil limiter. Best-effort: fsnotify may have already dropped the
+// watch implicitly (for example on Rename); reclaiming the accounting slot is
+// what matters.
 func (l *dirWatchLimiter) release(dir string) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if _, ok := l.watched[dir]; !ok {
-		return
+	prefix := dir + string(filepath.Separator)
+	for path := range l.watched {
+		if path != dir && !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		delete(l.watched, path)
+		_ = l.watcher.Remove(path)
+		l.used--
 	}
-	delete(l.watched, dir)
-	_ = l.watcher.Remove(dir)
-	l.used--
 }
 
 // warn emits at most one aggregated WARN per call describing how many

@@ -62,20 +62,30 @@ const hydratedCopies = new WeakMap<FileDiffMetadata, { files: FileDiffLoadedFile
 // Pierre 1.4.1's virtualizer asserts the rendered diff is the same object it
 // measured. Two objects that share a cacheKey (a reparse, or a second hydration
 // of the same patch) fail that check and the row is replaced with the error.
+// Keys embed the workspace version, so the map is bounded least-recently-used:
+// every render re-reads the diffs it shows, which keeps them at the young end.
 const diffsByCacheKey = new Map<string, FileDiffMetadata>();
+export const MAX_STABLE_DIFF_ENTRIES = 500;
+
+function rememberDiff(key: string, fileDiff: FileDiffMetadata): FileDiffMetadata {
+	diffsByCacheKey.delete(key);
+	diffsByCacheKey.set(key, fileDiff);
+	while (diffsByCacheKey.size > MAX_STABLE_DIFF_ENTRIES) {
+		const oldest = diffsByCacheKey.keys().next().value;
+		if (oldest == null) break;
+		diffsByCacheKey.delete(oldest);
+	}
+	return fileDiff;
+}
 
 export function stableFileDiff(fileDiff: FileDiffMetadata): FileDiffMetadata {
 	const key = fileDiff.cacheKey;
 	if (key == null) return fileDiff;
 	const existing = diffsByCacheKey.get(key);
-	if (existing == null) {
-		diffsByCacheKey.set(key, fileDiff);
-		return fileDiff;
-	}
-	if (existing === fileDiff || (existing.isPartial === fileDiff.isPartial && patchIdentity(existing) === patchIdentity(fileDiff))) return existing;
+	if (existing == null) return rememberDiff(key, fileDiff);
+	if (existing === fileDiff || (existing.isPartial === fileDiff.isPartial && patchIdentity(existing) === patchIdentity(fileDiff))) return rememberDiff(key, existing);
 	fileDiff.cacheKey = `${key}\u0000${patchIdentity(fileDiff)}`;
-	diffsByCacheKey.set(fileDiff.cacheKey, fileDiff);
-	return fileDiff;
+	return rememberDiff(fileDiff.cacheKey, fileDiff);
 }
 
 /**

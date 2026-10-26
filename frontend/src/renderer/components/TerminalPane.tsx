@@ -3,6 +3,7 @@ import { RotateCcw } from "lucide-react";
 import {
 	createContext,
 	lazy,
+	memo,
 	Suspense,
 	useCallback,
 	useContext,
@@ -276,16 +277,27 @@ function showTerminal(entry: CachedTerminalEntry, slot: HTMLDivElement): void {
 	setTerminalPhase(entry, "visible");
 }
 
-function CachedTerminalPortal({
+// Memoized so a provider re-render (any activation or session update) only
+// reconciles the terminals whose own state changed. The entry is mutated in
+// place, so the fields the portal renders from are passed as their own props.
+const CachedTerminalPortal = memo(function CachedTerminalPortal({
 	active,
+	activationId,
+	activationPhase,
 	entry,
 	onFatal,
 	onTerminalReady,
+	props,
+	terminal,
 }: {
 	active: boolean;
+	activationId: number;
+	activationPhase: CachedTerminalEntry["activationPhase"];
 	entry: CachedTerminalEntry;
 	onFatal: (cacheKey: string, message: string) => void;
 	onTerminalReady: (cacheKey: string, terminal: AttachableTerminal) => void;
+	props: CachedTerminalEntry["props"];
+	terminal: CachedTerminalEntry["terminal"];
 }) {
 	const handleFatal = useCallback(
 		(message: string) => onFatal(entry.cacheKey, message),
@@ -298,8 +310,7 @@ function CachedTerminalPortal({
 		[entry.cacheKey, onTerminalReady],
 	);
 	useLayoutEffect(() => {
-		const terminal = entry.terminal;
-		if (!active || entry.activationPhase !== "visible" || !terminal) return;
+		if (!active || activationPhase !== "visible" || !terminal) return;
 		// Fit and scroll after the host is visible. This retains the cache's
 		// settled viewport behavior without putting a blank frame in front of it.
 		void terminal.prepareForActivation();
@@ -310,21 +321,21 @@ function CachedTerminalPortal({
 	}, [
 		active,
 		entry,
-		entry.activationId,
-		entry.activationPhase,
-		entry.terminal,
+		activationId,
+		activationPhase,
+		terminal,
 	]);
 	return createPortal(
 		<AttachedTerminal
-			{...entry.props}
-			isVisible={active && entry.activationPhase === "visible"}
+			{...props}
+			isVisible={active && activationPhase === "visible"}
 			onFatal={handleFatal}
 			onTerminalReady={handleTerminalReady}
 		/>,
 		entry.container,
 		entry.cacheKey,
 	);
-}
+});
 
 /**
  * Owns retained terminal renderers above the routed SessionView. Portal
@@ -371,7 +382,7 @@ export function TerminalCacheProvider({
 	// connect time rather than whatever was resolved on first render.
 	const cloudCpRef = useRef({ client: cloudClient, baseUrl: cloudBaseUrl });
 	cloudCpRef.current = { client: cloudClient, baseUrl: cloudBaseUrl };
-	const cloudMuxFactoriesRef = useRef(new Map<string, () => TerminalMux>());
+	const cloudMuxFactoriesRef = useRef(new Map<string, { sessionId: string; factory: () => TerminalMux }>());
 	const resolveCreateMux = useCallback(
 		(paneSession?: WorkspaceSession, terminalTarget?: TerminalTarget): (() => TerminalMux) => {
 			const cloud = paneSession?.cloud;
@@ -389,7 +400,7 @@ export function TerminalCacheProvider({
 			// epoch (which replays from 0) never sends output, so the pane never opens.
 			const factoryKey = `${paneSession.id}:${kind}:${identity}:${terminalResetNonce(paneSession.id)}`;
 			const cached = cloudMuxFactoriesRef.current.get(factoryKey);
-			if (cached) return cached;
+			if (cached) return cached.factory;
 			const sessionId = paneSession.id;
 			const orgId = cloud.orgId;
 			const reviewerTerminalID = terminalTarget?.kind === "reviewer" ? terminalTarget.handleId : undefined;
@@ -420,7 +431,7 @@ export function TerminalCacheProvider({
 						return response.ticket;
 					},
 				});
-			cloudMuxFactoriesRef.current.set(factoryKey, factory);
+			cloudMuxFactoriesRef.current.set(factoryKey, { sessionId, factory });
 			return factory;
 		},
 		[muxPool],
@@ -655,6 +666,13 @@ export function TerminalCacheProvider({
 				rerender();
 			}
 		}
+		// A cloud mux factory (and its replay cursor) outlives its session
+		// otherwise. Keep one a retained terminal still dials through, such as
+		// the unlisted pane kept on screen above.
+		const retainedFactories = new Set([...entriesRef.current.values()].map((entry) => entry.props.createMux));
+		for (const [factoryKey, { sessionId, factory }] of cloudMuxFactoriesRef.current) {
+			if (!sessions.has(sessionId) && !retainedFactories.has(factory)) cloudMuxFactoriesRef.current.delete(factoryKey);
+		}
 	}, [removeEntry, workspaceQuery.data, workspaceQuery.isSuccess]);
 
 	// Shell handles have their own lifecycle outside WorkspaceSession. Closing a
@@ -718,10 +736,14 @@ export function TerminalCacheProvider({
 			{[...entriesRef.current.values()].map((entry) => (
 				<CachedTerminalPortal
 					active={activeRef.current?.key === entry.cacheKey}
+					activationId={entry.activationId}
+					activationPhase={entry.activationPhase}
 					entry={entry}
 					key={entry.cacheKey}
 					onFatal={markFatal}
 					onTerminalReady={markTerminalReady}
+					props={entry.props}
+					terminal={entry.terminal}
 				/>
 			))}
 		</TerminalCacheContext.Provider>

@@ -134,6 +134,37 @@ func TestRingReplayIncludesPartialTUIOutput(t *testing.T) {
 	}
 }
 
+// TestRingCapsPartialLine verifies a TUI that never emits "\n" cannot grow the
+// partial line without bound, and that only the newest bytes are kept.
+func TestRingCapsPartialLine(t *testing.T) {
+	r := NewRing()
+	chunk := []byte("\r" + strings.Repeat("x", 1023))
+	for i := 0; i < 1000; i++ { // ~1 MiB of redraws with no newline
+		r.Append(chunk)
+	}
+	r.Append([]byte("\rtail"))
+
+	replay := r.Replay()
+	if len(replay) != MaxPartialLineBytes {
+		t.Fatalf("Replay len = %d, want %d", len(replay), MaxPartialLineBytes)
+	}
+	if !strings.HasSuffix(string(replay), "\rtail") {
+		t.Fatalf("Replay lost the newest bytes: ...%q", replay[len(replay)-16:])
+	}
+	if c := cap(r.partialLine); c > 4*MaxPartialLineBytes {
+		t.Fatalf("partialLine capacity = %d, want bounded", c)
+	}
+
+	// Completing the line stores only the capped tail.
+	r.Append([]byte("\nnext"))
+	if got := len(r.Snapshot()); got != MaxPartialLineBytes+1 {
+		t.Fatalf("Snapshot len = %d, want %d", got, MaxPartialLineBytes+1)
+	}
+	if got, want := string(r.Replay()[MaxPartialLineBytes+1:]), "next"; got != want {
+		t.Fatalf("partial after newline = %q, want %q", got, want)
+	}
+}
+
 // TestRingConcurrent validates the advertised goroutine-safety of Ring under the
 // race detector. It spawns 10 writer goroutines (Append) and 10 reader goroutines
 // (Snapshot + Tail) that all run concurrently; any data race will be caught by

@@ -3,6 +3,7 @@ package codexappserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,27 @@ func TestCitationFormatterSeparatesNativeThreads(t *testing.T) {
 		Kind: ports.ChatEventMessageDelta, ProviderTurnID: "same-turn", ProviderItemID: "same-item", Delta: citationStop,
 	}); !visible || ev.Delta != "[1](<https://example.com/child>)" {
 		t.Fatalf("child pending state was lost: %q, visible %t", ev.Delta, visible)
+	}
+}
+
+func TestCitationFormatterBoundsRetainedTurnsPerThread(t *testing.T) {
+	f := newCitationFormatter()
+	for i := range citationTurnsPerThread + 1 {
+		f.observeItem("thread-1", fmt.Sprintf("turn-%d", i), testSearchItem())
+	}
+	f.observeItem("thread-2", "turn-0", testSearchItem())
+	if got := len(f.sources); got != citationTurnsPerThread+1 {
+		t.Fatalf("retained %d turn source sets, want %d", got, citationTurnsPerThread+1)
+	}
+	if _, ok := f.sources[citationTurnKey{threadID: "thread-1", turnID: "turn-0"}]; ok {
+		t.Fatal("oldest thread-1 turn was not evicted")
+	}
+	if _, ok := f.sources[citationTurnKey{threadID: "thread-2", turnID: "turn-0"}]; !ok {
+		t.Fatal("eviction crossed threads")
+	}
+	marker := citationStart + "cite" + citationField + "turn0search0" + citationStop
+	if got := f.markdown(marker, "thread-1", "later-turn"); !strings.Contains(got, "https://example.com/first") {
+		t.Fatalf("a retained earlier search should still resolve: %q", got)
 	}
 }
 

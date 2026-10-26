@@ -266,6 +266,9 @@ type Observer struct {
 	branchStates BranchStateReconciler
 	// lifecycleTimeout bounds each lifecycle notification.
 	lifecycleTimeout time.Duration
+	// gitLookups caches local git remote lookups per checkout path so each
+	// poll does not fork git once per repo, session, and remote.
+	gitLookups gitLookupCache
 }
 
 // New constructs an Observer with default cadence/cache settings for zero
@@ -792,7 +795,7 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 				continue
 			}
 			if p.RepoOriginURL == "" && p.Path != "" {
-				if url := resolveGitOriginURL(p.Path); url != "" {
+				if url := o.gitOriginURL(ctx, p.Path); url != "" {
 					p.RepoOriginURL = url
 					if err := o.store.UpsertProject(ctx, p); err != nil {
 						o.logger.Warn("scm observer: backfill origin URL persist failed", "project", p.ID, "err", err)
@@ -850,7 +853,7 @@ func (o *Observer) resolveScanRepos(ctx context.Context, proj domain.ProjectReco
 		return repos
 	}
 	seen := map[string]bool{strings.ToLower(prKey(origin, 0)): true}
-	for _, url := range gitRemoteURLsFunc(ctx, proj.Path) {
+	for _, url := range o.gitRemoteURLs(ctx, proj.Path) {
 		repo, ok := o.provider.ParseRepository(url)
 		if !ok {
 			continue
@@ -2252,8 +2255,10 @@ func normalizePRState(draft, merged, closed bool) string {
 // trimmed URL, or "" if the command fails (missing repo, no origin remote, etc).
 // The observer uses this to backfill projects that were registered before
 // project.Add resolved origin URLs at add time.
-func resolveGitOriginURL(path string) string {
-	out, err := aoprocess.Command("git", "-C", path, "remote", "get-url", "origin").Output()
+func resolveGitOriginURL(ctx context.Context, path string) string {
+	ctx, cancel := context.WithTimeout(ctx, gitLookupTimeout)
+	defer cancel()
+	out, err := aoprocess.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin").Output()
 	if err != nil {
 		return ""
 	}
@@ -2288,6 +2293,84 @@ func gitRemoteURLs(ctx context.Context, path string) []string {
 }
 
 var gitRemoteURLsFunc = gitRemoteURLs
+
+const (
+	// gitLookupTTL bounds how long a checkout's remote URLs (or a failed
+	// origin lookup) are reused before git is asked again. Remotes change
+	// rarely; a few minutes keeps a newly added fork remote discoverable.
+	gitLookupTTL = 3 * time.Minute
+	// gitLookupTimeout bounds the origin backfill lookup.
+	gitLookupTimeout = 10 * time.Second
+)
+
+type gitLookupEntry struct {
+	urls []string
+	at   time.Time
+}
+
+// gitLookupCache memoizes per-path git remote lookups. The zero value is ready.
+type gitLookupCache struct {
+	mu            sync.Mutex
+	remotes       map[string]gitLookupEntry
+	originMissing map[string]time.Time
+}
+
+func (o *Observer) now() time.Time {
+	if o.clock == nil {
+		return time.Now()
+	}
+	return o.clock()
+}
+
+// gitRemoteURLs returns the checkout's remote URLs, reusing a lookup younger
+// than gitLookupTTL. A lookup cut short by cancellation is not cached.
+func (o *Observer) gitRemoteURLs(ctx context.Context, path string) []string {
+	c := &o.gitLookups
+	now := o.now()
+	c.mu.Lock()
+	if entry, ok := c.remotes[path]; ok && now.Sub(entry.at) < gitLookupTTL {
+		c.mu.Unlock()
+		return entry.urls
+	}
+	c.mu.Unlock()
+	urls := gitRemoteURLsFunc(ctx, path)
+	if ctx.Err() != nil {
+		return urls
+	}
+	c.mu.Lock()
+	if c.remotes == nil {
+		c.remotes = make(map[string]gitLookupEntry)
+	}
+	c.remotes[path] = gitLookupEntry{urls: urls, at: now}
+	c.mu.Unlock()
+	return urls
+}
+
+// gitOriginURL resolves the checkout's origin URL for the backfill, skipping
+// git for gitLookupTTL after a failed lookup (no repo, no origin remote).
+func (o *Observer) gitOriginURL(ctx context.Context, path string) string {
+	c := &o.gitLookups
+	now := o.now()
+	c.mu.Lock()
+	if at, ok := c.originMissing[path]; ok && now.Sub(at) < gitLookupTTL {
+		c.mu.Unlock()
+		return ""
+	}
+	c.mu.Unlock()
+	url := resolveGitOriginURLFunc(ctx, path)
+	if url != "" || ctx.Err() != nil {
+		return url
+	}
+	c.mu.Lock()
+	if c.originMissing == nil {
+		c.originMissing = make(map[string]time.Time)
+	}
+	c.originMissing[path] = now
+	c.mu.Unlock()
+	return ""
+}
+
+var resolveGitOriginURLFunc = resolveGitOriginURL
 
 func scrubLine(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")

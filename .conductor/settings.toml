@@ -1,0 +1,22 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+# Installs deps only when lockfiles changed; pins Node 24 via nvm.
+setup = "bash scripts/dev.sh setup"
+# Each workspace runs on its own port and ~/.ao/dev/workspaces/<name> data.
+run_mode = "concurrent"
+
+[scripts.run.app]
+available_in = [ "local" ]
+command = "bash scripts/dev.sh app"
+default = true
+icon = "app-window"
+
+[scripts.run.web]
+available_in = [ "local" ]
+command = "bash scripts/dev.sh web"
+icon = "globe"
+
+[scripts.run.check]
+command = "bash scripts/dev.sh check"
+icon = "test-tube"

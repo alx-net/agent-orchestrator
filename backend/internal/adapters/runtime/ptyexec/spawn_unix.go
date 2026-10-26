@@ -49,10 +49,15 @@ func Spawn(ctx context.Context, argv, env []string, rows, cols uint16) (ports.St
 	if err != nil {
 		return nil, err
 	}
-	proc := &creackPTY{f: f, cmd: cmd}
+	proc := &creackPTY{f: f, cmd: cmd, closed: make(chan struct{})}
+	// ctx may outlive the PTY (it is often the long-lived terminal context), so
+	// the watcher also exits on Close instead of leaking one goroutine per attach.
 	go func() {
-		<-ctx.Done()
-		_ = proc.Close()
+		select {
+		case <-ctx.Done():
+			_ = proc.Close()
+		case <-proc.closed:
+		}
 	}()
 	return proc, nil
 }
@@ -60,6 +65,7 @@ func Spawn(ctx context.Context, argv, env []string, rows, cols uint16) (ports.St
 type creackPTY struct {
 	f         *os.File
 	cmd       *exec.Cmd
+	closed    chan struct{} // closed by Close; releases the ctx watcher
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -126,6 +132,7 @@ func (p *creackPTY) Close() error {
 			waitForExit(done, killGrace)
 		}
 		p.closeErr = p.f.Close()
+		close(p.closed)
 	})
 	return p.closeErr
 }

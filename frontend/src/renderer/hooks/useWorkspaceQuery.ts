@@ -757,6 +757,19 @@ function isCloudNotFound(error: unknown): boolean {
 	return error instanceof CloudCpError && error.status === 404;
 }
 
+/**
+ * The query result with `data` replaced. TanStack re-renders a component only
+ * for the result fields it read; spreading the result reads all of them, so
+ * every fetch-state change (isFetching, fetchStatus, dataUpdatedAt) re-rendered
+ * every caller. Reading through this keeps each caller subscribed to just the
+ * fields it uses.
+ */
+function withData<TResult extends object, TData>(result: TResult, data: TData): Omit<TResult, "data"> & { data: TData } {
+	return new Proxy(result, {
+		get: (target, property, receiver) => (property === "data" ? data : Reflect.get(target, property, receiver)),
+	}) as Omit<TResult, "data"> & { data: TData };
+}
+
 export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 	const local = useQuery({ ...workspaceQueryOptions, subscribed: options.subscribed, enabled: options.enabled });
 	const includeCloud = options.includeCloud !== false;
@@ -792,7 +805,7 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
 			...cloudData.map((project) => toCloudWorkspace(project, sessions, orgId)),
 		]);
 	}, [localData, cloudData, cloudSessionData, includeCloud, orgId, ready]);
-	return { ...local, data };
+	return withData(local, data);
 }
 
 /**
@@ -1002,5 +1015,5 @@ export function useWorkspaceTraySessions() {
 		if (local.data === undefined) return undefined;
 		return cloudEntries.length === 0 ? local.data : [...local.data, ...cloudEntries];
 	}, [cloudEntries, local.data]);
-	return { ...local, data };
+	return withData(local, data);
 }

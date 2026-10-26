@@ -133,11 +133,16 @@ export type TerminalMuxPool = {
 const PING_INTERVAL_MS = 20_000;
 const MAX_INPUT_CHUNK_BYTES = 32 * 1024;
 
-function subscribeById<T>(map: Map<string, Set<T>>, id: string, listener: T): () => void {
+// Exported for tests. A pane's entry goes away with its last listener, so ids
+// of closed panes do not accumulate for the life of the shared socket.
+export function subscribeById<T>(map: Map<string, Set<T>>, id: string, listener: T): () => void {
 	const set = map.get(id) ?? new Set<T>();
 	set.add(listener);
 	map.set(id, set);
-	return () => set.delete(listener);
+	return () => {
+		set.delete(listener);
+		if (set.size === 0 && map.get(id) === set) map.delete(id);
+	};
 }
 
 /**

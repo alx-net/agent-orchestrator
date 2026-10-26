@@ -1,11 +1,10 @@
 import { createDecipheriv, createHash, pbkdf2Sync, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import {
 	chmod,
 	lstat,
 	mkdir,
 	open,
-	readFile,
 	readdir,
 	realpath,
 	rename,
@@ -17,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import type { CookiesSetDetails } from "electron";
 import {
@@ -92,6 +92,24 @@ type ImportedCookie = CookiesSetDetails & {
 	dedupeKey: string;
 };
 
+type CookieReadOutcome = { cookies: ImportedCookie[]; skipped: number; warnings: BrowserImportWarning[] };
+
+type HistoryReadOutcome = { history: BrowserHistoryEntry[]; warnings: BrowserImportWarning[] };
+
+type ChromiumCookieDecryption = { platform: NodeJS.Platform; key: Uint8Array };
+
+// A read of one staged snapshot (never a source-profile file). Plain data so
+// it can cross into the read worker by structured clone.
+export type BrowserImportReadTask =
+	| { kind: "cookies"; family: BrowserFamily; file: string; nowMs: number; decryption: ChromiumCookieDecryption | null }
+	| { kind: "history"; family: BrowserFamily; file: string };
+
+export type BrowserImportReadResult = CookieReadOutcome | HistoryReadOutcome | null;
+
+export type BrowserImportReadReply = { ok: true; result: BrowserImportReadResult } | { ok: false; message: string };
+
+type BrowserImportReader = (task: BrowserImportReadTask) => Promise<BrowserImportReadResult>;
+
 type ReadProfileData = {
 	profile: InternalSourceProfile;
 	cookies: ImportedCookie[];
@@ -116,6 +134,9 @@ export type BrowserProfileImportOptions = {
 	env?: NodeJS.ProcessEnv;
 	now?: () => Date;
 	sourceLstat?: typeof lstat;
+	// Built browser-profile-import-worker.js. When set, snapshot SQLite queries
+	// and cookie decryption run on a worker thread instead of the caller's.
+	readWorkerFile?: string;
 };
 
 class SourceBudget {
@@ -728,14 +749,15 @@ export class BrowserProfileImportService {
 			if (request.includeCookies && source.descriptor.family === "chromium" && this.context.platform === "darwin") {
 				onProgress({ requestId: request.requestId, phase: "permission", completed: 0, total: selected.length });
 			}
-			const decryptor = request.includeCookies
-				? await ChromiumCookieDecryptor.create(source, this.context.platform, signal)
+			const decryption = request.includeCookies
+				? (await ChromiumCookieDecryptor.create(source, this.context.platform, signal)).transfer()
 				: null;
+			const read: BrowserImportReader = (task) => this.read(task, signal);
 			const readData: ReadProfileData[] = [];
 			for (const [index, profile] of selected.entries()) {
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index, total: selected.length });
-				readData.push(await readProfileData(source, profile, request, staging, budget, decryptor, this.now()));
+				readData.push(await readProfileData(source, profile, request, staging, budget, decryption, read, this.now()));
 				throwIfImportAborted(signal);
 				onProgress({ requestId: request.requestId, phase: "reading", completed: index + 1, total: selected.length });
 			}
@@ -746,6 +768,12 @@ export class BrowserProfileImportService {
 			await rm(staging, { recursive: true, force: true }).catch(() => undefined);
 			await removeEmptyDirectory(this.stagingRoot());
 		}
+	}
+
+	private read(task: BrowserImportReadTask, signal: AbortSignal): Promise<BrowserImportReadResult> {
+		const workerFile = this.options.readWorkerFile;
+		if (workerFile) return readInWorker(workerFile, task, signal);
+		return Promise.resolve().then(() => runBrowserImportReadTask(task));
 	}
 
 	private async commitImport(
@@ -906,7 +934,8 @@ async function readProfileData(
 	request: BrowserImportRequest,
 	staging: string,
 	budget: SourceBudget,
-	decryptor: ChromiumCookieDecryptor | null,
+	decryption: ChromiumCookieDecryption | null,
+	read: BrowserImportReader,
 	now: Date,
 ): Promise<ReadProfileData> {
 	const warnings: BrowserImportWarning[] = [];
@@ -922,11 +951,18 @@ async function readProfileData(
 		if (!cookieDatabase) {
 			warnings.push({ code: "cookie-database-missing" });
 		} else {
-			const outcome = source.descriptor.family === "safari"
-				? readSafariCookies(await readFile(await snapshotFile(cookieDatabase, profile.root, staging, budget)), now)
+			const snapshot = source.descriptor.family === "safari"
+				? await snapshotFile(cookieDatabase, profile.root, staging, budget)
 				: source.descriptor.family === "chromium"
-					? readChromiumCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget, source.public.name), decryptor, now)
-					: readFirefoxCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget), now);
+					? await snapshotSQLite(cookieDatabase, profile.root, staging, budget, source.public.name)
+					: await snapshotSQLite(cookieDatabase, profile.root, staging, budget);
+			const outcome = await read({
+				kind: "cookies",
+				family: source.descriptor.family,
+				file: snapshot,
+				nowMs: now.getTime(),
+				decryption,
+			}) as CookieReadOutcome | null;
 			if (!outcome) {
 				warnings.push({ code: "cookie-database-missing" });
 			} else {
@@ -950,11 +986,7 @@ async function readProfileData(
 				budget,
 				source.descriptor.family === "chromium" ? source.public.name : undefined,
 			);
-			const outcome = source.descriptor.family === "chromium"
-				? readChromiumHistory(snapshot)
-				: source.descriptor.family === "firefox"
-					? readFirefoxHistory(snapshot)
-					: readSafariHistory(snapshot);
+			const outcome = await read({ kind: "history", family: source.descriptor.family, file: snapshot }) as HistoryReadOutcome;
 			history = outcome.history;
 			warnings.push(...outcome.warnings);
 		}
@@ -1098,6 +1130,54 @@ async function preflightContainedFile(
 	return canonical;
 }
 
+// Runs synchronously: better-sqlite3 queries, cookie decryption and row
+// normalization. Production calls it on the read worker thread.
+export function runBrowserImportReadTask(task: BrowserImportReadTask): BrowserImportReadResult {
+	if (task.kind === "history") {
+		if (task.family === "chromium") return readChromiumHistory(task.file);
+		if (task.family === "firefox") return readFirefoxHistory(task.file);
+		return readSafariHistory(task.file);
+	}
+	const now = new Date(task.nowMs);
+	if (task.family === "safari") return readSafariCookies(readFileSync(task.file), now);
+	if (task.family === "chromium") return readChromiumCookies(task.file, ChromiumCookieDecryptor.fromTransfer(task.decryption), now);
+	return readFirefoxCookies(task.file, now);
+}
+
+function readInWorker(workerFile: string, task: BrowserImportReadTask, signal: AbortSignal): Promise<BrowserImportReadResult> {
+	throwIfImportAborted(signal);
+	return new Promise((resolve, reject) => {
+		const worker = new Worker(workerFile, { workerData: task });
+		let settled = false;
+		const settle = (finish: () => void) => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener("abort", onAbort);
+			void worker.terminate().catch(() => undefined);
+			finish();
+		};
+		// Read errors arrive as a reply. An error event or a silent exit means the
+		// worker itself could not run (for example it failed to load), so read on
+		// this thread instead: slower, but the import still works.
+		const readHere = (cause: unknown) => {
+			console.warn("AO: browser import worker unavailable; reading on the main thread", cause);
+			try {
+				resolve(runBrowserImportReadTask(task));
+			} catch (error) {
+				reject(error);
+			}
+		};
+		const onAbort = () => settle(() => reject(new Error("Browser import was canceled because the app is closing.")));
+		signal.addEventListener("abort", onAbort, { once: true });
+		worker.once("message", (reply: BrowserImportReadReply) => settle(() => {
+			if (reply.ok) resolve(reply.result);
+			else reject(new Error(reply.message || "Browser data could not be read."));
+		}));
+		worker.once("error", (error) => settle(() => readHere(error)));
+		worker.once("exit", (code) => settle(() => readHere(new Error(`worker exited with code ${code}`))));
+	});
+}
+
 function withReadOnlyDatabase<T>(file: string, read: (database: Database) => T): T {
 	const database = new Database(file, { readonly: true, fileMustExist: true, timeout: 5_000 });
 	try {
@@ -1108,15 +1188,15 @@ function withReadOnlyDatabase<T>(file: string, read: (database: Database) => T):
 	}
 }
 
-function readFirefoxCookies(file: string, now: Date): { cookies: ImportedCookie[]; skipped: number; warnings: BrowserImportWarning[] } | null {
+function readFirefoxCookies(file: string, now: Date): CookieReadOutcome | null {
 	return withReadOnlyDatabase(file, (database) => {
 		if (!hasTable(database, "moz_cookies")) return null;
 		const columns = tableColumns(database, "moz_cookies");
 		const hasOriginAttributes = columns.has("originAttributes");
 		const hasSameSite = columns.has("sameSite");
-		const isolationWhere = hasOriginAttributes ? "WHERE COALESCE(originAttributes, '') = ''" : "";
-		const total = countRows(database, "moz_cookies");
-		const eligible = countRows(database, "moz_cookies", isolationWhere);
+		const isolation = hasOriginAttributes ? "COALESCE(originAttributes, '') = ''" : "";
+		const isolationWhere = isolation ? `WHERE ${isolation}` : "";
+		const { total, eligible } = cookieCounts(database, "moz_cookies", isolation);
 		const isolatedSkipped = total - eligible;
 		const truncated = Math.max(0, eligible - BROWSER_IMPORT_MAX_COOKIES);
 		const orderBy = cookieOrder(columns, ["lastAccessed", "creationTime"]);
@@ -1149,14 +1229,14 @@ function readChromiumCookies(
 	file: string,
 	decryptor: ChromiumCookieDecryptor | null,
 	now: Date,
-): { cookies: ImportedCookie[]; skipped: number; warnings: BrowserImportWarning[] } {
+): CookieReadOutcome {
 	return withReadOnlyDatabase(file, (database) => {
 		requireTable(database, "cookies", "The selected Chromium profile does not contain supported cookie data.");
 		const columns = tableColumns(database, "cookies");
 		const hasPartitionKey = columns.has("top_frame_site_key");
-		const isolationWhere = hasPartitionKey ? "WHERE COALESCE(top_frame_site_key, '') = ''" : "";
-		const total = countRows(database, "cookies");
-		const eligible = countRows(database, "cookies", isolationWhere);
+		const isolation = hasPartitionKey ? "COALESCE(top_frame_site_key, '') = ''" : "";
+		const isolationWhere = isolation ? `WHERE ${isolation}` : "";
+		const { total, eligible } = cookieCounts(database, "cookies", isolation);
 		const isolatedSkipped = total - eligible;
 		const truncated = Math.max(0, eligible - BROWSER_IMPORT_MAX_COOKIES);
 		const orderBy = cookieOrder(columns, ["last_access_utc", "creation_utc"]);
@@ -1434,9 +1514,23 @@ function tableColumns(database: Database, table: "cookies" | "moz_cookies"): Set
 	);
 }
 
+// One table pass for both the total and the unpartitioned (eligible) count.
+function cookieCounts(
+	database: Database,
+	table: "cookies" | "moz_cookies",
+	eligibleCondition: string,
+): { total: number; eligible: number } {
+	const eligible = eligibleCondition ? `COALESCE(SUM(CASE WHEN ${eligibleCondition} THEN 1 ELSE 0 END), 0)` : "COUNT(*)";
+	const row = database.prepare(`SELECT COUNT(*) AS total, ${eligible} AS eligible FROM ${table}`).get() as {
+		total?: unknown;
+		eligible?: unknown;
+	};
+	return { total: numberValue(row.total), eligible: numberValue(row.eligible) };
+}
+
 function countRows(
 	database: Database,
-	table: "cookies" | "moz_cookies" | "urls" | "moz_places" | "history_items",
+	table: "urls" | "moz_places" | "history_items",
 	where = "",
 ): number {
 	const row = database.prepare(`SELECT COUNT(*) AS count FROM ${table} ${where}`).get() as { count?: unknown };
@@ -1586,9 +1680,18 @@ class ChromiumCookieDecryptor {
 			}
 		}
 		if (platform === "darwin") {
-			return new ChromiumCookieDecryptor(platform, await readMacChromiumPassword(source.descriptor.chromiumKeychainNames ?? [], signal));
+			const password = await readMacChromiumPassword(source.descriptor.chromiumKeychainNames ?? [], signal);
+			return new ChromiumCookieDecryptor(platform, deriveMacChromiumCookieKey(password));
 		}
 		return new ChromiumCookieDecryptor(platform, null);
+	}
+
+	static fromTransfer(decryption: ChromiumCookieDecryption | null): ChromiumCookieDecryptor | null {
+		return decryption ? new ChromiumCookieDecryptor(decryption.platform, Buffer.from(decryption.key)) : null;
+	}
+
+	transfer(): ChromiumCookieDecryption | null {
+		return this.key ? { platform: this.platform, key: this.key } : null;
 	}
 
 	decrypt(encrypted: Buffer, host: string): string | null {
@@ -1645,11 +1748,16 @@ export function decryptWindowsChromiumCookie(encrypted: Buffer, key: Buffer, hos
 	}
 }
 
-function decryptMacChromiumCookie(encrypted: Buffer, password: Buffer, host: string): string | null {
+// Chromium's macOS cookie key depends only on the Safe Storage password, so
+// derive it once per import instead of once per cookie row.
+export function deriveMacChromiumCookieKey(password: Buffer): Buffer {
+	return pbkdf2Sync(password, "saltysalt", 1_003, 16, "sha1");
+}
+
+export function decryptMacChromiumCookie(encrypted: Buffer, key: Buffer, host: string): string | null {
 	const prefix = encrypted.subarray(0, 3).toString();
 	if (prefix !== "v10" && prefix !== "v11") return null;
 	try {
-		const key = pbkdf2Sync(password, "saltysalt", 1_003, 16, "sha1");
 		const decipher = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
 		const plaintext = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
 		return stripChromiumCookieHostDigest(plaintext, host).toString("utf8");

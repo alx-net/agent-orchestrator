@@ -363,19 +363,33 @@ function ShellLayout() {
 	// The drag strip above the sidebar must be exactly as wide as the sidebar.
 	// `--ao-sidebar-w` only reaches the strip if it already exists when the
 	// sidebar first applies its saved width, so measure the sidebar instead.
-	const [sidebarWidthPx, setSidebarWidthPx] = useState<number | null>(null);
+	// The width is written to the strip directly: as state it re-rendered the
+	// whole shell on every frame of a sidebar drag.
+	const sidebarWidthPxRef = useRef<number | null>(null);
+	const setSidebarDragStrip = useCallback((node: HTMLDivElement | null) => {
+		sidebarDragStripRef.current = node;
+		if (node && sidebarWidthPxRef.current) node.style.width = `${sidebarWidthPxRef.current}px`;
+	}, []);
 	useEffect(() => {
 		if (!isMac || !sidebarHasLayout) return;
 		let observer: ResizeObserver | undefined;
 		const frame = requestAnimationFrame(() => {
 			const el = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]');
 			if (!el) return;
-			observer = new ResizeObserver(([entry]) => setSidebarWidthPx(entry.target.getBoundingClientRect().width));
+			observer = new ResizeObserver(([entry]) => {
+				const width = entry.target.getBoundingClientRect().width;
+				if (!width || width === sidebarWidthPxRef.current) return;
+				sidebarWidthPxRef.current = width;
+				if (sidebarDragStripRef.current) sidebarDragStripRef.current.style.width = `${width}px`;
+			});
 			observer.observe(el);
 		});
 		return () => {
 			cancelAnimationFrame(frame);
 			observer?.disconnect();
+			// Without the sidebar the strip falls back to its class width.
+			sidebarWidthPxRef.current = null;
+			if (sidebarDragStripRef.current) sidebarDragStripRef.current.style.width = "";
 		};
 	}, [sidebarHasLayout]);
 	const syncSystemTheme = useUiStore((state) => state.syncSystemTheme);
@@ -1592,9 +1606,8 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 								sidebarHasLayout ? "w-(--ao-sidebar-w,var(--size-sidebar-default))" : "w-titlebar-content-offset",
 								isFullScreen ? "pointer-events-none h-0" : "h-traffic-light-clearance",
 							)}
-							ref={sidebarDragStripRef}
+							ref={setSidebarDragStrip}
 							style={{
-								...(sidebarHasLayout && sidebarWidthPx ? { width: sidebarWidthPx } : null),
 								...(trafficLightDragActive ? ({ WebkitAppRegion: "drag" } as CSSProperties) : null),
 							}}
 						>

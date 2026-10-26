@@ -34,7 +34,7 @@ func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, 
 	}
 
 	pipe := newBytePipe()
-	s := &loopbackStream{conn: conn, pr: pipe, pw: pipe}
+	s := &loopbackStream{conn: conn, pr: pipe, pw: pipe, closed: make(chan struct{})}
 
 	// Pump host frames: MsgTerminalData payloads go into the pipe that Read
 	// drains. The first such frame is the scrollback snapshot, so the replay
@@ -42,10 +42,14 @@ func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, 
 	go s.pump()
 
 	// ctx cancellation must terminate the stream (mirrors the unix/windows
-	// spawn paths closing the PTY on ctx.Done).
+	// spawn paths closing the PTY on ctx.Done). ctx may outlive the stream, so
+	// the watcher also exits on Close instead of leaking per attach.
 	go func() {
-		<-ctx.Done()
-		_ = s.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.Close()
+		case <-s.closed:
+		}
 	}()
 
 	if rows > 0 && cols > 0 {
@@ -74,6 +78,7 @@ type loopbackStream struct {
 	pr   *bytePipe
 	pw   *bytePipe
 
+	closed    chan struct{} // closed by Close; releases the ctx watcher
 	closeOnce sync.Once
 }
 
@@ -143,6 +148,7 @@ func (s *loopbackStream) Close() error {
 		err = s.conn.Close()
 		_ = s.pw.Close()
 		_ = s.pr.Close()
+		close(s.closed)
 	})
 	return err
 }
