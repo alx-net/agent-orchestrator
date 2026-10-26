@@ -830,6 +830,15 @@ type fakeAgent struct {
 	steerOut            string
 	steerMethodNotFound bool // HandleExtensionMethod returns -32601 for steering
 	steerExtensionErr   error
+	// subagentControl advertises AO's claude-agent-acp subagent extension.
+	subagentControl bool
+	subagentCalls   []fakeExtensionCall
+	subagentErr     error
+}
+
+type fakeExtensionCall struct {
+	method string
+	params map[string]any
 }
 
 type legacyKimiAgent struct {
@@ -977,9 +986,17 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 	if initErr != nil {
 		return acpsdk.InitializeResponse{}, initErr
 	}
-	meta := map[string]any(nil)
+	meta := map[string]any{}
 	if a.steering {
-		meta = map[string]any{"steering": map[string]any{"supported": true}}
+		meta["steering"] = map[string]any{"supported": true}
+	}
+	if a.subagentControl {
+		meta[subagentControlExtension] = map[string]any{
+			"supported": true, "messageMethod": subagentMessageMethod, "stopMethod": subagentStopMethod,
+		}
+	}
+	if len(meta) == 0 {
+		meta = nil
 	}
 	defaultCaps := acpsdk.AgentCapabilities{
 		SessionCapabilities: acpsdk.SessionCapabilities{Resume: &acpsdk.SessionResumeCapabilities{}},
@@ -995,6 +1012,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 }
 
 func (a *fakeAgent) HandleExtensionMethod(_ context.Context, method string, raw json.RawMessage) (any, error) {
+	if method == subagentMessageMethod || method == subagentStopMethod {
+		return a.handleSubagentExtension(method, raw)
+	}
 	if method != steeringMethod {
 		return nil, acpsdk.NewMethodNotFound(method)
 	}

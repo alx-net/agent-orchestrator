@@ -133,6 +133,8 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/conversation/interrupt", c.interrupt)
 	r.Post("/sessions/{sessionId}/conversation/steer", c.steer)
 	r.Post("/sessions/{sessionId}/conversation/steer-or-send", c.steerOrSend)
+	r.Post("/sessions/{sessionId}/conversation/subagents/{toolUseId}/messages", c.messageSubagent)
+	r.Post("/sessions/{sessionId}/conversation/subagents/{toolUseId}/stop", c.stopSubagent)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/steer", c.promoteQueuedTurn)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/cancel", c.cancelQueuedTurn)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit", c.editQueuedTurn)

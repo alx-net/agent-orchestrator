@@ -727,9 +727,10 @@ func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 		emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
 		c.emitDiffs(turnID, tool.id, tool.content, emit)
 	case update.ToolCallUpdate != nil:
-		if subagentProgress(update.ToolCallUpdate.Meta) != nil && !c.tracksTool(string(update.ToolCallUpdate.ToolCallId)) {
-			// A progress beat carries nothing but meta. For a call this turn never
-			// saw, the row it would write holds only the beat.
+		if (subagentProgress(update.ToolCallUpdate.Meta) != nil || subagentInbox(update.ToolCallUpdate.Meta) != nil) &&
+			!c.tracksTool(string(update.ToolCallUpdate.ToolCallId)) {
+			// A progress beat or inbox report carries nothing but meta. For a call
+			// this turn never saw, the row it would write holds only that.
 			break
 		}
 		tool := c.mergeToolUpdate(update.ToolCallUpdate)
@@ -935,6 +936,10 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 			if uses, ok := number(progress["toolUses"]); ok && uses >= 0 {
 				detailMap["progressToolUses"] = int64(uses)
 			}
+		}
+		// Each report is the full current list, so it replaces the last one.
+		if inbox, ok := claude["subagentInbox"].([]any); ok {
+			detailMap["subagentInbox"] = subagentInboxDetail(inbox)
 		}
 	}
 	if terminal := nestedMap(tool.meta, "terminal_info"); terminal != nil {
