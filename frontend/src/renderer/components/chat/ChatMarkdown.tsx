@@ -64,6 +64,7 @@ import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { MathFormula } from "./MathFormula";
 import { CopyButton } from "./CopyButton";
+import { RunCodeButton } from "./RunCommand";
 import { ChatImage, ChatImageGallery, ChatImageLinkScope, isImageOnlyParagraph } from "./ChatImage";
 import "./code-theme.css";
 
@@ -293,6 +294,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
 				<span className="text-caption text-muted-foreground">
 					{language || "text"}
 				</span>
+				<RunCodeButton code={code} language={language} streaming={streaming} />
 				{/* Hover-revealed, and focus-revealed so the keyboard can reach it. The
 				    timeline's whole point is that prose dominates; a permanent row of
 				    controls on every fence is the opposite. */}

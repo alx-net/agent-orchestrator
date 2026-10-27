@@ -94,6 +94,7 @@ import {
 import { actionDetailLines, describeConversationActivity } from "./activity-action";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ChatAnnotationSummary } from "./ChatAnnotationSummary";
+import { RunnableCode } from "./RunCommand";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -947,7 +948,7 @@ export function AssistantMessage({
 			data-chat-message-revision={!live && !renderingStreaming ? message.revision : undefined}
 			data-chat-message-role={!live && !renderingStreaming ? message.role : undefined}
 		>
-			<div data-chat-message-body=""><ChatMarkdown text={visibleText} streaming={renderingStreaming} remarkPlugins={ASSISTANT_REMARK_PLUGINS} /></div>
+			<div data-chat-message-body=""><RunnableCode><ChatMarkdown text={visibleText} streaming={renderingStreaming} remarkPlugins={ASSISTANT_REMARK_PLUGINS} /></RunnableCode></div>
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and

@@ -1715,6 +1715,22 @@ func shellTerminalOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/terminal-commands", id: "runSessionCommand", tag: "shellTerminals",
+			// Desktop app only: requests without a browser Origin are refused.
+			summary:    "Run a command from an agent's reply in a new shell tab",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.RunSessionCommandRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ShellTerminalEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPatch, path: "/api/v1/shell-terminals/{handleId}", id: "renameShellTerminal", tag: "shellTerminals",
 			summary:    "Rename a standalone shell terminal tab",
 			pathParams: []any{controllers.ShellTerminalHandleIDParam{}},

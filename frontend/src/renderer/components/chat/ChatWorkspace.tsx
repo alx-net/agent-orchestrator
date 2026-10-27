@@ -98,6 +98,7 @@ import { inspectorIsOpen, sidebarOccupiesLayout, useUiStore } from "../../stores
 import type { TerminalTarget } from "../../types/terminal";
 import {
 	isOrchestratorSession,
+	sessionIsActive,
 	type SessionKind,
 	type WorkspaceSession,
 	type SessionProvisionStep,
@@ -145,6 +146,7 @@ import {
 import { AutomationMessage } from "./AutomationMessage";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider, ChatOpeningRef } from "./ChatMarkdown";
+import { RunCommandProvider } from "./RunCommand";
 import { ChatImageSourceProvider } from "./chat-image-source";
 import type { AgentSwitchProps } from "./AgentSwitchPicker";
 import type { ComposerPromptSuggestion } from "./ComposerEditor";
@@ -1939,6 +1941,8 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center", conversationEmpty && centerInWindow && "pb-inspector-tabs", arrivingWithHistory && snapshot.items.length === 0 && "justify-end")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
+						{/* Run opens a shell on this machine: local, live sessions only. */}
+						<RunCommandProvider sessionId={!activeRemoteHostId && session && !session.cloud && sessionIsActive(session) ? snapshot.sessionId : undefined}>
 						<ChatLinkProvider
 							onLinkOpen={onLinkOpen}
 							onFileOpen={onOpenFile}
@@ -2024,6 +2028,7 @@ function ChatWorkspaceContent({
 							</ChatHostId.Provider>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
+						</RunCommandProvider>
 
 						<div ref={composerDockRef} className="cursor-chat-composer-dock shrink-0 px-4 pb-3">
 							<div aria-hidden="true" className="chat-composer-fade" />

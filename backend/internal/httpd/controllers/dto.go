@@ -2385,6 +2385,13 @@ type OpenShellTerminalRequest struct {
 	Title         string `json:"title,omitempty" description:"Tab title for the new shell, for a client that already shows its tab. Trimmed; omitted or empty numbers it after the existing shells (Terminal N)."`
 }
 
+// RunSessionCommandRequest is the body of POST
+// /api/v1/sessions/{sessionId}/terminal-commands.
+type RunSessionCommandRequest struct {
+	Command string `json:"command" maxLength:"65536" description:"Shell command the user chose to run, typed into a new shell tab in the session's worktree. Several lines run as one command list."`
+	Shell   string `json:"shell,omitempty" description:"Windows shell selector, as for shell terminals. Ignored on macOS and Linux."`
+}
+
 // UpdateShellTerminalRequest is the body of PATCH /api/v1/shell-terminals/{handleId}.
 type UpdateShellTerminalRequest struct {
 	Title string `json:"title" description:"New tab title for the shell terminal. Trimmed; must be non-empty."`

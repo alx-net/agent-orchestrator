@@ -10910,6 +10910,69 @@ paths:
       summary: Send a message to a running session's agent
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/terminal-commands:
+    post:
+      operationId: runSessionCommand
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersRunSessionCommandRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellTerminalEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Run a command from an agent's reply in a new shell tab
+      tags:
+      - shellTerminals
   /api/v1/sessions/{sessionId}/workspace/branches:
     get:
       operationId: listSessionWorkspaceBranches
@@ -15214,6 +15277,20 @@ components:
       - sessionId
       - harness
       - memory
+      type: object
+    ControllersRunSessionCommandRequest:
+      properties:
+        command:
+          description: Shell command the user chose to run, typed into a new shell
+            tab in the session's worktree. Several lines run as one command list.
+          maxLength: 65536
+          type: string
+        shell:
+          description: Windows shell selector, as for shell terminals. Ignored on
+            macOS and Linux.
+          type: string
+      required:
+      - command
       type: object
     ControllersSecurePairingStatus:
       properties:
