@@ -29,6 +29,20 @@ func (m *Manager) StartAccountTransition(
 	accountID string,
 	policy domain.SessionInterfaceTransitionPolicy,
 ) (domain.SessionInterfaceTransition, error) {
+	return m.startAccountTransition(ctx, id, accountID, policy, false)
+}
+
+// startAccountTransition is StartAccountTransition. restart lets the move
+// target the session's own account: its agent restarts there and picks up the
+// login the account's folder holds now, as after a usage limit hit on a login
+// the folder no longer has.
+func (m *Manager) startAccountTransition(
+	ctx context.Context,
+	id domain.SessionID,
+	accountID string,
+	policy domain.SessionInterfaceTransitionPolicy,
+	restart bool,
+) (domain.SessionInterfaceTransition, error) {
 	if !policy.Valid() {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("transition policy %q is invalid", policy)
 	}
@@ -59,7 +73,7 @@ func (m *Manager) StartAccountTransition(
 	if current == "" {
 		return domain.SessionInterfaceTransition{}, ports.ErrAgentAccountProviderMismatch
 	}
-	if current == accountID {
+	if current == accountID && !restart {
 		return domain.SessionInterfaceTransition{}, ports.ErrAgentAccountUnchanged
 	}
 	// Refuse an unusable account before claiming the session, so a wrong pick

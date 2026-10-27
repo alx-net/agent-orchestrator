@@ -567,6 +567,11 @@ func Run(buildVersion string) error {
 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
 		chatSvc.SetTerminalProviderSwitcher(switcher)
 	}
+	// A turn refused for its account's usage limit moves its session to an
+	// account with usage left and runs again there.
+	if switcher, ok := wiredSessMgr.(chatsvc.UsageLimitSwitcher); ok {
+		chatSvc.SetUsageLimitSwitcher(switcher)
+	}
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	if wired, ok := sessMgr.(interface {

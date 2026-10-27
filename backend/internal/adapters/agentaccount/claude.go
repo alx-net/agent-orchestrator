@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -294,6 +295,40 @@ func (b claudeUsageBody) autoResumeResetAt(now time.Time) *time.Time {
 		return nil
 	}
 	return &latest
+}
+
+// claudeMCPNeedsAuthFile is where Claude Code lists the MCP servers it found
+// needing a sign-in in a config folder, keyed by server name. Only names are
+// read from it.
+const claudeMCPNeedsAuthFile = "mcp-needs-auth-cache.json"
+
+// MCPNeedsAuth names the MCP servers Claude Code last found not signed in for
+// home ("" is the computer's own folder), sorted. A missing or unreadable file
+// names none.
+func (c *Claude) MCPNeedsAuth(home string) []string {
+	dir := home
+	if dir == "" {
+		dir = c.DeviceHome
+	}
+	if dir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, claudeMCPNeedsAuthFile))
+	if err != nil {
+		return nil
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Prepare links home's history and the user's own config to the computer's

@@ -60,6 +60,10 @@ type Service struct {
 	// agent cannot start on a login AO is about to delete.
 	removing       map[string]bool
 	defaultChanged func(domain.AgentAccountProvider)
+	// limitedLogins holds, by login (quota pool), when a usage limit that
+	// refused a session resets; limitedFor holds it per session and account.
+	limitedLogins map[string]time.Time
+	limitedFor    map[domain.SessionID]map[string]time.Time
 }
 
 // reading is the last identity and limits read for one account.
@@ -70,7 +74,15 @@ type reading struct {
 	mismatch  bool
 	limits    *domain.AgentAccountLimits
 	limitsErr string
-	at        time.Time
+	// mcpNeedsAuth names the MCP servers the folder's CLI found not signed in.
+	mcpNeedsAuth []string
+	at           time.Time
+}
+
+// mcpAuthReporter is a provider that reports which MCP servers a folder has
+// not signed in to.
+type mcpAuthReporter interface {
+	MCPNeedsAuth(home string) []string
 }
 
 // knownUnusable reports a reading that shows the folder cannot launch as its
@@ -130,6 +142,9 @@ type AccountView struct {
 	IdentityErr string
 	Limits      *domain.AgentAccountLimits
 	LimitsErr   string
+	// MCPNeedsAuth names MCP servers that are not signed in on the account, so
+	// a session there runs without them.
+	MCPNeedsAuth []string
 }
 
 // List returns every account, the computer's own first per provider. refresh
@@ -155,6 +170,7 @@ func (s *Service) List(ctx context.Context, refresh bool) ([]AccountView, error)
 		view := AccountView{Account: account, Default: def == account.ID}
 		if r != nil {
 			view.SignedIn, view.IdentityErr, view.Limits, view.LimitsErr = r.identity.SignedIn, r.identityErr, r.limits, r.limitsErr
+			view.MCPNeedsAuth = r.mcpNeedsAuth
 			if account.Device() {
 				view.Account.Email, view.Account.Plan = r.identity.Email, r.identity.Plan
 			} else if r.identity.Plan != "" {
@@ -191,6 +207,9 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	r := &reading{at: s.now()}
+	if reporter, ok := provider.(mcpAuthReporter); ok {
+		r.mcpNeedsAuth = reporter.MCPNeedsAuth(account.Home)
+	}
 	identity, err := provider.Identity(ctx, account.Home)
 	r.identity = identity
 	if err != nil {
@@ -375,9 +394,20 @@ func (s *Service) RunsOnComputerLogin(ctx context.Context, harness domain.AgentH
 
 // newSessionAccount is the account a new session of p starts on: the default,
 // or, when the default is known to be signed out or to hold another login, the
-// first other account that is signed in. The session's account shows which.
-// Only a bad default costs CLI calls; a good one is answered from the cache.
+// first other account that is signed in. When that account has run out of
+// usage, the one with the most headroom instead. The session's account shows
+// which. A reading is reused for the cache window.
 func (s *Service) newSessionAccount(ctx context.Context, p domain.AgentAccountProvider) (domain.AgentAccount, error) {
+	account, err := s.signedInSessionAccount(ctx, p)
+	if err != nil {
+		return account, err
+	}
+	return s.avoidUsedUp(ctx, p, account), nil
+}
+
+// signedInSessionAccount is the default, or the first other signed-in account
+// when the default cannot launch. Only a bad default costs CLI calls.
+func (s *Service) signedInSessionAccount(ctx context.Context, p domain.AgentAccountProvider) (domain.AgentAccount, error) {
 	def, err := s.defaultID(ctx, p)
 	if err != nil {
 		return domain.AgentAccount{}, err
