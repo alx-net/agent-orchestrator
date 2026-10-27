@@ -1276,13 +1276,22 @@ func (c *conversation) sessionFailureEvent(
 		Summary:        title,
 		Detail:         detail,
 	}
+	failureID, _ := failure["id"].(string)
+	replayed := c.historyReplayActive()
 	c.mu.Lock()
 	if c.providerFailure != nil && c.providerFailure.ProviderTurnID == turnID {
 		event.ProviderItemID = c.providerFailure.ProviderItemID
 	} else {
-		// One row per uninterrupted retry episode. Host identity survives replay;
-		// direct connections have no replay ID and need a fresh local identity.
-		if sourceID == "" {
+		switch {
+		case replayed:
+			// A history load replays the transcript's failures every time a
+			// controller starts, as each account move does, over a new connection
+			// or host. Named by the history turn and the failure, a replayed row
+			// updates the row the last load made instead of adding another.
+			sourceID = "replay:" + lengthPrefixedTuple(turnID, strings.TrimSpace(failureID))
+		case sourceID == "":
+			// One row per uninterrupted retry episode. Host identity survives
+			// replay; direct connections have no replay ID and need a fresh one.
 			sourceID = uuid.NewString()
 		}
 		event.ProviderItemID = c.providerItemID("session-failure:" + sourceID)
