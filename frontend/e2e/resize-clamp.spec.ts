@@ -35,12 +35,8 @@ test("sidebar drag stops at its minimum width instead of collapsing", async ({ p
 	const sidebar = page.locator('[data-slot="sidebar"]');
 	await expect(sidebar).toHaveAttribute("data-state", "expanded");
 
-	// The floor follows the brand label (see sidebarMinWidth in Sidebar.tsx), which
-	// mounts once the sidebar has settled open, so wait for it before dragging.
-	await page.waitForFunction(() =>
-		Array.from(document.querySelectorAll("[data-sidebar-brand]")).some((el) => el.getBoundingClientRect().width > 0),
-	);
 	const handle = page.getByTestId("resize-handle");
+	await expect(handle).toBeVisible();
 	const box = await handle.boundingBox();
 	if (!box) throw new Error("sidebar resize handle not visible");
 	const readWidth = () =>
