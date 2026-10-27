@@ -2395,7 +2395,11 @@ func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 		base.Permissions = override.Permissions
 	}
 	if base.Permissions == "" {
-		base.Permissions = ports.PermissionModeAuto
+		// Like Conductor, agents run without per-action approval unless the
+		// project or the spawn asks for a stricter mode. Auto's classifier
+		// silently blocked ordinary ops work (cluster access, merges) instead
+		// of asking. Reviewer chats choose their own mode and are unaffected.
+		base.Permissions = ports.PermissionModeBypassPermissions
 	}
 	return base
 }
