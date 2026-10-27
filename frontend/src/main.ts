@@ -3628,6 +3628,24 @@ app.whenReady().then(async () => {
 	if (process.platform === "darwin") {
 		powerMonitor.on("shutdown", () => desktopQuit.quitCompletely());
 	}
+	// `ao-app-update` installs a new build over the running app, then sends
+	// SIGUSR2 to restart into it. A plain quit only hides AO to the tray on macOS,
+	// so it never picked the new build up. The unsent-draft guard still runs.
+	if (app.isPackaged && process.platform !== "win32") {
+		process.on("SIGUSR2", () => {
+			app.relaunch();
+			desktopQuit.quitCompletely();
+		});
+		// Tells the installer this process handles SIGUSR2; an older build would
+		// be killed outright by the signal, skipping the draft guard.
+		try {
+			const marker = path.join(os.homedir(), ".ao", "run", "app-restart-signal");
+			mkdirSync(path.dirname(marker), { recursive: true });
+			writeFileSync(marker, String(process.pid));
+		} catch (error) {
+			console.warn("AO: could not write the restart-signal marker", error);
+		}
+	}
 	// Boot the daemon alongside the window, not after it: the board cannot show
 	// until the daemon answers. createWindow links the browser runtime itself
 	// when the daemon is already ready by the time the window exists. Windows

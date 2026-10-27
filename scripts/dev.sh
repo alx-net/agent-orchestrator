@@ -159,13 +159,9 @@ cmd_install() {
     AO_RELEASE_REPO="${release_repo}" AO_LOCAL_BUILD=1 npm run package)
   app="$(find "${frontend}/out" -maxdepth 2 -name '*.app' -type d -newer "${frontend}/package.json" | head -1)"
   [[ -n "${app}" ]] || die "no packaged .app found under frontend/out"
-  if pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null; then
-    say "quitting running $(basename "${app}")"
-    osascript -e "tell application \"$(basename "${app}" .app)\" to quit" || true
-    for _ in $(seq 1 30); do pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null || break; sleep 1; done
-  fi
-  local still_running=0
-  pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/" >/dev/null && still_running=1
+  # The main process of a running copy; it is restarted after the new files land.
+  local running_pid
+  running_pid="$(pgrep -f "${dest}/$(basename "${app}")/Contents/MacOS/[^/]*$" | head -1 || true)"
   say "installing to ${dest}"
   rm -rf "${dest:?}/$(basename "${app}")"
   ditto "${app}" "${dest}/$(basename "${app}")"
@@ -175,9 +171,20 @@ cmd_install() {
   # tests in this checkout keep working.
   ensure_node_native
   say "installed ${dest}/$(basename "${app}") ($(git -C "${repo_root}" log -1 --format='%h %s'))"
-  if [[ "${still_running}" == 1 ]]; then
-    printf '\033[1;33m==>\033[0m %s did not quit, so the old version is still running.\n' "$(basename "${app}" .app)"
-    printf '    Quit it with Cmd+Q and open it again to load the new build.\n'
+  local marker="${HOME}/.ao/run/app-restart-signal"
+  if [[ -n "${running_pid}" ]] && kill -0 "${running_pid}" 2>/dev/null; then
+    # A plain quit only hides AO to the menu bar on macOS. A build that wrote
+    # the marker handles SIGUSR2 by relaunching into the files just installed;
+    # to an older build the signal would be fatal, so it is never sent there.
+    if [[ -f "${marker}" && "$(cat "${marker}")" == "${running_pid}" ]]; then
+      say "restarting $(basename "${app}" .app) into the new build"
+      kill -USR2 "${running_pid}" 2>/dev/null || true
+      for _ in $(seq 1 60); do kill -0 "${running_pid}" 2>/dev/null || break; sleep 1; done
+    fi
+    if kill -0 "${running_pid}" 2>/dev/null; then
+      printf '\033[1;33m==>\033[0m %s is still running the old version.\n' "$(basename "${app}" .app)"
+      printf '    Answer its unsent-message prompt if one is open, or use the menu-bar icon: Quit AO Completely, then open it again.\n'
+    fi
   elif [[ "${AO_REOPEN:-}" == "1" ]]; then
     open "${dest}/$(basename "${app}")"
   fi
