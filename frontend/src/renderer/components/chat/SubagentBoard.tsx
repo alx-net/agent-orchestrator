@@ -23,6 +23,7 @@ import {
 	useCallback,
 	useEffect,
 	useId,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -749,7 +750,8 @@ const SENT_STATE_KEYS = {
 /**
  * Status and decision lines in the order they were written, decisions emphasized,
  * with what the person sent placed by when they sent it, and the agent's outcome
- * last once it finished.
+ * last once it finished. The main agent's log runs across turns, each opened by
+ * a divider naming the message that started it.
  */
 export function NotesTimeline({
 	className,
@@ -762,11 +764,26 @@ export function NotesTimeline({
 }) {
 	const { t } = useTranslation();
 	const entries = useMemo(() => boardTimeline(notes, sent), [notes, sent]);
+	// A scrolling log opens at its newest line and follows new ones, unless the
+	// person scrolled up to read.
+	const listRef = useRef<HTMLOListElement>(null);
+	const pinned = useRef(true);
+	useLayoutEffect(() => {
+		const list = listRef.current;
+		if (list && pinned.current) list.scrollTop = list.scrollHeight;
+	}, [entries]);
 	return (
 		<section aria-label={t("subagents.timeline")}>
 			<h4 className="text-xs font-medium text-muted-foreground">{t("subagents.timeline")}</h4>
 			{entries.length > 0 ? (
-				<ol className={cn("mt-1.5 flex flex-col gap-1.5", className)}>
+				<ol
+					className={cn("mt-1.5 flex flex-col gap-1.5", className)}
+					onScroll={(event) => {
+						const list = event.currentTarget;
+						pinned.current = list.scrollHeight - list.scrollTop - list.clientHeight < 8;
+					}}
+					ref={listRef}
+				>
 					{entries.map((entry, index) => {
 						if (entry.kind === "sent") {
 							const { message } = entry;
@@ -790,6 +807,24 @@ export function NotesTimeline({
 							);
 						}
 						const { note } = entry;
+						if (note.kind === "turn") {
+							const from = note.fromYou ? t("subagents.you") : note.sender ? t("subagents.from", { name: note.sender }) : undefined;
+							return (
+								// A quiet divider: where a turn began, and the message that began it.
+								<li
+									className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t border-border pt-1.5 text-xs leading-snug first:border-t-0 first:pt-0"
+									data-note-kind="turn"
+									data-testid="turn-divider"
+									key={`note:${index}`}
+								>
+									<time className="tabular-nums text-passive" dateTime={note.at}>{formatTime(note.at)}</time>
+									<span className="min-w-0 truncate text-muted-foreground" title={note.text || undefined}>
+										{from ? <span className="mr-1.5">{from}</span> : null}
+										{note.text}
+									</span>
+								</li>
+							);
+						}
 						const strong = note.kind !== "status";
 						return (
 							<li

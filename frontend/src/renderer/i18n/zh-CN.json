@@ -3507,6 +3507,7 @@
 	"subagents.stopSubagentHint": "只停止这个子代理；主代理继续运行",
 	"subagents.stopping": "正在停止…",
 	"subagents.you": "你：",
+	"subagents.from": "{{name}}：",
 	"subagents.sent.sending": "发送中…",
 	"subagents.sent.queued": "等待它的下一步",
 	"subagents.sent.delivered": "已送达",

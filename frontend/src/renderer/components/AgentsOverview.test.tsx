@@ -37,8 +37,10 @@ const orchestratorMain: MainAgentSummary = {
 	nowLine: "Dispatching the pause work",
 	nowSource: "status",
 	notes: [
+		{ kind: "turn", text: "Add pausing to sessions", at: at(0), fromYou: true },
 		{ kind: "status", text: "Reading the issue", at: at(1) },
 		{ kind: "decision", text: "Split the work into an API and a UI worker", at: at(2) },
+		{ kind: "turn", text: "Go ahead", at: at(3), fromYou: true },
 		{ kind: "status", text: "Spawned both workers", at: at(3) },
 		{ kind: "status", text: "Dispatching the pause work", at: at(4) },
 	],
@@ -116,7 +118,7 @@ describe("AgentsOverviewView", () => {
 		expect(within(orch).getByText("Orchestrator")).toBeInTheDocument();
 		expect(within(orch).getByTestId("agents-overview-now")).toHaveTextContent("Dispatching the pause work");
 		expect(within(orch).getByText("2m")).toBeInTheDocument();
-		// The latest updates, without repeating the now line, decisions emphasized.
+		// The latest updates, without repeating the now line or a turn's divider, decisions emphasized.
 		const updates = within(orch).getByTestId("agents-overview-updates");
 		expect(within(updates).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
 			expect.stringContaining("Reading the issue"),
@@ -163,7 +165,7 @@ describe("AgentsOverviewView", () => {
 		expect(onOpenSession).toHaveBeenCalledTimes(2);
 		expect(disclosure).toHaveAttribute("aria-expanded", "true");
 		const timeline = document.getElementById(disclosure.getAttribute("aria-controls")!)!;
-		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "decision", "status", "status"]);
+		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["turn", "status", "decision", "turn", "status", "status"]);
 
 		// A subagent row expands rather than navigating.
 		const subagent = screen.getByTestId("agents-overview-subagent");

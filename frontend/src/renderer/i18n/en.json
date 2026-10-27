@@ -3506,6 +3506,7 @@
 	"subagents.stopSubagentHint": "Stops only this subagent; the main agent keeps going",
 	"subagents.stopping": "Stopping…",
 	"subagents.you": "You:",
+	"subagents.from": "{{name}}:",
 	"subagents.sent.sending": "sending…",
 	"subagents.sent.queued": "waiting for its next step",
 	"subagents.sent.delivered": "delivered",

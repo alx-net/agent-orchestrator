@@ -3592,6 +3592,7 @@
 	"subagents.stopSubagentHint": "Arrête seulement ce sous-agent ; l’agent principal continue",
 	"subagents.stopping": "Arrêt en cours…",
 	"subagents.you": "Vous :",
+	"subagents.from": "{{name}} :",
 	"subagents.sent.sending": "envoi…",
 	"subagents.sent.queued": "en attente de sa prochaine étape",
 	"subagents.sent.delivered": "remis",

@@ -124,6 +124,41 @@ describe("SubagentBoard", () => {
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 	});
 
+	it("keeps every turn's lines in the main agent's updates, each turn under a quiet divider naming its message", async () => {
+		const user = userEvent.setup();
+		const twoTurns: MainAgentSummary = {
+			...mainWorking,
+			turnId: "turn-2",
+			nowLine: "Keeping the slot on pause",
+			notes: [
+				{ kind: "turn", text: "Pause sessions from the board", at: "2026-10-26T10:00:00.000Z", fromYou: true },
+				{ kind: "status", text: "Reading the session lifecycle", at: "2026-10-26T10:00:01.000Z" },
+				{ kind: "decision", text: "Pause through the daemon", at: "2026-10-26T10:00:02.000Z" },
+				{ kind: "outcome", outcome: "needs_input", text: "Should paused sessions keep their slot?", at: "2026-10-26T10:05:00.000Z" },
+				{ kind: "turn", text: "Yes, keep the slot", at: "2026-10-26T10:06:00.000Z", fromYou: true },
+				{ kind: "turn", text: "Also check the CLI", at: "2026-10-26T10:07:00.000Z", sender: "Pause orchestrator" },
+				{ kind: "status", text: "Keeping the slot on pause", at: "2026-10-26T10:07:01.000Z" },
+			],
+			decisions: [{ kind: "decision", text: "Pause through the daemon", at: "2026-10-26T10:00:02.000Z" }],
+		};
+		renderBoard(<SubagentBoard activeTurnId="turn-2" cards={[]} main={twoTurns} mode="chat" />);
+		const main = screen.getByRole("article", { name: "Main agent" });
+		// The newest decision of any turn stays on the folded card.
+		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent("Pause through the daemon");
+		await user.click(within(main).getByRole("button", { name: /Main agent/ }));
+		const updates = within(main).getByRole("region", { name: "Updates" });
+		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["turn", "status", "decision", "outcome", "turn", "turn", "status"]);
+		const dividers = within(updates).getAllByTestId("turn-divider");
+		expect(dividers.map((divider) => divider.textContent)).toEqual([
+			expect.stringContaining("You:Pause sessions from the board"),
+			expect.stringContaining("You:Yes, keep the slot"),
+			expect.stringContaining("Pause orchestrator:Also check the CLI"),
+		]);
+		// Quiet: muted small text under a hairline, never the weight of a decision.
+		expect(dividers[1]).toHaveClass("border-t", "text-xs");
+		expect(within(dividers[1]!).getByText("Yes, keep the slot", { exact: false })).toHaveClass("text-muted-foreground");
+	});
+
 	it("shows the main agent before any subagent starts, without a stop when no turn runs", () => {
 		renderBoard(<SubagentBoard activeTurnId={undefined} cards={[]} main={mainIdle} mode="chat" onStopTurn={vi.fn()} />);
 		const main = screen.getByRole("article", { name: "Main agent" });

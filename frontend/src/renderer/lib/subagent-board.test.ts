@@ -13,6 +13,7 @@ import {
 	boardTimeline,
 	createSubagentBoardDeriver,
 	firstSentence,
+	MAIN_LOG_LIMIT,
 	parseOutcomeLine,
 	parseSubagentNoteLine,
 	subagentAskPrefix,
@@ -323,9 +324,10 @@ describe("main agent summary", () => {
 		activity({ id, providerItemId: id, activityKind: "command", status, summary, detail: { providerToolName: "Bash" } as ConversationActivity["detail"] });
 
 	it("reads its status and decision lines from its own assistant messages", () => {
+		const prompt = said("u1", "Status: not the agent", { role: "user", origin: "human" });
 		const message = said("m1", "Looking at the board.\nStatus: Reading the board code\nDecision: Reuse the line parser, because it is incremental\n");
 		const main = mainOf([
-			said("u1", "Status: not the agent", { role: "user", origin: "human" }),
+			prompt,
 			message,
 			parent(),
 			narration("n1", "Status: A subagent line\n"),
@@ -337,7 +339,9 @@ describe("main agent summary", () => {
 			nowLine: "Reading the board code",
 			nowSource: "status",
 		});
+		// The person's message opens the turn; its words are never the agent's lines.
 		expect(main.notes).toEqual([
+			{ kind: "turn", text: "Status: not the agent", at: prompt.createdAt, fromYou: true },
 			{ kind: "status", text: "Reading the board code", at: message.createdAt },
 			{ kind: "decision", text: "Reuse the line parser, because it is incremental", at: message.createdAt },
 		]);
@@ -411,31 +415,142 @@ describe("main agent summary", () => {
 		expect(mainOf([{ ...question, status: "resolved" as const }])).toMatchObject({ state: "working", blockedOn: undefined });
 	});
 
-	it("is idle before any turn, settles on the turn's outcome and falls back to the previous turn's lines", () => {
-		expect(mainOf([], [])).toMatchObject({ state: "idle", turnId: undefined, nowLine: undefined, result: undefined });
+	it("is idle before any turn, settles on the turn's outcome and keeps the earlier turns' lines", () => {
+		expect(mainOf([], [])).toMatchObject({ state: "idle", turnId: undefined, nowLine: undefined, result: undefined, notes: [] });
 
-		const earlier: ConversationTurn = { id: "turn-0", state: "completed", requestedAt: "2026-10-26T09:00:00.000Z" };
+		const earlier: ConversationTurn = { id: "turn-0", state: "completed", requestedAt: "2026-10-26T09:00:00.000Z", completedAt: "2026-10-26T09:30:00.000Z" };
 		const items = [
-			said("m0", "Decision: Add a migration, since the column is new\nStatus: Wrote the migration\n", { turnId: "turn-0" }),
+			said("m0", "Decision: Add a migration, since the column is new\nStatus: Wrote the migration\nAdded the column.", { turnId: "turn-0" }),
 			said("m1", "Here is the answer."),
 		];
 		const settled = mainOf(items, [earlier, turn("completed")]);
 		expect(settled).toMatchObject({ state: "completed", turnId: "turn-1", startedAt: undefined, nowLine: "Here is the answer.", nowSource: "outcome" });
+		// Each turn's lines, then how it ended.
 		expect(settled.notes.map((note) => [note.kind, note.text, note.at])).toEqual([
 			["decision", "Add a migration, since the column is new", items[0]!.createdAt],
 			["status", "Wrote the migration", items[0]!.createdAt],
+			["outcome", "Added the column.", "2026-10-26T09:30:00.000Z"],
 			["outcome", "Here is the answer.", items[1]!.createdAt],
 		]);
 		expect(settled.decisions).toHaveLength(1);
 
-		// A turn with lines of its own shows only those, then its outcome.
+		// A turn with lines of its own follows the earlier turn's.
 		const own = mainOf([...items, said("m2", "Status: Answering\n")], [earlier, turn("completed")]);
-		expect(own.notes.map((note) => note.kind === "outcome" ? note.outcome : note.text)).toEqual(["Answering", "done"]);
+		expect(own.notes.map((note) => note.kind === "outcome" ? note.outcome : note.text)).toEqual([
+			"Add a migration, since the column is new",
+			"Wrote the migration",
+			"done",
+			"Answering",
+			"done",
+		]);
 
 		// A new turn that has said nothing keeps the last lines, but not as its now line.
 		const next = mainOf(items, [earlier, turn("completed"), { id: "turn-2", state: "running", requestedAt: "2026-10-26T11:00:00.000Z" }]);
-		expect(next).toMatchObject({ state: "working", turnId: "turn-2", startedAt: "2026-10-26T11:00:00.000Z", nowLine: undefined });
-		expect(next.notes.map((note) => note.text)).toEqual(["Add a migration, since the column is new", "Wrote the migration"]);
+		expect(next).toMatchObject({ state: "working", turnId: "turn-2", startedAt: "2026-10-26T11:00:00.000Z", nowLine: undefined, result: undefined });
+		expect(next.notes.map((note) => note.text)).toEqual([
+			"Add a migration, since the column is new",
+			"Wrote the migration",
+			"Added the column.",
+			"Here is the answer.",
+		]);
+		// Settled, a turn that wrote no lines speaks through the one before it.
+		const quiet = mainOf([items[0]!, said("m1", "Outcome: done")], [earlier, turn("completed")]);
+		expect(quiet).toMatchObject({ nowLine: undefined, nowSource: "outcome" });
+		const pending = activity({ id: "question", providerItemId: "question", activityKind: "user_input", status: "pending", summary: "" });
+		expect(mainOf([items[0]!, said("m1", "Outcome: done"), pending], [earlier, turn("completed")])).toMatchObject({
+			state: "needs_you",
+			nowLine: "Wrote the migration",
+			nowSource: "status",
+		});
+	});
+
+	it("keeps every turn's lines as one log, each turn opened by the message that started it", () => {
+		const turns: ConversationTurn[] = [
+			{ id: "turn-1", state: "completed", requestedAt: "2026-10-26T10:00:00.000Z", startedAt: "2026-10-26T10:00:00.000Z", completedAt: "2026-10-26T10:20:00.000Z" },
+			{ id: "turn-2", state: "running", requestedAt: "2026-10-26T10:30:00.000Z", startedAt: "2026-10-26T10:30:00.000Z" },
+		];
+		const ask = said("u1", "Pause sessions from the board\n\nand keep their worktrees", { role: "user", origin: "human" });
+		const first = said("m1", [
+			"Status: Reading the session lifecycle",
+			"Status: Found the pause seam",
+			"Decision: Pause through the daemon, since the CLI must not touch storage",
+			"Status: Wrote the route",
+			"Status: Wrote the client",
+			"Status: Wired the button",
+			"Status: Ran the tests",
+			"Outcome: needs input — Should paused sessions keep their slot?",
+		].join("\n"));
+		const answer = said("u2", "Yes, keep the slot", { role: "user", origin: "human", turnId: "turn-2" });
+		const second = said("m2", "Status: Keeping the slot on pause\n", { turnId: "turn-2" });
+		const main = mainOf([ask, first, answer, second], turns);
+
+		expect(main).toMatchObject({ state: "working", turnId: "turn-2", nowLine: "Keeping the slot on pause", result: undefined });
+		expect(main.notes.map((note) => [note.kind, note.outcome ?? note.text])).toEqual([
+			["turn", "Pause sessions from the board and keep their worktrees"],
+			["status", "Reading the session lifecycle"],
+			["status", "Found the pause seam"],
+			["decision", "Pause through the daemon, since the CLI must not touch storage"],
+			["status", "Wrote the route"],
+			["status", "Wrote the client"],
+			["status", "Wired the button"],
+			["status", "Ran the tests"],
+			["outcome", "needs_input"],
+			["turn", "Yes, keep the slot"],
+			["status", "Keeping the slot on pause"],
+		]);
+		expect(main.notes.filter((note) => note.kind === "turn").map((note) => [note.at, note.fromYou])).toEqual([[ask.createdAt, true], [answer.createdAt, true]]);
+		// The latest decision is the newest of any turn.
+		expect(main.decisions.map((note) => note.text)).toEqual(["Pause through the daemon, since the CLI must not touch storage"]);
+		const decided = mainOf([ask, first, answer, { ...second, text: `${second.text}Decision: Keep the slot, as asked\n` }], turns);
+		expect(decided.decisions.at(-1)?.text).toBe("Keep the slot, as asked");
+
+		// A message another session sent names it; a long one is cut.
+		const relayed = said("u3", `Please ${"also ".repeat(40)}check the CLI`, {
+			role: "user",
+			origin: "automation",
+			senderDisplayName: "Pause orchestrator",
+			turnId: "turn-2",
+		});
+		const divider = mainOf([ask, first, relayed, second], turns).notes.find((note) => note.kind === "turn" && note.at === relayed.createdAt)!;
+		expect(divider.sender).toBe("Pause orchestrator");
+		expect(divider.fromYou).toBeUndefined();
+		expect(divider.text).toHaveLength(80);
+		expect(divider.text.endsWith("…")).toBe(true);
+
+		// A queued follow-up has not started, and a turn that said nothing yet still opens its part.
+		const waiting = mainOf([ask, first, said("u4", "Then ship it", { role: "user", origin: "human", turnId: "turn-3" })], [
+			turns[0]!,
+			{ id: "turn-3", state: "queued", requestedAt: "2026-10-26T10:40:00.000Z" },
+		]);
+		expect(waiting.notes.filter((note) => note.kind === "turn").map((note) => note.text)).toEqual(["Pause sessions from the board and keep their worktrees"]);
+		const opened = mainOf([ask, first, answer], turns);
+		expect(opened.notes.at(-1)).toMatchObject({ kind: "turn", text: "Yes, keep the slot" });
+	});
+
+	it("keeps the newest lines of a long log, each turn that remains with its divider", () => {
+		const lines = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => `Status: ${prefix} ${index + 1}`).join("\n");
+		const turns: ConversationTurn[] = [
+			{ id: "turn-1", state: "completed", requestedAt: "2026-10-26T10:00:00.000Z", completedAt: "2026-10-26T10:10:00.000Z" },
+			{ id: "turn-2", state: "completed", requestedAt: "2026-10-26T10:20:00.000Z", completedAt: "2026-10-26T10:30:00.000Z" },
+			{ id: "turn-3", state: "running", requestedAt: "2026-10-26T10:40:00.000Z" },
+		];
+		const main = mainOf([
+			said("u1", "First", { role: "user", origin: "human" }),
+			said("m1", `Decision: Start from the oldest\n${lines(30, "early")}\nOutcome: done — first pass`),
+			said("u2", "Second", { role: "user", origin: "human", turnId: "turn-2" }),
+			said("m2", `${lines(60, "middle")}\nOutcome: done — second pass`, { turnId: "turn-2" }),
+			said("u3", "Third", { role: "user", origin: "human", turnId: "turn-3" }),
+			said("m3", lines(10, "late"), { turnId: "turn-3" }),
+		], turns);
+
+		const kept = main.notes.filter((note) => note.kind !== "turn");
+		expect(kept).toHaveLength(MAIN_LOG_LIMIT);
+		// The second turn's 61 entries and the third's 10 leave room for the first's last nine.
+		expect(main.notes.map((note) => note.kind === "turn" ? `> ${note.text}` : note.outcome ?? note.text).slice(0, 3)).toEqual(["> First", "early 23", "early 24"]);
+		expect(main.notes.filter((note) => note.kind === "turn").map((note) => note.text)).toEqual(["First", "Second", "Third"]);
+		expect(main.notes.at(-1)).toMatchObject({ kind: "status", text: "late 10" });
+		// The decision dropped from the log is still the latest one.
+		expect(main.decisions.at(-1)?.text).toBe("Start from the oldest");
 	});
 
 	it("parses streamed messages incrementally and keeps an unchanged summary", () => {
@@ -551,7 +666,8 @@ describe("outcomes", () => {
 		const next: ConversationTurn = { id: "turn-2", state: "running", requestedAt: "2026-10-26T11:00:00.000Z", startedAt: "2026-10-26T11:00:00.000Z" };
 		const running = deriver.derive([blocked], [first, next]).main;
 		expect(running).toMatchObject({ state: "working", turnId: "turn-2", result: undefined });
-		expect(running.notes.some((note) => note.kind === "outcome")).toBe(false);
+		// How the earlier turn ended stays in the log; the running turn has no outcome yet.
+		expect(running.notes.map((note) => [note.kind, note.outcome])).toEqual([["outcome", "blocked"]]);
 
 		const question = activity({ id: "question", providerItemId: "question", activityKind: "user_input", status: "pending", summary: "Which branch?" });
 		expect(mainOf([said("m1", "Outcome: done — shipped"), question], [first])).toMatchObject({

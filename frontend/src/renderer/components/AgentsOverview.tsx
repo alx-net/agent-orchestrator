@@ -411,7 +411,7 @@ const SubagentRow = memo(function SubagentRow({ card, expanded, onToggle }: { ca
 
 /**
  * The newest lines worth showing under the now line: decisions and statuses, not
- * the outcome (the now line says it) nor the status the now line already repeats.
+ * an outcome or a turn's divider, nor the status the now line already repeats.
  */
 function latestUpdates(notes: readonly SubagentNote[] | undefined, nowLine: string | undefined, limit: number): SubagentNote[] {
 	if (!notes?.length) return [];
@@ -419,7 +419,7 @@ function latestUpdates(notes: readonly SubagentNote[] | undefined, nowLine: stri
 	let skippedNow = false;
 	for (let index = notes.length - 1; index >= 0 && shown.length < limit; index -= 1) {
 		const note = notes[index]!;
-		if (note.kind === "outcome") continue;
+		if (note.kind === "outcome" || note.kind === "turn") continue;
 		if (!skippedNow && note.kind === "status" && note.text === nowLine) {
 			skippedNow = true;
 			continue;
