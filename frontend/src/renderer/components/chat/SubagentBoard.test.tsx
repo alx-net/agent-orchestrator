@@ -124,7 +124,7 @@ describe("SubagentBoard", () => {
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 	});
 
-	it("keeps every turn's lines in the main agent's updates, each turn under a quiet divider naming its message", async () => {
+	it("keeps every turn's lines in the main agent's updates newest first, each turn above a quiet divider naming its message", async () => {
 		const user = userEvent.setup();
 		const twoTurns: MainAgentSummary = {
 			...mainWorking,
@@ -147,15 +147,16 @@ describe("SubagentBoard", () => {
 		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent("Pause through the daemon");
 		await user.click(within(main).getByRole("button", { name: /Main agent/ }));
 		const updates = within(main).getByRole("region", { name: "Updates" });
-		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["turn", "status", "decision", "outcome", "turn", "turn", "status"]);
+		// The newest line on top; each turn's lines sit above the message that began it.
+		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "turn", "turn", "outcome", "decision", "status", "turn"]);
 		const dividers = within(updates).getAllByTestId("turn-divider");
 		expect(dividers.map((divider) => divider.textContent)).toEqual([
-			expect.stringContaining("You:Pause sessions from the board"),
-			expect.stringContaining("You:Yes, keep the slot"),
 			expect.stringContaining("Pause orchestrator:Also check the CLI"),
+			expect.stringContaining("You:Yes, keep the slot"),
+			expect.stringContaining("You:Pause sessions from the board"),
 		]);
-		// Quiet: muted small text under a hairline, never the weight of a decision.
-		expect(dividers[1]).toHaveClass("border-t", "text-xs");
+		// Quiet: muted small text over a hairline, never the weight of a decision.
+		expect(dividers[1]).toHaveClass("border-b", "text-xs");
 		expect(within(dividers[1]!).getByText("Yes, keep the slot", { exact: false })).toHaveClass("text-muted-foreground");
 	});
 
@@ -190,9 +191,9 @@ describe("SubagentBoard", () => {
 		await user.click(within(main).getByRole("button", { name: /Main agent/ }));
 		const updates = within(main).getByRole("region", { name: "Updates" });
 		const entries = within(updates).getAllByRole("listitem");
-		expect(entries.map((item) => item.dataset.noteKind)).toEqual(["status", "outcome"]);
-		expect(entries[1]).toHaveAttribute("data-outcome", "blocked");
-		expect(entries[1]).toHaveTextContent("Blocked");
+		expect(entries.map((item) => item.dataset.noteKind)).toEqual(["outcome", "status"]);
+		expect(entries[0]).toHaveAttribute("data-outcome", "blocked");
+		expect(entries[0]).toHaveTextContent("Blocked");
 
 		const done: MainAgentSummary = { ...mainIdle, state: "completed", nowLine: "Shipped the pause route.", nowSource: "outcome", result: { kind: "done", text: "Shipped the pause route.", at: "2026-10-26T10:05:00.000Z", source: "settled" } };
 		view.rerender(inTooltips(<SubagentBoard cards={[]} main={done} mode="chat" />));
@@ -235,9 +236,9 @@ describe("SubagentBoard", () => {
 		expect(within(subagent).getByText("Explore")).toHaveClass("text-xs");
 		await user.click(within(subagent).getByRole("button", { name: /Audit the auth flow/ }));
 		const entries = within(within(subagent).getByRole("region", { name: "Updates" })).getAllByRole("listitem");
-		expect(entries[0]).toHaveClass("text-sm");
-		expect(within(entries[1]!).getByText("Start with login, because it is the entry point")).toHaveClass("font-medium");
-		expect(entries[0]!.querySelector("time")).toHaveClass("text-xs");
+		expect(entries[1]).toHaveClass("text-sm");
+		expect(within(entries[0]!).getByText("Start with login, because it is the entry point")).toHaveClass("font-medium");
+		expect(entries[1]!.querySelector("time")).toHaveClass("text-xs");
 		for (const element of subagent.querySelectorAll("[class*='text-2xs'], [class*='text-caption']")) {
 			throw new Error(`small type left on the card: ${element.className}`);
 		}
@@ -327,6 +328,50 @@ describe("SubagentBoard", () => {
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 		expect(outer).not.toHaveBeenCalled();
 	});
+
+	it("keeps a folded card's height whatever it says: one title line, a type line, two now lines", () => {
+		const untyped = card({ id: "u", title: "A subagent with a long title that would wrap onto a second line", nowLine: undefined });
+		renderBoard(<SubagentBoard activeTurnId={undefined} cards={[working, untyped]} main={mainIdle} mode="chat" />);
+		for (const article of screen.getAllByTestId("subagent-card")) {
+			expect(within(article).getByTestId("subagent-now")).toHaveClass("line-clamp-2", "h-[2lh]");
+		}
+		const long = screen.getByRole("article", { name: untyped.title });
+		expect(within(long).getByTitle(untyped.title!)).toHaveClass("truncate");
+		// The type line is held even when the provider named none.
+		expect(within(long).getByTestId("subagent-now").previousElementSibling).toHaveClass("h-[1lh]");
+		// The main card keeps its now line, its decision line and its footer while no turn runs.
+		const main = screen.getByRole("article", { name: "Main agent" });
+		expect(within(main).getByTestId("main-agent-now")).toHaveClass("h-[2lh]");
+		expect(within(main).getByTestId("main-agent-decision")).toHaveClass("h-[1lh]", "truncate");
+		expect(main.querySelector(".h-8")).not.toBeNull();
+	});
+
+	it("puts a new line on top without moving what a scrolled-down reader is looking at", async () => {
+		const user = userEvent.setup();
+		const view = renderBoard(<SubagentBoard activeTurnId="turn-1" cards={[]} main={mainWorking} mode="chat" />);
+		await user.click(screen.getByRole("button", { name: /Main agent/ }));
+		const list = within(screen.getByRole("region", { name: "Updates" })).getByRole("list");
+		// jsdom lays nothing out, so the list reports the heights a browser would.
+		let height = 300;
+		Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => height });
+		list.scrollTop = 120;
+		fireEvent.scroll(list);
+		height = 340;
+		const newer = { ...mainWorking, notes: [...mainWorking.notes, { kind: "status" as const, text: "Testing the board", at: "2026-10-26T10:00:04.000Z" }] };
+		view.rerender(inTooltips(<SubagentBoard activeTurnId="turn-1" cards={[]} main={newer} mode="chat" />));
+		expect(within(list).getAllByRole("listitem")[0]).toHaveTextContent("Testing the board");
+		// The 40px added above it moved the list by as much, so the same lines stay in view.
+		expect(list.scrollTop).toBe(160);
+
+		// Back at the top, a new line simply appears there.
+		list.scrollTop = 0;
+		fireEvent.scroll(list);
+		height = 380;
+		const newest = { ...newer, notes: [...newer.notes, { kind: "status" as const, text: "Shipping the board", at: "2026-10-26T10:00:05.000Z" }] };
+		view.rerender(inTooltips(<SubagentBoard activeTurnId="turn-1" cards={[]} main={newest} mode="chat" />));
+		expect(within(list).getAllByRole("listitem")[0]).toHaveTextContent("Shipping the board");
+		expect(list.scrollTop).toBe(0);
+	});
 });
 
 describe("SubagentBoard stepping in", () => {
@@ -397,7 +442,7 @@ describe("SubagentBoard stepping in", () => {
 		expect(board.messageSubagent).not.toHaveBeenCalled();
 	});
 
-	it("shows sent messages by delivery state after the lines written before them, an echoed send once", async () => {
+	it("shows sent messages by delivery state above the lines written before them, an echoed send once", async () => {
 		const user = userEvent.setup();
 		const echoed = card({
 			...working,
@@ -418,13 +463,13 @@ describe("SubagentBoard stepping in", () => {
 		await user.click(screen.getByRole("button", { name: /Audit the auth flow/ }));
 		const updates = screen.getByRole("region", { name: "Updates" });
 		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind ?? item.dataset.sentState)).toEqual([
-			"status",
-			"decision",
-			"delivered",
-			"dropped",
 			"queued",
+			"dropped",
+			"delivered",
+			"decision",
+			"status",
 		]);
-		const [delivered, dropped, queued] = within(updates).getAllByTestId("sent-message");
+		const [queued, dropped, delivered] = within(updates).getAllByTestId("sent-message");
 		expect(delivered).toHaveTextContent("You:Use the v2 client· delivered");
 		expect(dropped).toHaveTextContent("Also check refresh tokens· not delivered — it finished first");
 		expect(queued).toHaveTextContent("And the logout path· waiting for its next step");

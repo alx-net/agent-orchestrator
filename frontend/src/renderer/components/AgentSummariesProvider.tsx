@@ -26,9 +26,9 @@ import {
 import { useConversation } from "../hooks/useConversation";
 import { useStableArray } from "../hooks/useStable";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
-import { OVERVIEW_SESSION_CAP, overviewSessionsToLoad, type SessionAgentsDetail } from "../lib/agents-overview";
+import { OVERVIEW_SESSION_CAP, overviewSessionsToLoad, type SessionAgentsDetail, type SessionControlFacts } from "../lib/agents-overview";
 import { useSubagentBoard } from "../lib/subagent-board";
-import type { ConversationItem, ConversationTurn } from "../types/conversation";
+import { can, type ConversationItem, type ConversationTurn } from "../types/conversation";
 
 type Listener = () => void;
 
@@ -41,7 +41,9 @@ const noSubscription = () => () => {};
 function sameDetail(a: SessionAgentsDetail | undefined, b: SessionAgentsDetail | undefined): boolean {
 	if (a === b) return true;
 	if (!a || !b || a.status !== b.status) return false;
-	return a.status !== "ready" || a.model === (b as typeof a).model;
+	if (a.status !== "ready") return true;
+	const other = b as typeof a;
+	return a.model === other.model && a.control === other.control;
 }
 
 /** The summaries, who reads which, and which sessions are asked for. */
@@ -145,17 +147,26 @@ export function AgentSummariesProvider({ children, store: given }: { children: R
 }
 
 /**
- * Loads one chat session's conversation and derives its agents. Layout effects,
- * so a conversation already cached reaches its readers before the first paint.
+ * Loads one chat session's conversation and derives its agents, with what the
+ * conversation allows a surface without the chat open to do. Layout effects, so
+ * a conversation already cached reaches its readers before the first paint.
  */
 const SessionAgentsSource = memo(function SessionAgentsSource({ sessionId, store }: { sessionId: string; store: AgentSummaryStore }) {
 	const conversation = useConversation(sessionId);
 	const snapshot = conversation.snapshot;
 	const model = useSubagentBoard(snapshot?.items ?? NO_ITEMS, snapshot?.turns ?? NO_TURNS);
 	const status: SessionAgentsDetail["status"] = snapshot ? "ready" : conversation.unavailable ? "unavailable" : conversation.error ? "error" : "loading";
+	// Kept by value, so a streamed chunk does not hand readers a new one.
+	const runningTurnId = snapshot?.turns.find((turn) => turn.state === "running")?.id;
+	const canSteer = snapshot ? can(snapshot, "steer") : false;
+	const canReachSubagents = snapshot ? can(snapshot, "subagents") : false;
+	const control = useMemo<SessionControlFacts>(
+		() => ({ runningTurnId, steer: canSteer, subagents: canReachSubagents }),
+		[canReachSubagents, canSteer, runningTurnId],
+	);
 	useLayoutEffect(() => {
-		store.set(sessionId, status === "ready" ? { status, model } : { status });
-	}, [model, sessionId, status, store]);
+		store.set(sessionId, status === "ready" ? { status, model, control } : { status });
+	}, [control, model, sessionId, status, store]);
 	useLayoutEffect(() => () => store.set(sessionId, undefined), [sessionId, store]);
 	return null;
 });

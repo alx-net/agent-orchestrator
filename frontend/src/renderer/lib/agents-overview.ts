@@ -20,13 +20,27 @@ import { subagentLanes, type MainAgentState, type MainAgentSummary, type Subagen
 /** How many chat sessions the overview loads conversations for, most recently active first. */
 export const OVERVIEW_SESSION_CAP = 30;
 
+/**
+ * What a surface without the chat open may do to a session's agents, read from
+ * its conversation: steer or stop the running turn, or reach one subagent.
+ */
+export interface SessionControlFacts {
+	/** The turn running now: a message steers it and Stop interrupts it. Absent while none runs. */
+	runningTurnId?: string;
+	/** The running turn can be steered. */
+	steer: boolean;
+	/** Each subagent can be messaged and stopped on its own. */
+	subagents: boolean;
+}
+
 /** What the overview has for one session's conversation. */
 export type SessionAgentsDetail =
 	| { status: "loading" }
 	| { status: "error" }
 	/** The session has no chat conversation to read right now. */
 	| { status: "unavailable" }
-	| { status: "ready"; model: SubagentBoardModel };
+	/** `control` is absent where nothing may be done from outside the chat. */
+	| { status: "ready"; model: SubagentBoardModel; control?: SessionControlFacts };
 
 /**
  * Where a row's agent detail comes from: the derived conversation, a terminal

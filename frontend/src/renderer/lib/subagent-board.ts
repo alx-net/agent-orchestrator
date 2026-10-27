@@ -59,6 +59,8 @@ export interface SubagentNote {
 	outcome?: AgentOutcomeKind;
 	/** A `turn` entry whose message the person sent. */
 	fromYou?: boolean;
+	/** The id the person's message was sent with: a send still waiting on its echo matches it. */
+	clientMessageId?: string;
 	/** Who sent a `turn` entry's message when it was not the person, when it is named. */
 	sender?: string;
 }
@@ -581,7 +583,15 @@ function messageKey(message: ConversationMessage): string {
 function turnEntry(prompt: ConversationMessage): SubagentNote {
 	const fromYou = prompt.origin === "human";
 	const sender = fromYou ? undefined : prompt.senderDisplayName?.trim() || prompt.senderLabel?.trim() || undefined;
-	return { kind: "turn", text: clip(prompt.text, PROMPT_TEXT_MAX) ?? "", at: prompt.createdAt, ...(fromYou ? { fromYou } : {}), ...(sender ? { sender } : {}) };
+	const clientMessageId = fromYou ? prompt.clientMessageId : undefined;
+	return {
+		kind: "turn",
+		text: clip(prompt.text, PROMPT_TEXT_MAX) ?? "",
+		at: prompt.createdAt,
+		...(fromYou ? { fromYou } : {}),
+		...(clientMessageId ? { clientMessageId } : {}),
+		...(sender ? { sender } : {}),
+	};
 }
 
 /**

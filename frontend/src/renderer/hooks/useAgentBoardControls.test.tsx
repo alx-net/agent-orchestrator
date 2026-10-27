@@ -54,7 +54,7 @@ const main: MainAgentSummary = {
 type Steer = (text: string, attachments: undefined, clientMessageId: string) => Promise<ChatSteerOutcome | void>;
 
 function Harness({ cards, summary, steer }: { cards: SubagentCard[]; summary: MainAgentSummary; steer?: Steer }) {
-	const controls = useAgentBoardControls({ sessionId: "ao-1", cards, mainSent: summary.sent, steer });
+	const controls = useAgentBoardControls({ sessionId: "ao-1", cards, main: summary, steer });
 	return <SubagentBoard activeTurnId="turn-1" cards={cards} controls={controls} main={summary} mode="chat" />;
 }
 

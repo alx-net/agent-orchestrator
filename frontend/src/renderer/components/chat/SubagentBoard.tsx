@@ -225,7 +225,7 @@ function BoardMessage({ children }: { children: ReactNode }) {
  * Asks for the card's message field: focused at once when the card is open, or as
  * soon as it opens.
  */
-function useFieldFocus(expanded: boolean, field: RefObject<HTMLInputElement | null>): () => void {
+export function useFieldFocus(expanded: boolean, field: RefObject<HTMLInputElement | null>): () => void {
 	const wanted = useRef(false);
 	useEffect(() => {
 		if (!expanded || !wanted.current) return;
@@ -238,9 +238,12 @@ function useFieldFocus(expanded: boolean, field: RefObject<HTMLInputElement | nu
 	}, [expanded, field]);
 }
 
-function errorText(t: TFunction, error: AgentControlError | undefined): string | undefined {
+/** Why an action on an agent did not go through, in words. */
+export function errorText(t: TFunction, error: AgentControlError | undefined): string | undefined {
 	if (!error) return undefined;
-	return error.kind === "finished" ? t("subagents.error.finished") : error.message ?? t("subagents.error.failed");
+	if (error.kind === "finished") return t("subagents.error.finished");
+	if (error.kind === "not_running") return t("subagents.error.notRunning");
+	return error.message ?? t("subagents.error.failed");
 }
 
 const SubagentCardView = memo(function SubagentCardView({
@@ -297,19 +300,18 @@ const SubagentCardView = memo(function SubagentCardView({
 				type="button"
 			>
 				<StatusGlyph outcome={card.outcome} />
+				{/* Every line keeps its room, so a card holds its height while it streams. */}
 				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className="line-clamp-2 text-base font-semibold leading-tight tracking-tight text-foreground" title={title}>
+					<span className="truncate text-base font-semibold leading-tight tracking-tight text-foreground" title={title}>
 						{title}
 					</span>
-					{card.subagentType ? <span className="truncate text-xs text-muted-foreground">{card.subagentType}</span> : null}
-					{nowLine ? (
-						<span
-							className={cn("mt-1 line-clamp-2 text-sm leading-snug", card.lane === "needs_you" || card.outcome === "blocked" ? "text-foreground" : "text-muted-foreground")}
-							data-testid="subagent-now"
-						>
-							{nowLine}
-						</span>
-					) : null}
+					<span className="h-[1lh] truncate text-xs text-muted-foreground">{card.subagentType}</span>
+					<span
+						className={cn("mt-1 line-clamp-2 h-[2lh] text-sm leading-snug", card.lane === "needs_you" || card.outcome === "blocked" ? "text-foreground" : "text-muted-foreground")}
+						data-testid="subagent-now"
+					>
+						{nowLine}
+					</span>
 				</span>
 				<ChevronRight
 					aria-hidden="true"
@@ -437,54 +439,58 @@ const MainAgentCardView = memo(function MainAgentCardView({
 				type="button"
 			>
 				<StatusGlyph outcome={summary.state} />
+				{/* Every line keeps its room, so the card holds its height while the turn streams. */}
 				<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 					<span className="truncate text-base font-semibold leading-tight tracking-tight text-foreground">{title}</span>
-					{nowLine ? (
-						<span
-							className={cn("mt-1 line-clamp-2 text-sm leading-snug", needsYou ? "text-foreground" : "text-muted-foreground")}
-							data-testid="main-agent-now"
-						>
-							{nowLine}
-						</span>
-					) : null}
-					{decision ? (
-						<span className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug text-foreground" data-testid="main-agent-decision">
-							<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
-							{decision.text}
-						</span>
-					) : null}
+					<span
+						className={cn("mt-1 line-clamp-2 h-[2lh] text-sm leading-snug", needsYou ? "text-foreground" : "text-muted-foreground")}
+						data-testid="main-agent-now"
+					>
+						{nowLine}
+					</span>
+					<span
+						className="mt-0.5 h-[1lh] truncate text-sm font-medium leading-snug text-foreground"
+						data-testid="main-agent-decision"
+						title={decision?.text}
+					>
+						{decision ? (
+							<>
+								<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
+								{decision.text}
+							</>
+						) : null}
+					</span>
 				</span>
 				<ChevronRight
 					aria-hidden="true"
 					className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground/60 transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
 				/>
 			</button>
-			{summary.startedAt ? (
-				<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-xs text-muted-foreground">
-					<Elapsed live separated={false} startedAt={summary.startedAt} />
-					<span
-						className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[120ms] group-hover/subagent:opacity-100 group-focus-within/subagent:opacity-100 data-[open]:opacity-100 motion-reduce:transition-none"
-						data-open={expanded ? "" : undefined}
-					>
-						{onSteer ? (
-							<CardAction
-								label={t("subagents.steerMain")}
-								onClick={() => {
-									focusField();
-									onOpen(MAIN_CARD_ID);
-								}}
-							>
-								<CornerUpRight aria-hidden="true" className="size-3.5" />
-							</CardAction>
-						) : null}
-						{onStopTurn ? (
-							<CardAction destructive hint={t("subagents.stopTurnHint")} label={t("subagents.stopTurn")} onClick={onStopTurn}>
-								<Square aria-hidden="true" className="size-3" />
-							</CardAction>
-						) : null}
-					</span>
-				</div>
-			) : null}
+			{/* Kept while no turn runs, so the card does not shrink when one ends. */}
+			<div className="flex h-8 min-w-0 items-center gap-2 border-t border-border px-3.5 text-xs text-muted-foreground">
+				{summary.startedAt ? <Elapsed live separated={false} startedAt={summary.startedAt} /> : null}
+				<span
+					className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[120ms] group-hover/subagent:opacity-100 group-focus-within/subagent:opacity-100 data-[open]:opacity-100 motion-reduce:transition-none"
+					data-open={expanded ? "" : undefined}
+				>
+					{onSteer ? (
+						<CardAction
+							label={t("subagents.steerMain")}
+							onClick={() => {
+								focusField();
+								onOpen(MAIN_CARD_ID);
+							}}
+						>
+							<CornerUpRight aria-hidden="true" className="size-3.5" />
+						</CardAction>
+					) : null}
+					{onStopTurn ? (
+						<CardAction destructive hint={t("subagents.stopTurnHint")} label={t("subagents.stopTurn")} onClick={onStopTurn}>
+							<Square aria-hidden="true" className="size-3" />
+						</CardAction>
+					) : null}
+				</span>
+			</div>
 			{expanded ? (
 				<div className="flex min-w-0 flex-col gap-3 border-t border-border px-3.5 pb-3 pt-2.5" id={detailsId}>
 					<NotesTimeline className="board-scrollbar max-h-64 overflow-y-auto" notes={summary.notes} sent={sent} />
@@ -509,17 +515,23 @@ const MainAgentCardView = memo(function MainAgentCardView({
  * back to the card, and never stops anything. A send that did not go through
  * puts its words back.
  */
-function AgentMessageField({
+export function AgentMessageField({
+	closeOnEscape = false,
 	disabled = false,
 	error,
+	errorAction,
 	fieldRef,
 	label,
 	onCancel,
 	onSend,
 	sending,
 }: {
+	/** Escape closes the field at once, draft and all, instead of clearing it first. */
+	closeOnEscape?: boolean;
 	disabled?: boolean;
 	error?: string;
+	/** A next step shown after the error, such as opening the session. */
+	errorAction?: ReactNode;
 	fieldRef: RefObject<HTMLInputElement | null>;
 	label: string;
 	onCancel: () => void;
@@ -559,7 +571,7 @@ function AgentMessageField({
 		// The board folds its cards on Escape, and the chat stops the turn; neither here.
 		event.preventDefault();
 		event.stopPropagation();
-		if (draft) setDraft("");
+		if (draft && !closeOnEscape) setDraft("");
 		else onCancel();
 	};
 	return (
@@ -590,7 +602,10 @@ function AgentMessageField({
 				</CardAction>
 			</div>
 			{error ? (
-				<p className="mt-1.5 text-sm text-destructive" id={errorId} role="alert">{error}</p>
+				<p className="mt-1.5 text-sm text-destructive" id={errorId} role="alert">
+					{error}
+					{errorAction ? <> {errorAction}</> : null}
+				</p>
 			) : null}
 		</div>
 	);
@@ -678,7 +693,8 @@ export function OutcomeText({ outcome, text, tinted = false }: { outcome: AgentO
 	);
 }
 
-function CardAction({
+/** One icon action in an agent's action slot, named by its label and tooltip. */
+export function CardAction({
 	children,
 	destructive = false,
 	disabled = false,
@@ -754,7 +770,8 @@ function useNow(active: boolean, since: number | undefined): number {
 	return now;
 }
 
-const SENT_STATE_KEYS = {
+/** Where a sent message stands, in words. */
+export const SENT_STATE_KEYS = {
 	sending: "subagents.sent.sending",
 	queued: "subagents.sent.queued",
 	delivered: "subagents.sent.delivered",
@@ -762,10 +779,10 @@ const SENT_STATE_KEYS = {
 } as const satisfies Record<SentMessageState, string>;
 
 /**
- * Status and decision lines in the order they were written, decisions emphasized,
- * with what the person sent placed by when they sent it, and the agent's outcome
- * last once it finished. The main agent's log runs across turns, each opened by
- * a divider naming the message that started it.
+ * Status and decision lines newest first, decisions emphasized, with what the
+ * person sent placed by when they sent it, and the agent's outcome on top once
+ * it finished. The main agent's log runs across turns, newest turn first: each
+ * turn's lines sit above a divider naming the message that started it.
  */
 export function NotesTimeline({
 	className,
@@ -777,28 +794,34 @@ export function NotesTimeline({
 	sent?: readonly SentMessage[];
 }) {
 	const { t } = useTranslation();
-	const entries = useMemo(() => boardTimeline(notes, sent), [notes, sent]);
-	// A scrolling log opens at its newest line and follows new ones, unless the
-	// person scrolled up to read.
+	// Each keyed by its place from the oldest, so a new line on top re-keys nothing.
+	const entries = useMemo(() => boardTimeline(notes, sent).map((entry, order) => ({ entry, order })).reverse(), [notes, sent]);
+	// At the top, a new line appears there. Scrolled down to read, what is in view
+	// stays in view: the list moves by what was added above it.
 	const listRef = useRef<HTMLOListElement>(null);
-	const pinned = useRef(true);
+	const atTop = useRef(true);
+	const height = useRef(0);
 	useLayoutEffect(() => {
 		const list = listRef.current;
-		if (list && pinned.current) list.scrollTop = list.scrollHeight;
+		if (!list) return;
+		if (!atTop.current && height.current > 0) list.scrollTop += list.scrollHeight - height.current;
+		height.current = list.scrollHeight;
 	}, [entries]);
 	return (
 		<section aria-label={t("subagents.timeline")}>
 			<h4 className="text-xs font-medium text-muted-foreground">{t("subagents.timeline")}</h4>
 			{entries.length > 0 ? (
 				<ol
-					className={cn("mt-1.5 flex flex-col gap-1.5", className)}
+					// The browser's own scroll anchoring would move the list a second time.
+					className={cn("mt-1.5 flex flex-col gap-1.5 [overflow-anchor:none]", className)}
 					onScroll={(event) => {
 						const list = event.currentTarget;
-						pinned.current = list.scrollHeight - list.scrollTop - list.clientHeight < 8;
+						atTop.current = list.scrollTop < 8;
+						height.current = list.scrollHeight;
 					}}
 					ref={listRef}
 				>
-					{entries.map((entry, index) => {
+					{entries.map(({ entry, order: index }) => {
 						if (entry.kind === "sent") {
 							const { message } = entry;
 							return (
@@ -824,9 +847,9 @@ export function NotesTimeline({
 						if (note.kind === "turn") {
 							const from = note.fromYou ? t("subagents.you") : note.sender ? t("subagents.from", { name: note.sender }) : undefined;
 							return (
-								// A quiet divider: where a turn began, and the message that began it.
+								// A quiet divider under its turn's lines: where it began, and the message that began it.
 								<li
-									className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t border-border pt-1.5 text-xs leading-snug first:border-t-0 first:pt-0"
+									className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-b border-border pb-1.5 text-xs leading-snug last:border-b-0 last:pb-0"
 									data-note-kind="turn"
 									data-testid="turn-divider"
 									key={`note:${index}`}

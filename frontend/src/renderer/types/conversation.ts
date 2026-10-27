@@ -76,7 +76,7 @@ export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "f
  */
 export type ChatSteerOutcome =
 	| { status: "accepted" }
-	| { status: "not-accepted"; reason: string };
+	| { status: "not-accepted"; reason: string; /** The daemon's refusal code, when it gave one. */ code?: string };
 
 /** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
 export type ChatEditOutcome = ChatSteerOutcome;

@@ -1,30 +1,64 @@
-import { render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render as renderUi, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
-import { buildAgentsOverview, type SessionAgentsDetail } from "../lib/agents-overview";
+import type { ReactElement } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildAgentsOverview, type SessionAgentsDetail, type SessionControlFacts } from "../lib/agents-overview";
 import type { MainAgentSummary, SubagentCard } from "../lib/subagent-board";
 import type { ConversationSnapshot } from "../types/conversation";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 
-const { conversationCalls, conversationsMock, workspaceQueryMock } = vi.hoisted(() => ({
+const { conversationCalls, conversationsMock, postMock, workspaceQueryMock } = vi.hoisted(() => ({
 	conversationCalls: new Set<string>(),
 	conversationsMock: new Map<string, unknown>(),
+	postMock: vi.fn(),
 	workspaceQueryMock: vi.fn(),
 }));
 
-// Only the route component loads anything; the view tests below pass a built overview.
-vi.mock("../hooks/useConversation", () => ({
+// Only the route component loads anything; the view tests below pass a built
+// overview. The conversation's commands stay real, so a row's actions reach the routes.
+vi.mock("../hooks/useConversation", async (importOriginal) => ({
+	...await importOriginal<typeof import("../hooks/useConversation")>(),
 	useConversation: (sessionId: string) => {
 		conversationCalls.add(sessionId);
 		const snapshot = conversationsMock.get(sessionId);
 		return { snapshot, isLoading: !snapshot, hasOlder: false, isLoadingOlder: false, loadOlder: () => {} };
 	},
 }));
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/api-client")>(),
+	apiClient: { POST: postMock },
+}));
 vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => workspaceQueryMock() }));
 vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => vi.fn() }));
 
 import { AgentsOverview, AgentsOverviewView } from "./AgentsOverview";
-import { AgentSummariesProvider } from "./AgentSummariesProvider";
+import { AgentSummariesProvider, createAgentSummaryStore } from "./AgentSummariesProvider";
+import { TooltipProvider } from "./ui/tooltip";
+
+function queryClient() {
+	const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+	vi.spyOn(client, "invalidateQueries").mockResolvedValue();
+	return client;
+}
+
+/** The app's own providers around a view: a query cache and tooltips. */
+function render(ui: ReactElement) {
+	const client = queryClient();
+	const wrap = (next: ReactElement) => (
+		<QueryClientProvider client={client}>
+			<TooltipProvider>{next}</TooltipProvider>
+		</QueryClientProvider>
+	);
+	const view = renderUi(wrap(ui));
+	return { ...view, rerender: (next: ReactElement) => view.rerender(wrap(next)) };
+}
+
+beforeEach(() => {
+	postMock.mockReset();
+	// No workspaces: a test's own summaries stand, with no loader to replace them.
+	workspaceQueryMock.mockReturnValue({ data: [], isLoading: false, error: null });
+});
 
 function session(id: string, overrides: Partial<WorkspaceSession> = {}): WorkspaceSession {
 	return {
@@ -138,12 +172,12 @@ describe("AgentsOverviewView", () => {
 		expect(within(orch).getByText("Orchestrator")).toBeInTheDocument();
 		expect(within(orch).getByTestId("agents-overview-now")).toHaveTextContent("Dispatching the pause work");
 		expect(within(orch).getByText("2m")).toBeInTheDocument();
-		// The latest updates, without repeating the now line or a turn's divider, decisions emphasized.
+		// The latest updates newest first, without repeating the now line or a turn's divider, decisions emphasized.
 		const updates = within(orch).getByTestId("agents-overview-updates");
 		expect(within(updates).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-			expect.stringContaining("Reading the issue"),
-			expect.stringContaining("Split the work into an API and a UI worker"),
 			expect.stringContaining("Spawned both workers"),
+			expect.stringContaining("Split the work into an API and a UI worker"),
+			expect.stringContaining("Reading the issue"),
 		]);
 		expect(within(updates).getByText("Split the work into an API and a UI worker")).toHaveClass("font-medium");
 
@@ -185,7 +219,10 @@ describe("AgentsOverviewView", () => {
 		expect(onOpenSession).toHaveBeenCalledTimes(2);
 		expect(disclosure).toHaveAttribute("aria-expanded", "true");
 		const timeline = document.getElementById(disclosure.getAttribute("aria-controls")!)!;
-		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["turn", "status", "decision", "turn", "status", "status"]);
+		// Newest first, each turn's lines above the message that began it.
+		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "status", "turn", "decision", "status", "turn"]);
+		// It scrolls inside one height instead of growing with its updates.
+		expect(within(timeline).getByRole("list")).toHaveClass("h-80", "overflow-y-auto");
 
 		// A subagent row expands rather than navigating.
 		const subagent = screen.getByTestId("agents-overview-subagent");
@@ -247,5 +284,204 @@ describe("AgentsOverview", () => {
 		expect(within(rowOf("Pause API")).getByTestId("agents-overview-now")).toHaveTextContent("Writing the pause handler");
 		expect(rowOf("Pause UI")).toHaveAttribute("data-detail", "tui");
 		expect([...conversationCalls]).toEqual(["api"]);
+	});
+});
+
+describe("AgentsOverviewView steady rows", () => {
+	it("keeps a folded row's height whatever it says: one title line, two now lines, three update lines", () => {
+		render(<AgentsOverviewView onOpenSession={vi.fn()} overview={overview(loaded())} />);
+		for (const row of [rowOf("Add pausing"), rowOf("Rotate secrets"), rowOf("Pause UI"), screen.getByTestId("agents-overview-subagent")]) {
+			// The now line keeps two lines even when it says less, or nothing.
+			expect(within(row).getByTestId("agents-overview-now")).toHaveClass("line-clamp-2", "h-[2lh]");
+			// Three one-line updates are always reserved, however many there are.
+			const block = row.querySelector(".h-\\[calc\\(3lh\\+0\\.25rem\\)\\]");
+			expect(block).not.toBeNull();
+			for (const line of within(block as HTMLElement).queryAllByRole("listitem")) expect(line).toHaveClass("h-[1lh]", "overflow-hidden");
+		}
+		expect(within(rowOf("Rotate secrets")).queryByTestId("agents-overview-updates")).not.toBeInTheDocument();
+		// A terminal session says why it has none in the same room.
+		expect(within(rowOf("Pause UI")).getByText("Subagent detail needs chat mode")).toBeInTheDocument();
+	});
+});
+
+const STEER = "/api/v1/sessions/{sessionId}/conversation/steer";
+const MESSAGES = "/api/v1/sessions/{sessionId}/conversation/messages";
+const INTERRUPT = "/api/v1/sessions/{sessionId}/conversation/interrupt";
+const SUBAGENT_MESSAGES = "/api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/messages";
+const SUBAGENT_STOP = "/api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/stop";
+
+const RUNNING: SessionControlFacts = { runningTurnId: "turn-1", steer: true, subagents: true };
+const ENDED: SessionControlFacts = { steer: true, subagents: true };
+const apiMain: MainAgentSummary = { ...orchestratorMain, nowLine: "Writing the handler", notes: [], decisions: [] };
+
+/** The sessions as the shared summaries hold them, with what each conversation allows. */
+const controlled = () => new Map<string, SessionAgentsDetail>([
+	["orch", { status: "ready", model: { main: orchestratorMain, cards: [{ ...audit, id: "orch-audit", providerItemId: "toolu-orch", title: "Survey the workers" }] }, control: { ...RUNNING, subagents: false } }],
+	["api", { status: "ready", model: { main: apiMain, cards: [audit] }, control: RUNNING }],
+	["solo", { status: "ready", model: { main: blockedMain, cards: [] }, control: ENDED }],
+]);
+
+function renderControlled(details = controlled()) {
+	const onOpenSession = vi.fn();
+	const store = createAgentSummaryStore();
+	for (const [id, detail] of details) store.set(id, detail);
+	const ui = () => (
+		<AgentSummariesProvider store={store}>
+			<AgentsOverviewView onOpenSession={onOpenSession} overview={overview(details)} />
+		</AgentSummariesProvider>
+	);
+	const view = render(ui());
+	return {
+		onOpenSession,
+		/** A new summary arrives, as the conversation's echo would bring it. */
+		update(sessionId: string, detail: SessionAgentsDetail) {
+			details.set(sessionId, detail);
+			act(() => store.set(sessionId, detail));
+			view.rerender(ui());
+		},
+	};
+}
+
+const accepted = (data: unknown) => ({ data, error: undefined, response: { status: 202 } });
+const refused = (status: number, code: string, message: string) => ({ data: undefined, error: { error: "refused", code, message }, response: { status } });
+const bodyOf = (call: number) => (postMock.mock.calls[call]![1] as { body: { text: string; clientMessageId: string } }).body;
+
+describe("AgentsOverviewView stepping in", () => {
+	it("steers a running session from its row: Enter sends into the turn, the message shows at once, Escape closes", async () => {
+		const user = userEvent.setup();
+		postMock.mockResolvedValue(accepted({ providerTurnId: "provider-1" }));
+		const view = renderControlled();
+		const row = rowOf("Pause API");
+		// One slot, shown on hover or focus, that holds its width whatever it offers.
+		const slot = within(row).getByTestId("agents-overview-actions");
+		expect(slot).toHaveClass("opacity-0", "group-hover/nav-row:opacity-100", "group-focus-within/nav-row:opacity-100", "w-[3.125rem]");
+		expect(within(slot).getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
+
+		await user.click(within(slot).getByRole("button", { name: "Steer main agent" }));
+		const field = screen.getByRole("textbox", { name: "Steer main agent" });
+		expect(field).toHaveFocus();
+		expect(slot).toHaveAttribute("data-open");
+		await user.type(field, "Keep the v1 route working{Enter}");
+		expect(postMock).toHaveBeenCalledWith(STEER, expect.objectContaining({ params: { path: { sessionId: "api" } } }));
+		expect(bodyOf(0)).toMatchObject({ text: "Keep the v1 route working", clientMessageId: expect.any(String) });
+		expect(postMock).not.toHaveBeenCalledWith(MESSAGES, expect.anything());
+		expect(view.onOpenSession).not.toHaveBeenCalled();
+		expect(field).toHaveValue("");
+
+		// Shown at once, newest first, in the row's own log.
+		const sent = await within(rowOf("Pause API")).findByTestId("sent-message");
+		expect(sent).toHaveTextContent("You:Keep the v1 route working· delivered");
+		expect(within(within(rowOf("Pause API")).getByTestId("agents-overview-updates")).getAllByRole("listitem")[0]).toBe(sent);
+
+		// The steer's own row carries the same id, and replaces the local entry.
+		const clientMessageId = bodyOf(0).clientMessageId;
+		view.update("api", { status: "ready", model: { main: { ...apiMain, sent: [{ id: clientMessageId, text: "Keep the v1 route working", state: "delivered", at: new Date().toISOString() }] }, cards: [audit] }, control: RUNNING });
+		expect(within(rowOf("Pause API")).getAllByTestId("sent-message")).toHaveLength(1);
+
+		// Escape closes the field, draft and all, and hands focus back to the row.
+		await user.type(screen.getByRole("textbox", { name: "Steer main agent" }), "half a thought");
+		await user.keyboard("{Escape}");
+		expect(screen.queryByRole("textbox", { name: "Steer main agent" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open Pause API" })).toHaveFocus();
+		expect(postMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("answers a session that waits for you with a new message, held in its log until the conversation echoes it", async () => {
+		const user = userEvent.setup();
+		postMock.mockResolvedValue(accepted({ turnId: "turn-2", state: "running" }));
+		const view = renderControlled();
+		const row = rowOf("Rotate secrets");
+		// Its turn ended, so there is nothing to stop.
+		expect(within(row).queryByRole("button", { name: "Stop turn" })).not.toBeInTheDocument();
+
+		await user.click(within(row).getByRole("button", { name: "Message main agent" }));
+		await user.type(screen.getByRole("textbox", { name: "Message main agent" }), "Use the shared authenticator{Enter}");
+		expect(postMock).toHaveBeenCalledWith(MESSAGES, expect.objectContaining({ params: { path: { sessionId: "solo" } } }));
+		const { clientMessageId, text } = bodyOf(0);
+		expect(text).toBe("Use the shared authenticator");
+		expect(postMock).not.toHaveBeenCalledWith(STEER, expect.anything());
+		expect(await within(rowOf("Rotate secrets")).findByTestId("sent-message")).toHaveTextContent("You:Use the shared authenticator");
+
+		// The message opens the next turn under the same id; the row now steers that turn.
+		view.update("solo", {
+			status: "ready",
+			model: {
+				main: { ...orchestratorMain, turnId: "turn-2", notes: [{ kind: "turn", text, at: new Date().toISOString(), fromYou: true, clientMessageId }] },
+				cards: [],
+			},
+			control: { ...RUNNING, runningTurnId: "turn-2" },
+		});
+		expect(within(rowOf("Rotate secrets")).queryByTestId("sent-message")).not.toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Steer main agent" })).toBeInTheDocument();
+		expect(within(rowOf("Rotate secrets")).getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
+	});
+
+	it("stops a running turn from its row without opening the session", async () => {
+		const user = userEvent.setup();
+		postMock.mockResolvedValue(accepted(undefined));
+		const view = renderControlled();
+		await user.click(within(rowOf("Pause API")).getByRole("button", { name: "Stop turn" }));
+		expect(postMock).toHaveBeenCalledWith(INTERRUPT, { params: { path: { sessionId: "api" } } });
+		expect(await within(rowOf("Pause API")).findByRole("status")).toHaveTextContent("Stopping…");
+		expect(within(rowOf("Pause API")).getByRole("button", { name: "Stop turn" })).toBeDisabled();
+		expect(view.onOpenSession).not.toHaveBeenCalled();
+	});
+
+	it("messages and stops one running subagent from its row, and says when it already finished", async () => {
+		const user = userEvent.setup();
+		postMock
+			.mockResolvedValueOnce(accepted({ id: "inbox-1", state: "queued" }))
+			.mockResolvedValueOnce(refused(409, "CHAT_SUBAGENT_NOT_RUNNING", "that subagent is not running"));
+		renderControlled();
+		const subagent = () => within(screen.getAllByTestId("agents-overview-branch").find((branch) => branch.dataset.sessionId === "api")!).getByTestId("agents-overview-subagent");
+
+		await user.click(within(subagent()).getByRole("button", { name: "Message subagent" }));
+		await user.type(screen.getByRole("textbox", { name: "Message subagent" }), "Use the v2 client{Enter}");
+		expect(postMock).toHaveBeenCalledWith(SUBAGENT_MESSAGES, { params: { path: { sessionId: "api", toolUseId: "toolu-audit" } }, body: { text: "Use the v2 client" } });
+		expect(await within(subagent()).findByTestId("sent-message")).toHaveTextContent("You:Use the v2 client· waiting for its next step");
+		// Its actions neither fold nor open it.
+		expect(within(subagent()).getByRole("button", { name: "Updates for Audit the auth flow" })).toHaveAttribute("aria-expanded", "false");
+
+		await user.click(within(subagent()).getByRole("button", { name: "Stop subagent" }));
+		expect(postMock).toHaveBeenLastCalledWith(SUBAGENT_STOP, { params: { path: { sessionId: "api", toolUseId: "toolu-audit" } } });
+		expect(postMock).not.toHaveBeenCalledWith(INTERRUPT, expect.anything());
+		const alerts = await screen.findAllByRole("alert");
+		expect(alerts.map((alert) => alert.textContent)).toContain("This subagent already finished");
+	});
+
+	it("says when the agent is not running, with a way to open its session", async () => {
+		const user = userEvent.setup();
+		postMock.mockResolvedValue(refused(409, "CHAT_CONTROLLER_NOT_READY", "the agent controller for this session is not running"));
+		const view = renderControlled();
+		await user.click(within(rowOf("Pause API")).getByRole("button", { name: "Steer main agent" }));
+		const field = screen.getByRole("textbox", { name: "Steer main agent" });
+		await user.type(field, "Use the cookie{Enter}");
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("The agent isn’t running; open the session to restart it. Open");
+		// The words come back, and nothing pretends it was sent.
+		expect(field).toHaveValue("Use the cookie");
+		expect(within(rowOf("Pause API")).queryByTestId("sent-message")).not.toBeInTheDocument();
+		await user.click(within(alert).getByRole("button", { name: "Open" }));
+		expect(view.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: "api" }));
+	});
+
+	it("offers nothing where nothing can be done from here, in a slot every row holds so the times line up", async () => {
+		const user = userEvent.setup();
+		const view = renderControlled();
+		// A terminal session keeps only opening it, from anywhere in the row, its empty slot included.
+		const slot = within(rowOf("Pause UI")).getByTestId("agents-overview-actions");
+		expect(slot).toHaveClass("w-[3.125rem]");
+		expect(within(slot).queryAllByRole("button")).toEqual([]);
+		await user.click(slot);
+		expect(view.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: "ui" }));
+		// Subagents the daemon cannot reach one by one have no controls of their own.
+		const orchestrator = screen.getAllByTestId("agents-overview-branch").find((branch) => branch.dataset.sessionId === "orch")!;
+		const survey = within(orchestrator).getAllByTestId("agents-overview-subagent").find((row) => row.textContent?.includes("Survey the workers"))!;
+		expect(within(survey).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Updates for Survey the workers"]);
+	});
+
+	it("has no controls for a session the shared summaries hold without its conversation's facts", () => {
+		renderControlled(loaded());
+		for (const slot of screen.getAllByTestId("agents-overview-actions")) expect(within(slot).queryAllByRole("button")).toEqual([]);
 	});
 });

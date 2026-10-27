@@ -1694,7 +1694,7 @@ function ChatWorkspaceContent({
 		hostId: activeRemoteHostId,
 		steer: onSteer && turn?.state === "running" ? steer : undefined,
 		cards: subagentCards,
-		mainSent: mainAgent.sent,
+		main: mainAgent,
 	});
 	const subagentBoardControls = useMemo(
 		() => newWorkDisabled || openingStarting ? { states: boardControls.states } : boardControls,

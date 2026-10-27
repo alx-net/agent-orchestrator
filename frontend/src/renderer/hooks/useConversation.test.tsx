@@ -1156,6 +1156,7 @@ describe("steering refusals", () => {
 		expect(outcome).toEqual({
 			status: "not-accepted",
 			reason: "The turn finished before this landed. Send it as a message instead.",
+			code: "CHAT_NO_ACTIVE_TURN",
 		});
 	});
 
@@ -1169,6 +1170,7 @@ describe("steering refusals", () => {
 		await expect(result.current.steer("wait for the switch", undefined, "transition-steer-1")).resolves.toEqual({
 			status: "not-accepted",
 			reason: "The session is switching interfaces. This guidance was not delivered; send it after the switch finishes.",
+			code: "CHAT_INTERFACE_TRANSITION",
 		});
 	});
 
