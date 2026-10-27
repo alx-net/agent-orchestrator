@@ -129,10 +129,12 @@ func (c *Claude) ShareMCPAuth(ctx context.Context, home string) error {
 		if err := c.Keychain.Store(ctx, service, owner, out); err != nil {
 			return fmt.Errorf("write the account's credentials: %w", err)
 		}
-		// A write the keychain cut short would leave the account signed out.
+		// A write the keychain cut short would leave the account signed out, so
+		// put the original back before reporting it.
 		back, err := c.Keychain.Find(ctx, service, owner)
 		if err != nil || !bytes.Equal(bytes.TrimSpace(back), out) {
-			return fmt.Errorf("the account's credentials did not read back as written: %w", errors.Join(err, errKeychainMismatch))
+			restoreErr := c.Keychain.Store(ctx, service, owner, current)
+			return fmt.Errorf("the account's credentials did not read back as written: %w", errors.Join(err, restoreErr, errKeychainMismatch))
 		}
 	}
 	return writeDigests(filepath.Join(home, mcpOAuthLedgerName), copied)

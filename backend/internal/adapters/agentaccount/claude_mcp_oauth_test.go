@@ -12,7 +12,7 @@ import (
 type memKeychain struct {
 	items    map[string][]byte
 	writes   int
-	truncate bool // a write that keeps only part of the data
+	truncate bool // the first write keeps only part of the data
 }
 
 func (k *memKeychain) Find(_ context.Context, service, account string) ([]byte, error) {
@@ -25,7 +25,7 @@ func (k *memKeychain) Find(_ context.Context, service, account string) ([]byte, 
 
 func (k *memKeychain) Store(_ context.Context, service, account string, secret []byte) error {
 	k.writes++
-	if k.truncate {
+	if k.truncate && k.writes == 1 {
 		secret = secret[:len(secret)/2]
 	}
 	k.items[service+"/"+account] = append([]byte(nil), secret...)
@@ -118,6 +118,10 @@ func TestShareMCPAuthReportsAWriteThatDidNotReadBack(t *testing.T) {
 	c := &Claude{Keychain: k, KeychainOwner: "alex"}
 	if err := c.ShareMCPAuth(context.Background(), home); err == nil {
 		t.Fatal("a truncated keychain write passed as shared")
+	}
+	// The cut-short write must not leave the account signed out.
+	if got := string(k.items[ClaudeCredentialsService(home)+"/alex"]); got != `{"claudeAiOauth":{"accessToken":"account-login"}}` {
+		t.Fatalf("account credentials after a failed write = %q", got)
 	}
 }
 
