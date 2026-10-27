@@ -357,7 +357,7 @@ describe("BrowserPanel", () => {
 		await userEvent.clear(input);
 		await userEvent.type(input, "localhost:5173{Enter}");
 
-		expect(hookState.navigate).toHaveBeenCalledWith("localhost:5173");
+		expect(hookState.navigate).toHaveBeenCalledWith("localhost:5173", { focusPage: true });
 		expect(input).not.toHaveFocus();
 	});
 
@@ -420,8 +420,8 @@ describe("BrowserPanel", () => {
 		await userEvent.clear(input);
 		await userEvent.type(input, "second.example{Enter}");
 
-		expect(hookState.navigate).toHaveBeenNthCalledWith(1, "first.example");
-		expect(hookState.navigate).toHaveBeenNthCalledWith(2, "second.example");
+		expect(hookState.navigate).toHaveBeenNthCalledWith(1, "first.example", { focusPage: true });
+		expect(hookState.navigate).toHaveBeenNthCalledWith(2, "second.example", { focusPage: true });
 		expect(input).not.toHaveFocus();
 	});
 
@@ -474,7 +474,7 @@ describe("BrowserPanel", () => {
 		});
 
 		await userEvent.click(screen.getAllByRole("option")[0]!);
-		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/openai");
+		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/openai", { focusPage: true });
 		expect(input).not.toHaveFocus();
 		expect(addressBar).not.toHaveClass("browser-panel__address-bar--editing");
 		expect(screen.queryByRole("listbox", { name: "Address suggestions" })).not.toBeInTheDocument();
@@ -497,7 +497,7 @@ describe("BrowserPanel", () => {
 		await screen.findByRole("listbox", { name: "Address suggestions" });
 		await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
 
-		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/aoagents");
+		expect(hookState.navigate).toHaveBeenCalledWith("https://github.com/aoagents", { focusPage: true });
 	});
 
 	it("keeps address suggestions closed when an escaped request resolves late", async () => {

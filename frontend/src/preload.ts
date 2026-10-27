@@ -116,6 +116,8 @@ export type BrowserBoundsApplied = BrowserBoundsInput;
 export type BrowserNavigateInput = {
 	viewId: string;
 	url: string;
+	/** The person typed this address: the keyboard moves to the page. */
+	focusPage?: boolean;
 };
 
 export type ImportFolderMode = "project" | "workspace";

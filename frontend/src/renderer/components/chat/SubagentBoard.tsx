@@ -69,6 +69,9 @@ import { formatDuration, formatTime } from "./ChatTimelineItems";
 const MAIN_CARD_ID = "\u0000main-agent";
 const NO_MESSAGES: readonly SentMessage[] = [];
 
+/** A message field that had the caret when its card moved lane: its words and selection. */
+type HeldField = { draft: string; start: number; end: number };
+
 export interface SubagentBoardProps {
 	cards: readonly SubagentCard[];
 	/** The main agent's card, pinned above the lanes. */
@@ -110,6 +113,9 @@ export const SubagentBoard = memo(function SubagentBoard({
 		return withStopRequests(cards, stopped);
 	}, [cards, states]);
 	const lanes = useMemo(() => subagentLanes(shown), [shown]);
+	// A card that changes lane mounts anew in its new lane; its message field
+	// gets back what it held and the caret, so the person keeps typing.
+	const [heldFields] = useState(() => new Map<string, HeldField>());
 	const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 	const toggle = useCallback((id: string) => {
 		setExpanded((current) => {
@@ -187,6 +193,7 @@ export const SubagentBoard = memo(function SubagentBoard({
 														card={card}
 														control={states?.get(card.providerItemId) ?? EMPTY_AGENT_CONTROL}
 														expanded={expanded.has(card.id)}
+														heldFields={heldFields}
 														key={card.id}
 														onAsk={onAskMainAgent}
 														onMessage={live ? controls?.messageSubagent : undefined}
@@ -250,6 +257,7 @@ const SubagentCardView = memo(function SubagentCardView({
 	card,
 	control,
 	expanded,
+	heldFields,
 	onAsk,
 	onMessage,
 	onOpen,
@@ -260,6 +268,7 @@ const SubagentCardView = memo(function SubagentCardView({
 	card: SubagentCard;
 	control: AgentControlState;
 	expanded: boolean;
+	heldFields?: Map<string, HeldField>;
 	onAsk?: (card: SubagentCard) => void;
 	/** Present while the subagent runs and the daemon can reach it. */
 	onMessage?: (toolUseId: string, text: string) => Promise<boolean>;
@@ -372,6 +381,8 @@ const SubagentCardView = memo(function SubagentCardView({
 							disabled={stopping}
 							error={errorText(t, control.sendError)}
 							fieldRef={fieldRef}
+							heldFields={heldFields}
+							heldKey={card.id}
 							label={t("subagents.message")}
 							onCancel={() => toggleRef.current?.focus()}
 							onSend={(text) => onMessage(card.providerItemId, text)}
@@ -521,6 +532,8 @@ export function AgentMessageField({
 	error,
 	errorAction,
 	fieldRef,
+	heldFields,
+	heldKey,
 	label,
 	onCancel,
 	onSend,
@@ -533,6 +546,9 @@ export function AgentMessageField({
 	/** A next step shown after the error, such as opening the session. */
 	errorAction?: ReactNode;
 	fieldRef: RefObject<HTMLInputElement | null>;
+	/** Where a field that had the caret leaves its words when its card moves lane. */
+	heldFields?: Map<string, HeldField>;
+	heldKey?: string;
 	label: string;
 	onCancel: () => void;
 	/** Resolves true once the message went out. */
@@ -545,6 +561,27 @@ export function AgentMessageField({
 	const [draft, setDraft] = useState("");
 	const draftRef = useRef(draft);
 	draftRef.current = draft;
+	// The old field's cleanup runs before this one mounts in the new lane.
+	useLayoutEffect(() => {
+		if (!heldFields || heldKey === undefined) return;
+		const held = heldFields.get(heldKey);
+		heldFields.delete(heldKey);
+		const field = fieldRef.current;
+		if (held && field) {
+			setDraft(held.draft);
+			// The re-render sets the same value, so the caret stays where it was.
+			field.value = held.draft;
+			field.focus();
+			field.setSelectionRange(held.start, held.end);
+		}
+		return () => {
+			const current = fieldRef.current;
+			if (current && document.activeElement === current) {
+				const end = draftRef.current.length;
+				heldFields.set(heldKey, { draft: draftRef.current, start: current.selectionStart ?? end, end: current.selectionEnd ?? end });
+			}
+		};
+	}, [fieldRef, heldFields, heldKey]);
 	// Two Enters before the next render must not send twice.
 	const inFlight = useRef(false);
 	const blocked = disabled || sending;

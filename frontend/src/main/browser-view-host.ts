@@ -224,6 +224,8 @@ type BrowserBoundsInput = {
 type BrowserNavigateInput = {
   viewId: string;
   url: string;
+  /** The person typed this address: the keyboard moves to the page. */
+  focusPage?: boolean;
 };
 
 type BrowserHistorySuggestInput = {
@@ -614,6 +616,8 @@ type BrowserEntry = {
   pendingNavigation?: { url: string };
   findState: BrowserFindState & { requestId?: number };
   annotationEnabled: boolean;
+  /** The person started the load in flight from the toolbar: picking gets the keyboard back. */
+  focusAfterLoad?: boolean;
   annotationSessions: Map<
     string,
     { session: BrowserAnnotationSession; token: string }
@@ -1134,6 +1138,12 @@ export function createBrowserViewHost(
     const webPreferences: Electron.WebPreferences = {
       backgroundThrottling: false,
       contextIsolation: true,
+      // Electron focuses a WebContents on every browser-initiated navigation
+      // (loadURL, reload, history, CDP Page.navigate) by default, so each
+      // preview, agent page change, or viewer reload pulled the keyboard out
+      // of whatever field the person was typing in. The page takes focus only
+      // when the person asks for it (a click, the address bar, a shortcut).
+      focusOnNavigation: false,
       nodeIntegration: false,
       partition: session.profilePartition,
       // Chromium's built-in PDF viewer is plugin-backed in Electron. Keep it
@@ -2772,6 +2782,7 @@ export function createBrowserViewHost(
   const navigate = async ({
     viewId,
     url,
+    focusPage = false,
   }: BrowserNavigateInput): Promise<BrowserNavState> => {
     const session = entries.get(viewId);
     if (!session)
@@ -2783,9 +2794,21 @@ export function createBrowserViewHost(
     return withBrowserOperation(session, async () => {
       if (!session.tabs.size) {
         const entry = await openTab(session, url, true);
+        if (focusPage) entry.view.webContents.focus();
         return pushNavState(options, entry);
       }
-      return navigateEntry(activeEntry(session), url);
+      const entry = activeEntry(session);
+      // Navigating never moves the keyboard (focusOnNavigation is off): only
+      // an address the person typed hands it to the page, as a browser does.
+      // A preview arriving through the same call leaves it where they type.
+      if (!focusPage) return navigateEntry(entry, url);
+      entry.view.webContents.focus();
+      const state = await navigateEntry(entry, url);
+      // A document swap can drop it on the way; give it back unless the
+      // person has since gone back to AO's own window.
+      if (session.activeTabId === entry.tabId && shellWebContents.isFocused?.() !== true)
+        entry.view.webContents.focus();
+      return state;
     });
   };
 
@@ -3406,6 +3429,8 @@ export function createBrowserViewHost(
     if (cancelForNavigation || reapplyBounds) {
       applySessionBounds(session, entry);
     }
+    // Every caller is the person (toolbar, shortcut), never the agent.
+    entry.focusAfterLoad = command !== "stop";
     entry.driver().nav(command);
     return pushNavState(options, entry);
   };
@@ -5765,7 +5790,13 @@ function wireNavEvents(
       ...(annotationSession ? { session: annotationSession } : {}),
       ...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
     });
-    if (entry.annotationEnabled) contents.focus();
+    // Picking resumes with the keyboard after a reload the person started,
+    // but a load the agent or the page started must not take it from the
+    // person typing in AO's own window.
+    const personLoaded = entry.focusAfterLoad === true;
+    entry.focusAfterLoad = false;
+    if (entry.annotationEnabled && (personLoaded || shellContents(options).isFocused?.() !== true))
+      contents.focus();
     pushAnnotationState(options, entry, annotationSession);
     recordHistory(contents.getURL(), contents.getTitle(), false);
     update();

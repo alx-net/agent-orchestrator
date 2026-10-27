@@ -154,7 +154,11 @@ function submittedAnnotationSession(
 	};
 }
 
-function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime) {
+function setupHost(
+	agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime,
+	/** Whether AO's own window holds the keyboard; omitted, the shell reports nothing. */
+	shellFocused?: () => boolean,
+) {
 	let currentURL = "";
 	let browserZoomFactor = 1;
 	const webContentsListeners = new Map<string, (...args: never[]) => void>();
@@ -305,6 +309,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 			webContents: {
 				id: 1,
 				focus: shellFocus,
+				...(shellFocused ? { isFocused: shellFocused } : {}),
 				send: shellSend,
 				on: (event: string, listener: (...args: never[]) => void) => {
 					addListener(shellWebContentsListeners, event, listener);
@@ -1491,6 +1496,50 @@ function fakeBrowserProfileStore(
 		partitionForProfile: (profileId: string) => browserProfilePartition(profileId),
 	} as unknown as BrowserProfileStore;
 }
+
+describe("browser panel keyboard focus", () => {
+	it("never lets a navigation take the keyboard from the field the person is typing in", async () => {
+		const { constructorOptions, invoke, views } = setupTabHost();
+		const { viewId } = await invoke("browser:ensure", "sess-1") as BrowserNavState;
+		await invoke("browser:openTab", { viewId, url: "https://example.test/" });
+		views[0]!.webContents.openWindow("https://example.test/popup");
+
+		// Electron focuses a WebContents on loadURL, reload, history and CDP
+		// navigation unless told not to; previews and agent pages go through those.
+		expect(constructorOptions.length).toBeGreaterThanOrEqual(3);
+		for (const { webPreferences } of constructorOptions) expect(webPreferences.focusOnNavigation).toBe(false);
+	});
+
+	it("hands the keyboard to the page only for an address the person typed", async () => {
+		const { invoke, views } = setupTabHost();
+		const { viewId } = await invoke("browser:ensure", "sess-1") as BrowserNavState;
+		await invoke("browser:navigate", { viewId, url: "https://example.test/" });
+		const page = views.at(-1)!.webContents as unknown as { focus: ReturnType<typeof vi.fn> };
+		page.focus.mockClear();
+
+		// An `ao preview` arrives through the same call as the address bar.
+		await invoke("browser:navigate", { viewId, url: "http://localhost:4173/" });
+		expect(page.focus).not.toHaveBeenCalled();
+
+		await invoke("browser:navigate", { viewId, url: "https://example.test/next", focusPage: true });
+		expect(page.focus).toHaveBeenCalled();
+	});
+
+	it("does not take the keyboard back after a typed address loads once the person returned to AO", async () => {
+		let shellFocused = false;
+		const { invoke, webContents: page } = setupHost(undefined, () => shellFocused);
+		await invoke("browser:ensure", "sess-1");
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "https://example.test/" });
+		page.focus.mockClear();
+		page.loadURL.mockImplementationOnce(async () => {
+			// The person clicks back into the chat while the page loads.
+			shellFocused = true;
+		});
+
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "https://example.test/next", focusPage: true });
+		expect(page.focus).toHaveBeenCalledOnce();
+	});
+});
 
 describe("browser:closeTab automation-runtime fallback", () => {
 	it.each([1, 2])("accepts a repeated close with %i tabs initially", async (count) => {
@@ -5717,6 +5766,25 @@ describe("browser annotation IPC", () => {
 			payload: expect.anything(),
 		});
 		expect(webContents.send).toHaveBeenCalledWith("browser:annotation:setMode", { enabled: true, session });
+		expect(webContents.focus).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the keyboard in AO's window when a load the person did not start finishes in annotation mode", async () => {
+		let shellFocused = false;
+		const { invoke, webContents, webContentsListeners } = setupHost(undefined, () => shellFocused);
+		await invoke("browser:ensure", "sess-1");
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "http://localhost:4173/" });
+		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: true });
+		// The person went back to typing in the chat; the agent's dev server reloads the page.
+		shellFocused = true;
+		webContents.focus.mockClear();
+		webContentsListeners.get("did-start-loading")?.();
+		webContentsListeners.get("did-stop-loading")?.();
+		expect(webContents.focus).not.toHaveBeenCalled();
+
+		// The toolbar's reload is the person's: picking gets the keyboard back.
+		await invoke("browser:reload", "1:sess-1");
+		webContentsListeners.get("did-stop-loading")?.();
 		expect(webContents.focus).toHaveBeenCalledOnce();
 	});
 

@@ -184,6 +184,34 @@ describe("send keys", () => {
 		expect(document.activeElement).toBe(field);
 	});
 
+	it("keeps the caret in another field while the composer becomes usable again and the window comes back", async () => {
+		const user = userEvent.setup();
+		// An Agents-tab steer field sits above the composer, which stays mounted under the board.
+		const ui = (disabled: boolean) => (
+			<>
+				<input aria-label="Steer main agent" />
+				<ChatComposer onSend={vi.fn()} autoFocusKey="session-1" disabled={disabled} />
+			</>
+		);
+		const { rerender } = render(ui(true));
+		const steer = screen.getByLabelText("Steer main agent");
+		await user.click(steer);
+		await user.keyboard("keep ");
+
+		// Live updates flip the composer between usable and not (reconnecting, a
+		// controller transition); the window loses and regains focus meanwhile.
+		for (const disabled of [false, true, false, false]) {
+			rerender(ui(disabled));
+			act(() => {
+				window.dispatchEvent(new Event("focus"));
+				document.dispatchEvent(new Event("visibilitychange"));
+			});
+			expect(document.activeElement).toBe(steer);
+		}
+		await user.keyboard("typing");
+		expect(steer).toHaveValue("keep typing");
+	});
+
 	it("does not focus the hidden or inactive chat composer", () => {
 		const { field } = renderComposer({ autoFocus: false, autoFocusKey: "session-1" });
 		expect(document.activeElement).not.toBe(field);
