@@ -145,6 +145,55 @@ cmd_check_all() {
   (cd "${frontend}" && npm run typecheck && npm test)
 }
 
+# A stable local code-signing identity, kept in its own keychain under ~/.ao.
+# Ad-hoc signatures change with every build, so macOS treated each update as a
+# new app and asked for keychain access again; one certificate keeps "Always
+# Allow" across updates.
+signing_dir="${HOME}/.ao/signing"
+signing_keychain="${signing_dir}/ao-local.keychain-db"
+signing_name="AO Local Build"
+
+signing_identity() {
+  [[ -f "${signing_keychain}" && -f "${signing_dir}/.keychain-password" ]] || return 0
+  security unlock-keychain -p "$(cat "${signing_dir}/.keychain-password")" "${signing_keychain}" >/dev/null 2>&1 || return 0
+  security find-identity -v -p codesigning "${signing_keychain}" 2>/dev/null |
+    awk -v name="\"${signing_name}\"" 'index($0, name) {print $2; exit}'
+}
+
+cmd_setup_signing() {
+  if [[ -n "$(signing_identity)" ]]; then
+    say "local signing identity is already set up"
+    return
+  fi
+  mkdir -p "${signing_dir}" && chmod 700 "${signing_dir}"
+  if [[ ! -f "${signing_dir}/.keychain-password" ]]; then
+    (umask 077 && openssl rand -hex 24 > "${signing_dir}/.keychain-password")
+  fi
+  local pw tmp
+  pw="$(cat "${signing_dir}/.keychain-password")"
+  tmp="$(mktemp -d)"
+  [[ -f "${signing_keychain}" ]] || security create-keychain -p "${pw}" "${signing_keychain}"
+  security set-keychain-settings "${signing_keychain}"
+  security unlock-keychain -p "${pw}" "${signing_keychain}"
+  if [[ ! -f "${signing_dir}/ao-local-build.pem" ]]; then
+    printf '%s\n' '[req]' 'distinguished_name=dn' 'x509_extensions=ext' 'prompt=no' '[dn]' "CN=${signing_name}" \
+      '[ext]' 'basicConstraints=critical,CA:false' 'keyUsage=critical,digitalSignature' 'extendedKeyUsage=critical,codeSigning' \
+      > "${tmp}/cert.cnf"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "${tmp}/cert.cnf" \
+      -keyout "${tmp}/key.pem" -out "${tmp}/cert.pem" 2>/dev/null
+    openssl pkcs12 -export -legacy -inkey "${tmp}/key.pem" -in "${tmp}/cert.pem" -out "${tmp}/id.p12" -passout pass:ao 2>/dev/null ||
+      openssl pkcs12 -export -inkey "${tmp}/key.pem" -in "${tmp}/cert.pem" -out "${tmp}/id.p12" -passout pass:ao
+    security import "${tmp}/id.p12" -k "${signing_keychain}" -P ao -T /usr/bin/codesign >/dev/null
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${pw}" "${signing_keychain}" >/dev/null 2>&1
+    cp "${tmp}/cert.pem" "${signing_dir}/ao-local-build.pem"
+  fi
+  rm -rf "${tmp}"
+  say "macOS will ask for your password once, to trust \"${signing_name}\" for code signing only"
+  security add-trusted-cert -r trustRoot -p codeSign "${signing_dir}/ao-local-build.pem"
+  [[ -n "$(signing_identity)" ]] || die "the certificate is not trusted for code signing yet"
+  say "done: local builds are now signed as \"${signing_name}\"; macOS asks for keychain access one last time"
+}
+
 # Package this checkout and install it as the everyday app. The updater is
 # pointed at the fork, so upstream releases never replace a custom build.
 cmd_install() {
@@ -165,8 +214,16 @@ cmd_install() {
   say "installing to ${dest}"
   rm -rf "${dest:?}/$(basename "${app}")"
   ditto "${app}" "${dest}/$(basename "${app}")"
-  # Local builds have no Developer ID; an ad-hoc seal keeps Apple Silicon happy.
-  codesign --force --deep --sign - "${dest}/$(basename "${app}")" >/dev/null 2>&1 || true
+  local identity
+  identity="$(signing_identity)"
+  if [[ -n "${identity}" ]]; then
+    codesign --force --deep --sign "${identity}" --keychain "${signing_keychain}" "${dest}/$(basename "${app}")" >/dev/null 2>&1 ||
+      die "codesign with \"${signing_name}\" failed"
+  else
+    # Ad-hoc: runs fine, but every build is a new app to the keychain.
+    codesign --force --deep --sign - "${dest}/$(basename "${app}")" >/dev/null 2>&1 || true
+    say "tip: run 'bash ${repo_root}/scripts/dev.sh setup-signing' once to stop keychain prompts after updates"
+  fi
   # Packaging rebuilt better-sqlite3 for Electron; put the Node build back so
   # tests in this checkout keep working.
   ensure_node_native
@@ -225,6 +282,7 @@ usage: scripts/dev.sh <command>
   install     package this checkout and install it into /Applications
   update [ref] build origin/<ref> (default main) in ~/.ao/build-src and install it
   link-updater put `ao-app-update` on PATH
+  setup-signing one-time local code-signing identity (stops keychain prompts after updates)
   cli         build the ao CLI from source and link it onto PATH
   sync        fast-forward the fork's main from upstream
 EOF
@@ -239,6 +297,7 @@ case "${1:-help}" in
   install) cmd_install ;;
   update) shift; exec bash "${repo_root}/scripts/app-update.sh" "$@" ;;
   link-updater) cmd_link_updater ;;
+  setup-signing) cmd_setup_signing ;;
   cli) cmd_cli ;;
   sync) cmd_sync ;;
   help|-h|--help) cmd_help ;;
