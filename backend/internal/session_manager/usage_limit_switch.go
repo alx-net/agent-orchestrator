@@ -17,9 +17,9 @@ const usageLimitSwitchLimit = 5 * time.Minute
 // turns out unusable before its agent stops.
 const usageLimitSwitchTries = 3
 
-// usageLimitAccounts is the account service's part in moving a session off an
+// UsageLimitAccounts is the account service's part in moving a session off an
 // account that ran out of usage.
-type usageLimitAccounts interface {
+type UsageLimitAccounts interface {
 	// MarkUsageLimited records the refusal and returns the session's account;
 	// restart reports a refusal its folder's current login cannot have made.
 	MarkUsageLimited(context.Context, domain.SessionID, domain.AgentHarness, *time.Time) (domain.AgentAccount, bool, error)
@@ -27,9 +27,9 @@ type usageLimitAccounts interface {
 	MCPNeedsAuth(string) []string
 }
 
-// usageLimitChat is Chat's part: the refused turn, its notice, and running it
+// UsageLimitChat is Chat's part: the refused turn, its notice, and running it
 // again on the new account.
-type usageLimitChat interface {
+type UsageLimitChat interface {
 	UsageLimitedTurn(context.Context, domain.SessionID, string) (domain.ConversationTurn, error)
 	RecordUsageLimitSwitch(context.Context, domain.SessionID, string, domain.UsageLimitSwitch) error
 	ContinueAfterAccountSwitch(context.Context, domain.SessionID, string) (domain.ConversationTurn, error)
@@ -94,8 +94,8 @@ func (m *Manager) UsageLimitReached(id domain.SessionID, providerTurnID string) 
 // turn and runs the turn again. With no account to move to, the turn keeps
 // today's usage-limit notice: resume by hand or at the reset.
 func (m *Manager) switchAfterUsageLimit(ctx context.Context, id domain.SessionID, providerTurnID string) {
-	accounts, ok := m.agentAccounts.(usageLimitAccounts)
-	chat, chatOK := m.chat.(usageLimitChat)
+	accounts, ok := m.agentAccounts.(UsageLimitAccounts)
+	chat, chatOK := m.chat.(UsageLimitChat)
 	if !ok || !chatOK {
 		return
 	}

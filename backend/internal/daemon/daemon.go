@@ -1462,6 +1462,10 @@ func stabilizeWorkingDirectory(dataDir string) error {
 	return nil
 }
 
+// Session Manager finds the account side of the move after a usage limit by
+// assertion too.
+var _ sessionmanager.UsageLimitAccounts = (*agentaccounts.Service)(nil)
+
 // newAgentAccounts builds the Claude Code and Codex account catalog. Each
 // account is a config folder under the state dir; "This computer" is the CLI's
 // own folder, which AO never changes the login of.
