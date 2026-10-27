@@ -744,6 +744,8 @@ type Session struct {
 	BranchNaming                     bool
 	TemporaryBranch                  string
 	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
+	AutoTitle                        string
 }
 
 type SessionAgentAccount struct {

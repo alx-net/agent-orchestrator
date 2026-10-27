@@ -1625,10 +1625,15 @@ LIMIT sqlc.arg(page_limit);
 -- part of the conversation title lifecycle; sessions is only the table the value
 -- lands in.
 -- name: ApplyConversationTitleToSession :execrows
+-- A session with a title area also admits the witness carrying that area's prefix,
+-- and the area itself is part of the guard: the caller composed the new label with
+-- the area it read, so a different area must not slip in between.
 UPDATE sessions
-SET display_name = ?, updated_at = ?
-WHERE id = ?
-  AND (display_name = '' OR display_name = ?);
+SET display_name = sqlc.arg(display_name), auto_title = sqlc.arg(auto_title), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+  AND title_area IS sqlc.narg(title_area)
+  AND (display_name = '' OR display_name = sqlc.arg(applied_title)
+    OR display_name = sqlc.arg(prefixed_applied_title));
 
 -- The raw provider event archive. Append-only, and the only way to answer "what
 -- did the provider actually say" once a projection turns out to be wrong.

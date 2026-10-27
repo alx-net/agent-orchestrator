@@ -82,6 +82,7 @@ type fakeStore struct {
 	num                 int
 	conversations       map[domain.SessionID]domain.ConversationRecord
 	activities          []domain.ConversationActivity
+	titleAreaCalls      []titleAreaCall
 
 	// getCleanupFactsCalls counts single-session reads; listCleanupFactsCalls
 	// counts batched ones, and cleanupFactsRequested records the ids they asked for.
@@ -412,6 +413,23 @@ func (f *fakeStore) RenameSessionIfDisplayName(_ context.Context, id domain.Sess
 		return false, nil
 	}
 	r.DisplayName = displayName
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
+// SetSessionTitleArea mirrors the store: the area is recorded once and only the
+// provisional display name takes its prefix.
+func (f *fakeStore) SetSessionTitleArea(_ context.Context, id domain.SessionID, area, provisional string, updatedAt time.Time) (bool, error) {
+	f.titleAreaCalls = append(f.titleAreaCalls, titleAreaCall{id: id, area: area, provisional: provisional})
+	r, ok := f.sessions[id]
+	if !ok || area == "" || r.TitleArea != "" {
+		return false, nil
+	}
+	r.TitleArea = area
+	if r.DisplayName != "" && r.DisplayName == provisional {
+		r.DisplayName = domain.PrefixSessionTitle(area, r.DisplayName)
+	}
 	r.UpdatedAt = updatedAt
 	f.sessions[id] = r
 	return true, nil

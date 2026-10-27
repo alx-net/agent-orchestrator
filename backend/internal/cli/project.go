@@ -104,6 +104,12 @@ type containerReapConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
+// titleArea mirrors domain.TitleArea.
+type titleArea struct {
+	Name string `json:"name"`
+	Hint string `json:"hint,omitempty"`
+}
+
 // projectConfig mirrors the daemon's typed domain.ProjectConfig for the CLI
 // client. The CLI sets common fields via flags and the whole object via
 // --config-json.
@@ -127,6 +133,7 @@ type projectConfig struct {
 	// of another field never silently turns it off.
 	WorkersRequestReview bool             `json:"workersRequestReview,omitempty"`
 	Reviewers            []reviewerConfig `json:"reviewers,omitempty"`
+	TitleAreas           []titleArea      `json:"titleAreas,omitempty"`
 }
 
 // setConfigRequest mirrors the daemon's SetConfigInput body for
@@ -153,6 +160,7 @@ type projectSetConfigOptions struct {
 	trackerRepo       string
 	trackerAssignee   string
 	reviewers         []string
+	titleAreas        []string
 	configJSON        string
 	clear             bool
 	json              bool
@@ -297,7 +305,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 		Use:   "set-config <id>",
 		Short: "Set the per-project config",
 		Long: "Replace a project's per-project config (branch, session prefix, env, " +
-			"symlinks, post-create, rules, agent model/permissions, role overrides, tracker intake, reviewers). The config " +
+			"symlinks, post-create, rules, agent model/permissions, role overrides, tracker intake, reviewers, title areas). The config " +
 			"is resolved when a session spawns.\n\n" +
 			"Set fields via flags, pass the whole object with --config-json, or --clear " +
 			"to remove all config.",
@@ -346,6 +354,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.trackerRepo, "tracker-repo", "", "Provider-native repo for issue intake (owner/repo or group/subgroup/repo; default: derive from git origin)")
 	f.StringVar(&opts.trackerAssignee, "tracker-assignee", "", "Issue assignee required for intake eligibility")
 	f.StringArrayVar(&opts.reviewers, "reviewer", nil, "Reviewer harness that reviews worker PRs (repeatable; e.g. claude-code)")
+	f.StringArrayVar(&opts.titleAreas, "title-area", nil, `Product area NAME[=HINT]; its tasks get "NAME: " session titles (repeatable; e.g. "S2S=S2S v1, speech-to-speech")`)
 	f.StringVar(&opts.configJSON, "config-json", "", "Full config as a JSON object (overrides field flags)")
 	f.BoolVar(&opts.clear, "clear", false, "Clear all config")
 	f.BoolVar(&opts.json, "json", false, "Output the updated project as JSON")
@@ -372,6 +381,10 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 	if err != nil {
 		return projectConfig{}, err
 	}
+	areas, err := parseTitleAreas(opts.titleAreas)
+	if err != nil {
+		return projectConfig{}, err
+	}
 	cfg := projectConfig{
 		CanonicalRepoURL:  opts.canonicalRepoURL,
 		DefaultBranch:     opts.defaultBranch,
@@ -390,7 +403,8 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 			Repo:     opts.trackerRepo,
 			Assignee: opts.trackerAssignee,
 		},
-		Reviewers: reviewersForFlags(opts.reviewers),
+		Reviewers:  reviewersForFlags(opts.reviewers),
+		TitleAreas: areas,
 	}
 	if reflect.DeepEqual(cfg, projectConfig{}) {
 		return projectConfig{}, usageError{errors.New("usage: provide at least one config flag, --config-json, or --clear")}
@@ -416,6 +430,24 @@ func reviewersForFlags(harnesses []string) []reviewerConfig {
 		return nil
 	}
 	return reviewers
+}
+
+// parseTitleAreas turns repeated NAME[=HINT] flags into title areas. The
+// daemon validates names, lengths, and duplicates.
+func parseTitleAreas(values []string) ([]titleArea, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	areas := make([]titleArea, 0, len(values))
+	for _, value := range values {
+		name, hint, _ := strings.Cut(value, "=")
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, usageError{fmt.Errorf("invalid --title-area %q: expected NAME or NAME=HINT", value)}
+		}
+		areas = append(areas, titleArea{Name: name, Hint: strings.TrimSpace(hint)})
+	}
+	return areas, nil
 }
 
 // parseEnvPairs turns repeated KEY=VALUE flags into a map.

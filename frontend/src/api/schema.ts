@@ -5286,6 +5286,7 @@ export interface components {
             terminalGeneration?: string;
             terminalHandleId?: string;
             terminateOnPrMerge: boolean;
+            titleArea?: string;
             /** Format: date-time */
             updatedAt: string;
             /** @enum {string} */
@@ -6303,6 +6304,7 @@ export interface components {
             reviewers?: components["schemas"]["DomainReviewerConfig"][];
             sessionPrefix?: string;
             symlinks?: string[];
+            titleAreas?: components["schemas"]["TitleArea"][];
             trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
             worker?: components["schemas"]["RoleOverride"];
             workersRequestReview?: boolean;
@@ -7476,6 +7478,10 @@ export interface components {
             githubLogin?: string;
             installId?: string;
             optedOut: boolean;
+        };
+        TitleArea: {
+            hint?: string;
+            name: string;
         };
         TrackerIntakeConfig: {
             assignee?: string;

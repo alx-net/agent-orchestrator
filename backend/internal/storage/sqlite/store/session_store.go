@@ -624,7 +624,9 @@ func (s *Store) RenameSession(ctx context.Context, id domain.SessionID, displayN
 }
 
 // RenameSessionIfDisplayName applies a generated title only while the session
-// still carries AO's provisional name, so a concurrent human rename wins.
+// still carries AO's provisional name, so a concurrent human rename wins. A
+// session with a title area gets the title with that area's prefix, and its
+// provisional name counts as unchanged with or without the prefix.
 func (s *Store) RenameSessionIfDisplayName(
 	ctx context.Context,
 	id domain.SessionID,
@@ -633,14 +635,71 @@ func (s *Store) RenameSessionIfDisplayName(
 ) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	state, err := s.qw.GetSessionTitleState(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read session %s title: %w", id, err)
+	}
+	area := state.TitleArea.String
+	if state.DisplayName != currentDisplayName && state.DisplayName != domain.PrefixSessionTitle(area, currentDisplayName) {
+		return false, nil
+	}
+	displayName = domain.PrefixSessionTitle(area, displayName)
 	rows, err := s.qw.RenameSessionIfDisplayName(ctx, gen.RenameSessionIfDisplayNameParams{
 		ID:                 id,
-		CurrentDisplayName: currentDisplayName,
+		CurrentDisplayName: state.DisplayName,
 		DisplayName:        displayName,
+		AutoTitle:          displayName,
 		UpdatedAt:          updatedAt,
 	})
 	if err != nil {
 		return false, fmt.Errorf("rename session %s if unchanged: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// SetSessionTitleArea records the title area chosen for a session, once. A
+// display name AO applied itself (provisional, or the last automatic title)
+// is re-applied with the area's prefix; a name a person chose is kept. It
+// reports whether the area was recorded.
+func (s *Store) SetSessionTitleArea(
+	ctx context.Context,
+	id domain.SessionID,
+	area, provisional string,
+	updatedAt time.Time,
+) (bool, error) {
+	if area == "" {
+		return false, nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	state, err := s.qw.GetSessionTitleState(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read session %s title: %w", id, err)
+	}
+	if state.TitleArea.Valid {
+		return false, nil
+	}
+	displayName, autoTitle := state.DisplayName, state.AutoTitle
+	if displayName != "" && (displayName == provisional || displayName == state.AutoTitle) {
+		displayName = domain.PrefixSessionTitle(area, displayName)
+		autoTitle = displayName
+	}
+	rows, err := s.qw.SetSessionTitleArea(ctx, gen.SetSessionTitleAreaParams{
+		TitleArea:          sql.NullString{String: area, Valid: true},
+		DisplayName:        displayName,
+		AutoTitle:          autoTitle,
+		UpdatedAt:          updatedAt,
+		ID:                 id,
+		CurrentDisplayName: state.DisplayName,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set session %s title area: %w", id, err)
 	}
 	return rows > 0, nil
 }
@@ -980,6 +1039,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
 		IssueID:                   row.IssueID,
 		ParentSessionID:           domain.SessionID(row.ParentSessionID.String),
+		TitleArea:                 row.TitleArea.String,
 		Kind:                      row.Kind,
 		Harness:                   row.Harness,
 		ReviewerHarness:           row.ReviewerHarness,

@@ -3519,13 +3519,27 @@ func (s *Store) ApplyProviderTitle(
 
 	var applied bool
 	err = s.inTx(ctx, "apply provider title", func(q *gen.Queries) error {
+		state, readErr := q.GetSessionTitleState(ctx, session)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("read session %s title: %w", session, readErr)
+		}
+		// A session with a title area carries its prefix on every automatic title.
+		area := state.TitleArea.String
+		label := domain.PrefixSessionTitle(area, title)
 		rows, updateErr := q.ApplyConversationTitleToSession(ctx,
 			gen.ApplyConversationTitleToSessionParams{
-				DisplayName: title,
+				DisplayName: label,
+				AutoTitle:   label,
 				UpdatedAt:   now,
 				ID:          session,
-				// The witness: only a label AO itself last wrote may be replaced.
-				DisplayName_2: conversation.AppliedTitle,
+				TitleArea:   state.TitleArea,
+				// The witness: only a label AO itself last wrote may be replaced,
+				// including one that an area chosen later has since prefixed.
+				AppliedTitle:         conversation.AppliedTitle,
+				PrefixedAppliedTitle: domain.PrefixSessionTitle(area, conversation.AppliedTitle),
 			})
 		if updateErr != nil {
 			return fmt.Errorf("apply title to session %s: %w", session, updateErr)
@@ -3535,7 +3549,7 @@ func (s *Store) ApplyProviderTitle(
 		}
 		applied = true
 		return q.UpdateConversationAppliedTitle(ctx, gen.UpdateConversationAppliedTitleParams{
-			AppliedTitle: title,
+			AppliedTitle: label,
 			UpdatedAt:    now,
 			ID:           conversationID,
 		})

@@ -286,6 +286,9 @@ type SessionRecord struct {
 	// only when that session existed in the same project at spawn time. Empty
 	// for sessions started any other way. Written once at insertion.
 	ParentSessionID SessionID `json:"parentSessionId,omitempty"`
+	// TitleArea is the project title area chosen once for this session's task,
+	// the prefix of AO's automatic titles. Empty when there is none (yet).
+	TitleArea string `json:"titleArea,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
 	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`

@@ -36,6 +36,7 @@ type Store interface {
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
+	SetSessionTitleArea(ctx context.Context, id domain.SessionID, area, provisional string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
@@ -413,6 +414,16 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.Session{}, 0, 0, apiErr
 	}
 	s.recordSpawnOutcome(ctx, cfg, rec, domain.ActivityStatusCompleted, nil)
+	if cfg.Kind == domain.KindWorker && !rec.ClientRequestCommitted {
+		// The spawn-time name, e.g. one `ao spawn --name` gave, gets the area
+		// prefix like any provisional title; later renames never do.
+		s.titleSessionInBackground(rec.ID, sessionTitleWork{
+			projectID:   cfg.ProjectID,
+			brief:       cfg.Prompt,
+			provisional: cfg.DisplayName,
+			areas:       project.Config.TitleAreas,
+		})
+	}
 	sess, err := s.toSession(ctx, rec)
 	if err != nil {
 		return domain.Session{}, 0, 0, err

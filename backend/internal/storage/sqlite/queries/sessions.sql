@@ -294,7 +294,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id, parent_session_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE id = ?;
 
 -- name: GetSessionByAutomationRunID :one
@@ -316,7 +316,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id, parent_session_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE automation_run_id = ?;
 
 -- name: ListSessionsByProject :many
@@ -338,7 +338,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id, parent_session_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -360,7 +360,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id, parent_session_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions ORDER BY project_id, num;
 
 -- name: ListLiveSessions :many
@@ -384,7 +384,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id, parent_session_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE is_terminated = 0 ORDER BY project_id, num;
 
 -- name: ListChatHibernationCandidates :many
@@ -440,11 +440,25 @@ WHERE id = sqlc.arg(id) AND is_task_preparation = 1;
 UPDATE sessions SET display_name = ?, updated_at = ? WHERE id = ?;
 
 -- name: RenameSessionIfDisplayName :execrows
+-- Only AO's automatic titles use this; auto_title remembers the name it wrote.
 UPDATE sessions
-SET display_name = sqlc.arg(display_name), updated_at = sqlc.arg(updated_at)
+SET display_name = sqlc.arg(display_name), auto_title = sqlc.arg(auto_title), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND display_name = sqlc.arg(current_display_name)
   AND is_terminated = 0;
+
+-- name: GetSessionTitleState :one
+SELECT display_name, title_area, auto_title FROM sessions WHERE id = ?;
+
+-- name: SetSessionTitleArea :execrows
+-- The area is chosen once. display_name is the compare-and-set witness, so a
+-- rename landing after the caller's read keeps the user's name.
+UPDATE sessions
+SET title_area = sqlc.arg(title_area), display_name = sqlc.arg(display_name),
+    auto_title = sqlc.arg(auto_title), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+  AND title_area IS NULL
+  AND display_name = sqlc.arg(current_display_name);
 
 -- name: SetSessionPreviewURL :execrows
 -- preview_revision is bumped on every call (even when preview_url is unchanged)

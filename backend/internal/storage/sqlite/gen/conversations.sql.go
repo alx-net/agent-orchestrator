@@ -345,16 +345,21 @@ func (q *Queries) AppendConversationMessageDelta(ctx context.Context, arg Append
 
 const applyConversationTitleToSession = `-- name: ApplyConversationTitleToSession :execrows
 UPDATE sessions
-SET display_name = ?, updated_at = ?
-WHERE id = ?
-  AND (display_name = '' OR display_name = ?)
+SET display_name = ?1, auto_title = ?2, updated_at = ?3
+WHERE id = ?4
+  AND title_area IS ?5
+  AND (display_name = '' OR display_name = ?6
+    OR display_name = ?7)
 `
 
 type ApplyConversationTitleToSessionParams struct {
-	DisplayName   string
-	UpdatedAt     time.Time
-	ID            domain.SessionID
-	DisplayName_2 string
+	DisplayName          string
+	AutoTitle            string
+	UpdatedAt            time.Time
+	ID                   domain.SessionID
+	TitleArea            sql.NullString
+	AppliedTitle         string
+	PrefixedAppliedTitle string
 }
 
 // Push a provider thread title into the session label, without ever overwriting a
@@ -368,12 +373,18 @@ type ApplyConversationTitleToSessionParams struct {
 // It lives with the conversation queries rather than the session ones because it is
 // part of the conversation title lifecycle; sessions is only the table the value
 // lands in.
+// A session with a title area also admits the witness carrying that area's prefix,
+// and the area itself is part of the guard: the caller composed the new label with
+// the area it read, so a different area must not slip in between.
 func (q *Queries) ApplyConversationTitleToSession(ctx context.Context, arg ApplyConversationTitleToSessionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, applyConversationTitleToSession,
 		arg.DisplayName,
+		arg.AutoTitle,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.DisplayName_2,
+		arg.TitleArea,
+		arg.AppliedTitle,
+		arg.PrefixedAppliedTitle,
 	)
 	if err != nil {
 		return 0, err

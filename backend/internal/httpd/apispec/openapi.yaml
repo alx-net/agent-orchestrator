@@ -15447,6 +15447,8 @@ components:
           type: string
         terminateOnPrMerge:
           type: boolean
+        titleArea:
+          type: string
         updatedAt:
           format: date-time
           type: string
@@ -18165,6 +18167,10 @@ components:
         symlinks:
           items:
             type: string
+          type: array
+        titleAreas:
+          items:
+            $ref: '#/components/schemas/TitleArea'
           type: array
         trackerIntake:
           $ref: '#/components/schemas/TrackerIntakeConfig'
@@ -21098,6 +21104,15 @@ components:
       required:
       - distinctId
       - optedOut
+      type: object
+    TitleArea:
+      properties:
+        hint:
+          type: string
+        name:
+          type: string
+      required:
+      - name
       type: object
     TrackerIntakeConfig:
       properties:
