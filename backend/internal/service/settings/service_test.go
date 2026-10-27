@@ -172,7 +172,8 @@ func TestAccountAutoSwitchToggleIsCachedAndOnWhenUnreadable(t *testing.T) {
 		t.Fatal("an unreadable store turned the default-on switch off")
 	}
 	store.err = nil
-	if !svc.AccountAutoSwitchEnabled(ctx) || !svc.AccountAutoSwitchEnabled(ctx) || store.reads != 2 {
+	first := svc.AccountAutoSwitchEnabled(ctx)
+	if second := svc.AccountAutoSwitchEnabled(ctx); !first || !second || store.reads != 2 {
 		t.Fatalf("reads = %d, want one failed and one cached read", store.reads)
 	}
 	snapshot, err := svc.SetAccountAutoSwitch(ctx, false)

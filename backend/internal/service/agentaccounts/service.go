@@ -26,6 +26,9 @@ import (
 // freshFor is how long a read of an account's identity and limits is reused.
 const freshFor = 5 * time.Minute
 
+// mcpShareLimit bounds copying the computer's MCP sign-ins into an account.
+const mcpShareLimit = 5 * time.Second
+
 // retryEmptyAfter is how long an answer with no limit windows is reused. A
 // folder read just after its sign-in can answer before its limits are known.
 const retryEmptyAfter = 30 * time.Second
@@ -50,8 +53,11 @@ type Service struct {
 	terminals Terminals
 	// stopAgents stops every running agent on an account before it is removed.
 	stopAgents func(context.Context, string) error
-	log        *slog.Logger
-	now        func() time.Time
+	// agentsRunning reports an agent other than the given session's running,
+	// or starting, on an account. Nil: unknown, so nothing is shared into it.
+	agentsRunning func(context.Context, string, domain.SessionID) bool
+	log           *slog.Logger
+	now           func() time.Time
 
 	mu       sync.Mutex
 	readings map[string]*reading
@@ -83,6 +89,12 @@ type reading struct {
 // not signed in to.
 type mcpAuthReporter interface {
 	MCPNeedsAuth(home string) []string
+}
+
+// mcpAuthSharer is a provider that copies the computer's MCP sign-ins into an
+// account folder's credentials. It must not run while an agent uses the folder.
+type mcpAuthSharer interface {
+	ShareMCPAuth(ctx context.Context, home string) error
 }
 
 // knownUnusable reports a reading that shows the folder cannot launch as its
@@ -132,6 +144,36 @@ func (s *Service) SetAgentStopper(stop func(ctx context.Context, accountID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopAgents = stop
+}
+
+// SetAgentActivity late-binds what reports agents running on an account, so
+// the computer's MCP sign-ins are copied into it only while none is.
+func (s *Service) SetAgentActivity(running func(ctx context.Context, accountID string, except domain.SessionID) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentsRunning = running
+}
+
+// shareMCPAuth copies the computer's MCP sign-ins into account's folder when
+// no agent other than except's uses it. fresh marks an account just added,
+// which no agent can use yet. Failures are logged: a launch never fails for it.
+func (s *Service) shareMCPAuth(ctx context.Context, account domain.AgentAccount, except domain.SessionID, fresh bool) {
+	sharer, ok := s.providers[account.Provider].(mcpAuthSharer)
+	if !ok || account.Device() {
+		return
+	}
+	s.mu.Lock()
+	running := s.agentsRunning
+	s.mu.Unlock()
+	// Its own budget: a launch's deadline must not run out on the keychain.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mcpShareLimit)
+	defer cancel()
+	if !fresh && (running == nil || running(ctx, account.ID, except)) {
+		return
+	}
+	if err := sharer.ShareMCPAuth(ctx, account.Home); err != nil {
+		s.log.Warn("share MCP sign-ins into account", "account", account.ID, "error", err)
+	}
 }
 
 // AccountView is an account with its latest readings, as the app shows it.
@@ -614,6 +656,7 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 		s.log.Warn("prepare account folder", "account", op.id, "error", err)
 	}
 	s.endLogin(ctx, op, false)
+	s.shareMCPAuth(ctx, account, "", true)
 	s.read(ctx, account)
 	s.notifyDefaultChanged(account.Provider)
 	views, err = s.List(ctx, false)
@@ -661,6 +704,7 @@ func (s *Service) finishSignInAgain(ctx context.Context, op *login, identity dom
 		return LoginMismatch, saved, nil
 	}
 	s.endLogin(ctx, op, false)
+	s.shareMCPAuth(ctx, *op.account, "", false)
 	s.read(ctx, *op.account)
 	s.notifyDefaultChanged(op.account.Provider)
 	views, err := s.List(ctx, false)
@@ -1071,6 +1115,7 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if err := s.prepare(provider, account.Home); err != nil {
 			errs = append(errs, err)
 		}
+		s.shareMCPAuth(ctx, account, id, false)
 		for key, value := range provider.LaunchEnv(account.Home) {
 			env[key] = value
 		}

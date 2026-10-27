@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -586,6 +587,11 @@ func Run(buildVersion string) error {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {
 		agentAccountSvc.SetAgentStopper(stopper.ExitAgentsOnAccount)
+	}
+	if activity, ok := sessMgr.(interface {
+		AgentsRunningOnAccount(context.Context, string, domain.SessionID) bool
+	}); ok {
+		agentAccountSvc.SetAgentActivity(activity.AgentsRunningOnAccount)
 	}
 	sessionSvc.SetComputerLoginCheck(agentAccountSvc.RunsOnComputerLogin)
 	if agentSvc != nil {
@@ -1466,8 +1472,15 @@ func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, 
 	} else if home, err := os.UserHomeDir(); err == nil {
 		claudeHome, claudeConfig = filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
 	}
+	claude := &agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig}
+	if runtime.GOOS == "darwin" {
+		// The user asked for every account to have the computer's MCP sign-ins;
+		// Claude Code keeps them in the login keychain on macOS.
+		claude.Keychain = agentaccount.SecurityKeychain{}
+		claude.DeviceCredentials = agentaccount.ClaudeCredentialsService(strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")))
+	}
 	providers := []ports.AgentAccountProviderCLI{
-		&agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig},
+		claude,
 		&agentaccount.Codex{Binary: codexagent.New().ResolveBinary, Accounts: codexAccounts, DeviceHome: codexHome},
 	}
 	return agentaccounts.New(store, providers, filepath.Join(cfg.StateDir, "agent-accounts"), nil, log)

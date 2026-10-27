@@ -133,6 +133,17 @@ func (m *Manager) preflightAccountTarget(
 	if err := m.preflightLaunchAuth(ctx, agent, rec, env); err != nil {
 		return err
 	}
+	// The target account's own config must trust the worktree as the spawn made
+	// the old one's do, or the resumed agent shows the project's MCP servers
+	// as pending approval. Additive, so a failed move leaves nothing to undo.
+	if pl, ok := agent.(preLauncher); ok && rec.Metadata.WorkspacePath != "" {
+		if err := pl.PreLaunch(ctx, ports.LaunchConfig{
+			DataDir: m.dataDir, SessionID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
+			Config: config, Permissions: config.Permissions, Env: env,
+		}); err != nil {
+			return fmt.Errorf("trust the workspace for the account: %w", err)
+		}
+	}
 	// Account folders link their history to the computer's own, so the target
 	// sees the conversation. Prove it rather than find out after the stop.
 	if transition.NativeConversationID != "" {
@@ -225,6 +236,35 @@ func (m *Manager) ExitAgentsOnAccount(ctx context.Context, accountID string) err
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// AgentsRunningOnAccount reports whether an agent of a session other than
+// except runs, or is starting, on accountID. Anything AO cannot tell counts as
+// running: the answer guards writes into the account's credentials.
+func (m *Manager) AgentsRunningOnAccount(ctx context.Context, accountID string, except domain.SessionID) bool {
+	if m.agentAccounts == nil {
+		return true
+	}
+	recs, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		return true
+	}
+	for _, rec := range recs {
+		if rec.IsTerminated || rec.ID == except {
+			continue
+		}
+		bound, err := m.agentAccounts.SessionAccountID(ctx, rec.ID, rec.Harness)
+		if err != nil {
+			return true
+		}
+		if bound == "" || (bound != accountID && m.accountOverride(rec.ID) != accountID) {
+			continue
+		}
+		if m.launchInFlight(rec.ID) || rec.Activity.State != domain.ActivityExited {
+			return true
+		}
+	}
+	return false
 }
 
 // launchInFlight reports an agent operation, a transition or an asynchronous

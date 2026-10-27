@@ -49,6 +49,15 @@ type Claude struct {
 	DeviceHome string
 	// DeviceConfig is the computer's own global config (~/.claude.json).
 	DeviceConfig string
+	// Keychain holds Claude Code's credentials; nil where it keeps them
+	// elsewhere, and then MCP sign-ins are not shared (see ShareMCPAuth).
+	Keychain Keychain
+	// DeviceCredentials is the computer's own credentials item; empty is the
+	// default folder's (ClaudeCredentialsService("")).
+	DeviceCredentials string
+	// KeychainOwner is the keychain account Claude Code files its items under;
+	// empty is the user's login name.
+	KeychainOwner string
 }
 
 var _ ports.AgentAccountProviderCLI = (*Claude)(nil)

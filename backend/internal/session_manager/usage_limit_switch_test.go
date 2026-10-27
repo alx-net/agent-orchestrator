@@ -234,6 +234,62 @@ func TestUsageLimitSwitchOffLeavesTheSession(t *testing.T) {
 	}
 }
 
+// trustAgent records the worktree trust a launch would write, and where.
+type trustAgent struct {
+	transitionAgent
+	mu      sync.Mutex
+	trusted []string
+}
+
+func (a *trustAgent) PreLaunch(_ context.Context, cfg ports.LaunchConfig) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trusted = append(a.trusted, cfg.WorkspacePath+"@"+cfg.Env["CLAUDE_CONFIG_DIR"])
+	return nil
+}
+
+// A move trusts the worktree in the new account's own config before the
+// agent resumes there, as the spawn did for the old one.
+func TestAccountMoveTrustsTheWorktreeInTheTargetAccountsConfig(t *testing.T) {
+	manager, store, _, _, _, _ := newAccountTransitionManager(t, domain.SessionModeChat)
+	agent := &trustAgent{}
+	manager.agents = singleAgent{agent: agent}
+
+	transition, err := manager.StartAccountTransition(context.Background(), "session-1", "acct-b", domain.SessionInterfaceTransitionDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled := awaitTransition(t, store, transition.ID); settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %s %s", settled.Phase, settled.ErrorDetail)
+	}
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	if !slices.Contains(agent.trusted, "/ws/session-1@/accounts/b") {
+		t.Fatalf("trusted = %v, want the worktree in acct-b's config", agent.trusted)
+	}
+}
+
+func TestAgentsRunningOnAccountIgnoresTheLaunchingSession(t *testing.T) {
+	manager, store, _, _, accounts, _ := newAccountTransitionManager(t, domain.SessionModeChat)
+	ctx := context.Background()
+	accounts.bound["session-1"] = "acct-b"
+	if manager.AgentsRunningOnAccount(ctx, "acct-b", "session-1") {
+		t.Fatal("the launching session counted as another agent on its account")
+	}
+	if !manager.AgentsRunningOnAccount(ctx, "acct-b", "") {
+		t.Fatal("an idle agent on acct-b did not count as running")
+	}
+	rec := store.sessions["session-1"]
+	rec.Activity.State = domain.ActivityExited
+	store.sessions["session-1"] = rec
+	if manager.AgentsRunningOnAccount(ctx, "acct-b", "") {
+		t.Fatal("an exited agent counted as running")
+	}
+	if manager.AgentsRunningOnAccount(ctx, "device-claude", "") {
+		t.Fatal("no session is on device-claude")
+	}
+}
+
 // A refusal heard while the session is still moving is handled after it.
 func TestUsageLimitHeardDuringAMoveIsHandledAfterIt(t *testing.T) {
 	manager, _, chat := newUsageLimitManager(t)
