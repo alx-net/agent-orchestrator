@@ -41,6 +41,7 @@ import {
 	User,
 	X,
 	ArrowLeft,
+	LoaderCircle,
 } from "lucide-react";
 import {
 	useCallback,
@@ -578,14 +579,22 @@ function SessionStatusDot({ session }: { session: WorkspaceSession }) {
 			aria-hidden="true"
 			className="relative z-[1] inline-flex shrink-0 items-center justify-center px-1.5"
 		>
-			<span
-				className={cn(
-					"size-2 rounded-full",
-					dot.className,
-					dot.breathe && "animate-status-pulse",
-				)}
-				data-session-status={session.status}
-			/>
+			{dot.breathe ? (
+				// A spinner reads as "running" far more clearly than a pulsing dot.
+				<LoaderCircle
+					className={cn(
+						"size-3 animate-spin motion-reduce:animate-none",
+						dot.className.replace(/^bg-/, "text-"),
+					)}
+					data-session-status={session.status}
+					data-working="true"
+				/>
+			) : (
+				<span
+					className={cn("size-2 rounded-full", dot.className)}
+					data-session-status={session.status}
+				/>
+			)}
 		</span>
 	);
 }
