@@ -3,6 +3,8 @@ package chat_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -249,6 +251,100 @@ func TestPersistentTransportFailureRetainsWorkForReconnect(t *testing.T) {
 	}
 	if h.ctrl.State() != ports.ChatControllerStopped || provider.terminated.Load() {
 		t.Fatal("lost controller remained live or terminated its persistent provider")
+	}
+}
+
+// questionConversation is a reattached persistent provider whose turn is
+// paused on a structured question, like Claude Code's AskUserQuestion.
+type questionConversation struct {
+	*reconnectedReceiptConversation
+	answers chan string
+}
+
+func (c *questionConversation) ResolveInput(_ context.Context, requestID string, _ ports.ChatInputResponse) error {
+	c.answers <- requestID
+	return nil
+}
+
+// A daemon restart while the agent waits on a question: the host replays the
+// still-pending request to the reattached controller. That replay must not stop
+// the controller, and the answer must reach the provider request still waiting.
+func TestReattachedControllerKeepsAPendingQuestionAnswerable(t *testing.T) {
+	ctx := context.Background()
+	const requestID = "acp-request:host:2"
+	question := ports.ChatEvent{
+		Kind: ports.ChatEventInputRequested, RequestID: requestID, Summary: "Please answer the following questions.",
+		Input: &ports.ChatInputRequest{Mode: ports.ChatInputModeForm, Message: "Please answer the following questions."},
+	}
+	first := &receiptConversation{
+		terminatingConversation: &terminatingConversation{fakeConversation: newFakeConversation()},
+		ack:                     func(string) error { return nil },
+	}
+	h := newHarnessWithConversation(t, first)
+	turn, err := h.ctrl.Send(ctx, ports.ChatUserMessage{Text: "pick one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	question.ProviderTurnID = turn.ProviderTurnID
+	first.emit(ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: turn.ProviderTurnID, ProviderEventID: "started"}, question)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Activities) == 1 && s.Activities[0].Status == domain.ActivityStatusPending
+	})
+	h.svc.StopAll(ctx)
+	h.ctrl.Wait()
+
+	acks := make(chan string, 8)
+	second := &questionConversation{
+		reconnectedReceiptConversation: &reconnectedReceiptConversation{receiptConversation: &receiptConversation{
+			terminatingConversation: &terminatingConversation{fakeConversation: newFakeConversation()},
+			ack:                     func(id string) error { acks <- id; return nil },
+		}},
+		answers: make(chan string, 1),
+	}
+	svc := chatsvc.New(chatsvc.Options{
+		Store: h.st, Sessions: h.st, Reader: fullSnapshotReader(h.st),
+		Drivers: fakeRegistry{driver: fakeDriver{conv: second}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return fmt.Sprintf("restart-%d", time.Now().UnixNano()) },
+		Now:     h.now,
+	})
+	t.Cleanup(func() { svc.StopAll(ctx) })
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
+		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
+	}); err != nil {
+		t.Fatalf("reattach: %v", err)
+	}
+	// The host replays the pending request (it has no event id of its own),
+	// then later output.
+	second.emit(question, ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerBusy, ProviderEventID: "barrier"})
+	for id := ""; id != "barrier"; {
+		select {
+		case id = <-acks:
+		case <-time.After(3 * time.Second):
+			t.Fatal("reattached controller stopped projecting after the replayed question")
+		}
+	}
+	if !svc.HasLiveChatController(testSession) {
+		t.Fatal("replayed question stopped the reattached controller")
+	}
+	if err := svc.ResolveInput(ctx, testSession, requestID, ports.ChatInputResponse{
+		Action: ports.ChatInputActionAccept, Content: map[string]any{"question_0": "ENG-1837"},
+	}); err != nil {
+		t.Fatalf("answer replayed question: %v", err)
+	}
+	if got := <-second.answers; got != requestID {
+		t.Fatalf("answer reached request %q, want %q", got, requestID)
+	}
+	snapshot, err := h.st.LoadConversationSnapshot(ctx, h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Activities) != 1 || snapshot.Activities[0].Status != domain.ActivityStatusResolved {
+		t.Fatalf("activities = %+v, want the one question resolved", snapshot.Activities)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State != domain.TurnStateRunning {
+		t.Fatalf("turns = %+v, want the paused turn still running", snapshot.Turns)
 	}
 }
 

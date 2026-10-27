@@ -629,6 +629,30 @@ func (q *Queries) ConversationActivityExistsForProviderItem(ctx context.Context,
 	return exists, err
 }
 
+const conversationActivityExistsForRequest = `-- name: ConversationActivityExistsForRequest :one
+SELECT EXISTS(
+    SELECT 1
+    FROM conversation_activities
+    WHERE conversation_id = ?1
+      AND request_id = ?2
+)
+`
+
+type ConversationActivityExistsForRequestParams struct {
+	ConversationID string
+	RequestID      string
+}
+
+// A persistent provider host replays every request still awaiting an answer to
+// the controller that reattaches to it. The previous controller already wrote
+// that request's row, and request ids are unique, so the replay updates it.
+func (q *Queries) ConversationActivityExistsForRequest(ctx context.Context, arg ConversationActivityExistsForRequestParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, conversationActivityExistsForRequest, arg.ConversationID, arg.RequestID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const detachSessionConversation = `-- name: DetachSessionConversation :exec
 UPDATE conversations SET current_session_id = NULL, updated_at = ?
 WHERE id = ? AND scope = 'session' AND current_session_id = ?
@@ -4429,6 +4453,33 @@ func (q *Queries) SettleConversationActivity(ctx context.Context, arg SettleConv
 		arg.UpdatedAt,
 		arg.ConversationID,
 		arg.ProviderItemID,
+	)
+	return err
+}
+
+const settleConversationActivityByRequest = `-- name: SettleConversationActivityByRequest :exec
+UPDATE conversation_activities
+SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
+WHERE conversation_id = ? AND request_id = ? AND status <> 'cancelled'
+`
+
+type SettleConversationActivityByRequestParams struct {
+	Status         domain.ActivityStatus
+	Summary        string
+	DetailJson     string
+	UpdatedAt      time.Time
+	ConversationID string
+	RequestID      string
+}
+
+func (q *Queries) SettleConversationActivityByRequest(ctx context.Context, arg SettleConversationActivityByRequestParams) error {
+	_, err := q.db.ExecContext(ctx, settleConversationActivityByRequest,
+		arg.Status,
+		arg.Summary,
+		arg.DetailJson,
+		arg.UpdatedAt,
+		arg.ConversationID,
+		arg.RequestID,
 	)
 	return err
 }

@@ -2946,6 +2946,32 @@ func (s *Store) UpsertActivity(
 			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
 		}
 	}
+	if activity.RequestID != "" {
+		// A reattached controller receives the host's replay of a request that
+		// is still pending, such as a question with no provider item id.
+		exists, err := q.ConversationActivityExistsForRequest(ctx,
+			gen.ConversationActivityExistsForRequestParams{
+				ConversationID: conversationID,
+				RequestID:      activity.RequestID,
+			})
+		if err != nil {
+			return fmt.Errorf("lookup activity request %s: %w", activity.RequestID, err)
+		}
+		if exists {
+			if err := q.SettleConversationActivityByRequest(ctx,
+				gen.SettleConversationActivityByRequestParams{
+					Status:         activity.Status,
+					Summary:        activity.Summary,
+					DetailJson:     detail,
+					UpdatedAt:      now,
+					ConversationID: conversationID,
+					RequestID:      activity.RequestID,
+				}); err != nil {
+				return fmt.Errorf("settle activity request %s: %w", activity.RequestID, err)
+			}
+			return nil
+		}
+	}
 
 	turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
 	return s.inTx(ctx, "insert activity", func(q *gen.Queries) error {
