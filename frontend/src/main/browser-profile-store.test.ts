@@ -8,7 +8,7 @@ import {
 	browserProfilePartition,
 	type BrowserProfileRegistry,
 } from "../shared/browser-profiles";
-import { BrowserProfileStore } from "./browser-profile-store";
+import { BrowserProfileStore, createBrowserProfileStore } from "./browser-profile-store";
 
 const tempDirectories: string[] = [];
 
@@ -166,6 +166,50 @@ describe("BrowserProfileStore", () => {
 
 		await store.deleteProfile(profile.id);
 		expect(store.getDefaultProfileId()).toBeNull();
+	});
+
+	it("seeds one shared Default profile into an untouched registry, and never again", async () => {
+		const stateDir = await makeStateDir();
+		const store = await createBrowserProfileStore({ stateDir });
+
+		expect(store.profiles.map((profile) => profile.name)).toEqual(["Default"]);
+		const seeded = store.profiles[0]!;
+		expect(store.getDefaultProfileId()).toBe(seeded.id);
+		// Concurrent and repeated calls do not add a second profile.
+		expect(await Promise.all([store.ensureDefaultProfile(), store.ensureDefaultProfile()])).toEqual([null, null]);
+		const relaunched = await createBrowserProfileStore({ stateDir });
+		expect(relaunched.profiles).toEqual([seeded]);
+		expect(relaunched.getDefaultProfileId()).toBe(seeded.id);
+
+		// Deleting the seeded profile is a choice that survives the next launch.
+		await relaunched.deleteProfile(seeded.id);
+		const afterDelete = await createBrowserProfileStore({ stateDir });
+		expect(afterDelete.profiles).toEqual([]);
+		expect(afterDelete.getDefaultProfileId()).toBeNull();
+	});
+
+	it("does not seed a Default profile over saved profiles, a chosen default, or an unreadable registry", async () => {
+		const withoutDefaultDir = await makeStateDir();
+		await writeFile(path.join(withoutDefaultDir, "browser-profiles.json"), JSON.stringify(registryWithProfiles(1)), "utf8");
+		const withoutDefault = await createBrowserProfileStore({ stateDir: withoutDefaultDir });
+		expect(withoutDefault.profiles.map((profile) => profile.name)).toEqual(["Profile 1"]);
+		expect(withoutDefault.getDefaultProfileId()).toBeNull();
+
+		const chosenDir = await makeStateDir();
+		const chosen = new BrowserProfileStore({ stateDir: chosenDir });
+		const work = await chosen.createProfile("Work");
+		await chosen.setDefaultProfileId(work.id);
+		const relaunched = await createBrowserProfileStore({ stateDir: chosenDir });
+		expect(relaunched.profiles.map((profile) => profile.name)).toEqual(["Work"]);
+		expect(relaunched.getDefaultProfileId()).toBe(work.id);
+
+		const corruptDir = await makeStateDir();
+		const registryPath = path.join(corruptDir, "browser-profiles.json");
+		const corrupt = JSON.stringify({ version: 99, profiles: [], bindings: {} });
+		await writeFile(registryPath, corrupt, "utf8");
+		const unreadable = await createBrowserProfileStore({ stateDir: corruptDir });
+		expect(unreadable.error?.code).toBe("BROWSER_PROFILE_STORE_CORRUPT");
+		expect(await readFile(registryPath, "utf8")).toBe(corrupt);
 	});
 
 	it("keeps an explicit Temporary binding distinct from having no binding at all", async () => {

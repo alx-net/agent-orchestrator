@@ -815,6 +815,25 @@ async function clearElectronBrowserProfileData(partition: string): Promise<void>
 	await Promise.all([browserSession.clearStorageData(), browserSession.clearCache()]);
 }
 
+// A crash or force quit skips the per-worker temporary partition cleanup, so
+// leftovers pile up under userData. Sweep them once per launch, after startup
+// has settled; a recreated window must not sweep again.
+const STALE_TEMPORARY_PARTITION_SWEEP_DELAY_MS = 10_000;
+let staleTemporaryPartitionSweepScheduled = false;
+function scheduleStaleTemporaryPartitionSweep(host: BrowserViewHost): void {
+	if (staleTemporaryPartitionSweepScheduled) return;
+	staleTemporaryPartitionSweepScheduled = true;
+	setTimeout(() => {
+		if (browserQuitRequested) return;
+		void host.removeStaleTemporaryPartitions().then(
+			(removed) => {
+				if (removed > 0) console.log(`AO: removed ${removed} stale temporary browser partition(s)`);
+			},
+			(error) => console.warn("stale temporary browser partition sweep failed:", error),
+		);
+	}, STALE_TEMPORARY_PARTITION_SWEEP_DELAY_MS);
+}
+
 async function disposeAllBrowserViewHosts(): Promise<void> {
 	for (;;) {
 		if (browserViewHost) await disposeBrowserViewHost();
@@ -1092,9 +1111,11 @@ async function createWindowInternal(): Promise<void> {
 			notify: (state) => { awakeDownloads.update(state); shellWebContents.send("browser:downloadsChanged", state); },
 		}),
 		clearBrowserProfileData: clearElectronBrowserProfileData,
+		partitionsDirectory: path.join(app.getPath("userData"), "Partitions"),
 		clipboard: { writeImage: writeClipboardImage },
 		onNativeViewAdded: () => windowComposition?.restackShell(),
 	});
+	scheduleStaleTemporaryPartitionSweep(browserViewHost);
 	browserProfileImporter = profileImporter;
 	browserProfileIpc = registerBrowserProfileIpc({
 		ipcMain,

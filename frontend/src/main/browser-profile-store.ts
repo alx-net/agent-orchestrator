@@ -39,6 +39,8 @@ export type BrowserProfileStoreOptions = {
 
 type ProfileOperation<T> = () => Promise<T>;
 
+const DEFAULT_BROWSER_PROFILE_NAME = "Default";
+
 const DEFAULT_REGISTRY: BrowserProfileRegistry = {
 	version: BROWSER_PROFILE_REGISTRY_VERSION,
 	profiles: [],
@@ -128,8 +130,17 @@ function parseRegistry(raw: unknown): BrowserProfileRegistry {
 	if (defaultProfileId !== null && (!isBrowserProfileId(defaultProfileId) || !profileIds.has(defaultProfileId))) {
 		throw invalidRegistry("The browser profile registry has an invalid default profile.");
 	}
+	if (raw.defaultProfileSeeded !== undefined && typeof raw.defaultProfileSeeded !== "boolean") {
+		throw invalidRegistry("The browser profile registry has an invalid default profile marker.");
+	}
 
-	return { version: BROWSER_PROFILE_REGISTRY_VERSION, profiles, bindings, defaultProfileId };
+	return {
+		version: BROWSER_PROFILE_REGISTRY_VERSION,
+		profiles,
+		bindings,
+		defaultProfileId,
+		...(raw.defaultProfileSeeded ? { defaultProfileSeeded: true } : {}),
+	};
 }
 
 function cloneRegistry(registry: BrowserProfileRegistry): BrowserProfileRegistry {
@@ -140,7 +151,18 @@ function cloneRegistry(registry: BrowserProfileRegistry): BrowserProfileRegistry
 			Object.entries(registry.bindings).map(([sessionId, binding]) => [sessionId, { ...binding }]),
 		),
 		defaultProfileId: registry.defaultProfileId,
+		...(registry.defaultProfileSeeded ? { defaultProfileSeeded: true } : {}),
 	};
+}
+
+/**
+ * AO creates the shared Default profile only into an untouched registry: no
+ * default, no profiles, and never before. Saved profiles without a default
+ * mean the user chose Temporary for unbound workers, and a deleted Default
+ * must stay deleted.
+ */
+function needsSeededDefaultProfile(registry: BrowserProfileRegistry): boolean {
+	return registry.defaultProfileId === null && registry.profiles.length === 0 && !registry.defaultProfileSeeded;
 }
 
 export class BrowserProfileStore {
@@ -276,19 +298,44 @@ export class BrowserProfileStore {
 		}
 	}
 
+	private addProfile(current: BrowserProfileRegistry, name: string): BrowserProfile {
+		if (current.profiles.length >= BROWSER_PROFILE_MAX_COUNT) {
+			throw new BrowserProfileStoreError("BROWSER_PROFILE_LIMIT", "The browser profile limit has been reached.");
+		}
+		if (current.profiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase())) {
+			throw new BrowserProfileStoreError("BROWSER_PROFILE_NAME_TAKEN", "A browser profile with that name already exists.");
+		}
+		const now = this.now().toISOString();
+		const profile: BrowserProfile = { id: randomUUID(), name, createdAt: now, updatedAt: now };
+		current.profiles.push(profile);
+		return profile;
+	}
+
 	async createProfile(rawName: unknown): Promise<BrowserProfile> {
 		const name = normalizeBrowserProfileName(rawName);
 		if (!name) throw new BrowserProfileStoreError("INVALID_ARGUMENT", "Profile name is invalid.");
 		return this.enqueueMutation((current) => {
-			if (current.profiles.length >= BROWSER_PROFILE_MAX_COUNT) {
-				throw new BrowserProfileStoreError("BROWSER_PROFILE_LIMIT", "The browser profile limit has been reached.");
-			}
-			if (current.profiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase())) {
-				throw new BrowserProfileStoreError("BROWSER_PROFILE_NAME_TAKEN", "A browser profile with that name already exists.");
-			}
-			const now = this.now().toISOString();
-			const profile: BrowserProfile = { id: randomUUID(), name, createdAt: now, updatedAt: now };
-			current.profiles.push(profile);
+			const profile = this.addProfile(current, name);
+			return { registry: current, result: { ...profile } };
+		});
+	}
+
+	/**
+	 * Without a persistent profile every worker starts in its own Temporary
+	 * cookie jar, so a sign-in in one session is gone in the next. Create one
+	 * shared Default profile and make it the default, in a single write, when
+	 * the registry qualifies (see needsSeededDefaultProfile). Returns the new
+	 * profile, or null when the registry was left alone. A registry that failed
+	 * to load is never rewritten.
+	 */
+	async ensureDefaultProfile(): Promise<BrowserProfile | null> {
+		await this.load();
+		if (this.loadError || !needsSeededDefaultProfile(this.registry)) return null;
+		return this.enqueueMutation((current) => {
+			if (!needsSeededDefaultProfile(current)) return { registry: current, result: null };
+			const profile = this.addProfile(current, DEFAULT_BROWSER_PROFILE_NAME);
+			current.defaultProfileId = profile.id;
+			current.defaultProfileSeeded = true;
 			return { registry: current, result: { ...profile } };
 		});
 	}
@@ -435,5 +482,10 @@ export class BrowserProfileStore {
 export async function createBrowserProfileStore(options: BrowserProfileStoreOptions): Promise<BrowserProfileStore> {
 	const store = new BrowserProfileStore(options);
 	await store.load();
+	// Seed before any worker or the Settings list reads the registry. A failed
+	// write only leaves workers in Temporary, so it must not block startup.
+	await store.ensureDefaultProfile().catch((error: unknown) => {
+		console.warn("default browser profile setup failed:", error);
+	});
 	return store;
 }

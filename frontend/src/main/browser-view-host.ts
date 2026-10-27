@@ -11,6 +11,8 @@ import type {
 } from "electron";
 import { nativeImage } from "electron";
 import { randomUUID } from "node:crypto";
+import { readdir, rm } from "node:fs/promises";
+import path from "node:path";
 import type { BrowserCloseFailure } from "./browser-close-diagnostics";
 import type {
   BrowserAnnotationCancelPayload,
@@ -502,6 +504,8 @@ export type BrowserViewHostOptions = {
   browserHistoryStore?: BrowserHistoryStore;
   browserDownloadManager?: BrowserDownloadManager;
   clearBrowserProfileData?: (partition: string) => Promise<void>;
+  // Electron's `<userData>/Partitions`, swept by removeStaleTemporaryPartitions.
+  partitionsDirectory?: string;
   // Electron 44 removed clipboard.writeImage; main.ts adapts the async
   // ClipboardItem API to this narrow image-only writer.
   clipboard?: { writeImage(image: Electron.NativeImage): void | Promise<void> };
@@ -548,6 +552,9 @@ export type BrowserViewHost = {
   detachProfile: (profileId: BrowserProfileId) => Promise<void>;
   isProfileLive: (profileId: BrowserProfileId) => boolean;
   clearProfileData: (profileId: BrowserProfileId) => Promise<void>;
+  // Delete temporary partition directories an earlier run left behind (crash,
+  // force quit) and resolve to how many were removed.
+  removeStaleTemporaryPartitions: () => Promise<number>;
   // Whether browser-owned UI was the most recently used application surface.
   isLastUsedBrowser: () => boolean;
   // Refresh the live page after raising the transparent shell for an overlay.
@@ -819,8 +826,20 @@ const PROFILE_SWITCH_SETTLE_MS = 10_000;
 // as the renderer's showPreview matches them.
 const REMOTE_PREVIEW_URL = /^https:\/\/ao-preview-[0-9a-f]{32}\.localhost(?::\d+)?\//;
 
+// Electron stores `persist:<name>` in `<userData>/Partitions/<name>`. Only a
+// directory named exactly like one temporaryBrowserPartition() creates is
+// ever swept.
+const TEMPORARY_BROWSER_PARTITION_DIRECTORY =
+  /^ao-browser-temporary-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Electron keeps a Session, and its open files, for every partition this
+// process has used, even after AO clears an ended worker's partition. The
+// sweep spares all of them, not just the ones live browsers still hold.
+const temporaryPartitionsOpenedThisProcess = new Set<string>();
+
 function temporaryBrowserPartition(): string {
-  return `${TEMPORARY_BROWSER_PARTITION_PREFIX}${randomUUID()}`;
+  const partition = `${TEMPORARY_BROWSER_PARTITION_PREFIX}${randomUUID()}`;
+  temporaryPartitionsOpenedThisProcess.add(partition);
+  return partition;
 }
 
 function isTemporaryBrowserPartition(partition: string): boolean {
@@ -958,8 +977,9 @@ export function createBrowserViewHost(
   // Workers whose human explicitly picked the temporary profile this run.
   const explicitTemporarySessionIds = new Set<string>();
 
-  // A worker without a durable binding starts in the first configured profile;
-  // temporary is used only when no profile exists or the human picked it.
+  // A worker without a durable binding starts in the default profile (the
+  // store seeds a shared Default on first run); temporary is used only when no
+  // default is set or the human picked it.
   const initialProfileIdForSession = (
     sessionId: string,
   ): BrowserProfileId | null => {
@@ -2994,6 +3014,39 @@ export function createBrowserViewHost(
     return cleanup;
   };
 
+  // clearTemporaryPartition only runs when a browser session ends cleanly, and
+  // even then Electron leaves the emptied directory behind. No earlier run's
+  // partition is reopened (each worker gets a fresh UUID), so any directory
+  // this process has not opened is garbage.
+  const removeStaleTemporaryPartitions = async (): Promise<number> => {
+    const directory = options.partitionsDirectory;
+    if (!directory || !path.isAbsolute(directory)) return 0;
+    let names: string[];
+    try {
+      names = (await readdir(directory, { withFileTypes: true }))
+        .filter(
+          (entry) =>
+            entry.isDirectory() &&
+            TEMPORARY_BROWSER_PARTITION_DIRECTORY.test(entry.name),
+        )
+        .map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let removed = 0;
+    for (const name of names) {
+      if (temporaryPartitionsOpenedThisProcess.has(`persist:${name}`)) continue;
+      try {
+        await rm(path.join(directory, name), { recursive: true, force: true });
+        removed += 1;
+      } catch (error) {
+        console.warn("stale temporary browser partition cleanup failed:", error);
+      }
+    }
+    return removed;
+  };
+
   const destroy = (viewId: string): void => {
     const session = entries.get(viewId);
     if (!session) return;
@@ -5013,6 +5066,7 @@ export function createBrowserViewHost(
     detachProfile,
     isProfileLive,
     clearProfileData,
+    removeStaleTemporaryPartitions,
     isLastUsedBrowser: () =>
       lastUsedViewId !== null && entries.has(lastUsedViewId),
     // Reordering the transparent shell above a live page can leave either

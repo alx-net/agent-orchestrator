@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { net } from "electron";
 import {
 	type BrowserNavState,
@@ -14,7 +18,7 @@ import {
 	shouldHandleAppShortcutInBrowserContext,
 } from "./browser-view-host";
 import { browserProfilePartition, type BrowserProfile } from "../shared/browser-profiles";
-import type { BrowserProfileStore } from "./browser-profile-store";
+import { BrowserProfileStore, createBrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import {
 	CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL,
@@ -1206,7 +1210,7 @@ function setupTabHost(
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
 	clearBrowserProfileData = vi.fn(async (_partition: string) => undefined),
-	overrides?: { entryReadyTimeoutMs?: number },
+	overrides?: { entryReadyTimeoutMs?: number; partitionsDirectory?: string },
 ) {
 	const constructorOptions: Array<{
 		webPreferences: Electron.WebPreferences;
@@ -1435,6 +1439,7 @@ function setupTabHost(
 		browserHistoryStore,
 		clearBrowserProfileData,
 		entryReadyTimeoutMs: overrides?.entryReadyTimeoutMs,
+		partitionsDirectory: overrides?.partitionsDirectory,
 		onNativeViewAdded,
 		onTabCloseFailure,
 		// Kept only as a regression tripwire: the removed auto-send path used
@@ -3480,6 +3485,94 @@ describe("browser profile partitions and replacement", () => {
 		release();
 		await command;
 		await expect(switching).resolves.toMatchObject({ profileId: null, temporary: true });
+	});
+});
+
+describe("shared Default browser profile and stale temporary partitions", () => {
+	const tempDirectories: string[] = [];
+	const makeTempDir = async (): Promise<string> => {
+		const directory = await mkdtemp(path.join(os.tmpdir(), "ao-browser-host-"));
+		tempDirectories.push(directory);
+		return directory;
+	};
+
+	afterEach(async () => {
+		await Promise.all(tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+	});
+
+	it("starts every unbound worker in the seeded Default profile so a sign-in carries across sessions", async () => {
+		const store = await createBrowserProfileStore({ stateDir: await makeTempDir() });
+		const defaultProfileId = store.getDefaultProfileId()!;
+		const { constructorOptions, host, invoke } = setupTabHost(store);
+		const first = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const second = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+
+		for (const nav of [first, second]) {
+			expect(host.getProfileState(nav.viewId)).toEqual({
+				viewId: nav.viewId,
+				profileId: defaultProfileId,
+				profileName: "Default",
+				temporary: false,
+			});
+		}
+		expect(constructorOptions.map(({ webPreferences }) => webPreferences.partition)).toEqual([
+			browserProfilePartition(defaultProfileId),
+			browserProfilePartition(defaultProfileId),
+		]);
+	});
+
+	it("keeps a worker that explicitly chose Temporary out of the seeded Default profile", async () => {
+		const stateDir = await makeTempDir();
+		await new BrowserProfileStore({ stateDir }).bindSession("worker-1", null);
+		const store = await createBrowserProfileStore({ stateDir });
+		const { constructorOptions, host, invoke } = setupTabHost(store);
+		const temporary = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const shared = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+
+		expect(host.getProfileState(temporary.viewId)).toMatchObject({ profileId: null, temporary: true });
+		expect(constructorOptions[0]!.webPreferences.partition).toMatch(/^persist:ao-browser-temporary-/);
+		expect(host.getProfileState(shared.viewId)).toMatchObject({
+			profileId: store.getDefaultProfileId(),
+			profileName: "Default",
+			temporary: false,
+		});
+	});
+
+	it("leaves a user-chosen default profile in charge without adding Default", async () => {
+		const stateDir = await makeTempDir();
+		const existing = new BrowserProfileStore({ stateDir });
+		const work = await existing.createProfile("Work");
+		await existing.setDefaultProfileId(work.id);
+		const store = await createBrowserProfileStore({ stateDir });
+		const { host, invoke } = setupTabHost(store);
+		const nav = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+
+		expect(store.profiles.map((profile) => profile.name)).toEqual(["Work"]);
+		expect(host.getProfileState(nav.viewId)).toMatchObject({ profileId: work.id, profileName: "Work", temporary: false });
+	});
+
+	it("removes leftover temporary partitions while keeping the ones this run opened and every other partition", async () => {
+		const partitionsDirectory = await makeTempDir();
+		const { constructorOptions, host, invoke } = setupTabHost(undefined, false, undefined, undefined, undefined, {
+			partitionsDirectory,
+		});
+		await invoke("browser:ensure", "worker-1");
+		const ended = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+		host.destroy(ended.viewId);
+		const [live, endedThisRun] = constructorOptions.map(({ webPreferences }) =>
+			webPreferences.partition!.slice("persist:".length),
+		);
+		const stale = [`ao-browser-temporary-${randomUUID()}`, `ao-browser-temporary-${randomUUID()}`];
+		const kept = [live!, endedThisRun!, `ao-browser-profile-${randomUUID()}`, "ao-browser-temporary-not-a-uuid"];
+		for (const name of [...stale, ...kept]) {
+			await mkdir(path.join(partitionsDirectory, name, "Local Storage"), { recursive: true });
+		}
+		// Only directories are partitions; a same-named file is not touched.
+		const strayFile = `ao-browser-temporary-${randomUUID()}`;
+		await writeFile(path.join(partitionsDirectory, strayFile), "");
+
+		await expect(host.removeStaleTemporaryPartitions()).resolves.toBe(2);
+		expect((await readdir(partitionsDirectory)).sort()).toEqual([...kept, strayFile].sort());
 	});
 });
 
