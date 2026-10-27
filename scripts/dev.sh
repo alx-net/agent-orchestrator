@@ -270,7 +270,8 @@ cmd_sync() {
 }
 
 cmd_help() {
-  cat <<EOF
+  # Quoted: the text names commands in backticks, which must never run.
+  cat <<'EOF'
 usage: scripts/dev.sh <command>
 
   setup       check Go/Node, install deps only when lockfiles changed
@@ -280,7 +281,7 @@ usage: scripts/dev.sh <command>
   check       fast gate: go build, vet+test changed Go pkgs, typecheck, related vitest
   check-all   full lint + test suites (CI equivalent, slower)
   install     package this checkout and install it into /Applications
-  update [ref] build origin/<ref> (default main) in ~/.ao/build-src and install it
+  update [ref] build origin/<ref> in ~/.ao/build-src and install it (default: the last ref, else main)
   link-updater put `ao-app-update` on PATH
   setup-signing one-time local code-signing identity (stops keychain prompts after updates)
   cli         build the ao CLI from source and link it onto PATH
