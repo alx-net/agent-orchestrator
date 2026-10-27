@@ -83,7 +83,7 @@ import { HumanMessageEditor } from "./HumanMessageEditor";
 import { RenderFrame } from "./RenderFrame";
 import { ConversationBranchNavigator } from "./ConversationBranchNavigator";
 import { ConversationContentItems } from "./ConversationContentItems";
-import { UsageLimitNotice } from "./UsageLimitNotice";
+import { UsageLimitNotice, usageLimitSwitchCopy } from "./UsageLimitNotice";
 import {
 	ACTIVITY_SUMMARY_BUTTON_CLASS,
 	commandBinaryLabel,
@@ -1124,6 +1124,7 @@ export function ActivityRow({ activity }: { activity: ConversationActivity }) {
 	else if (activity.detail?.event === "workspace.script.run" && activity.detail.scriptRun) content = <ScriptRunPanel collapsible run={activity.detail.scriptRun} />;
 	else if (activity.detail?.event === "workspace.setup") content = <ProjectSetupRow activity={activity} />;
 	else if (activity.detail?.event === "account.switched") content = <AccountSwitchedRow accountId={activity.detail.accountId} />;
+	else if (activity.detail?.event === "account.limit_switch" && activity.detail.phase) content = <UsageLimitSwitchRow detail={activity.detail} />;
 	else if (renderRef) content = <RenderFrame render={renderRef} />;
 	else if (artifactRef) content = <RenderFrame artifact={artifactRef} />;
 	else content = <GenericActivityRow activity={activity} />;
@@ -2546,6 +2547,25 @@ function AccountSwitchedRow({ accountId }: { accountId?: string }) {
 	const { t } = useTranslation();
 	const label = useAgentAccountLabel();
 	return <TwoRowTimelineMarker message={t("chat.accountSwitched", { email: label(accountId) })} detail={t("chat.accountSwitchedDetail")} wrapDetail />;
+}
+
+/** Where AO moved a turn its account's usage limit refused: switching, then
+ * the account it continued on, and any MCP servers missing there. */
+function UsageLimitSwitchRow({ detail }: { detail: NonNullable<ConversationActivity["detail"]> }) {
+	const { t } = useTranslation();
+	const label = useAgentAccountLabel();
+	const copy = usageLimitSwitchCopy({
+		phase: detail.phase ?? "switching", accountId: detail.accountId, fromAccountId: detail.fromAccountId,
+		error: detail.error, mcpNeedsAuth: detail.mcpNeedsAuth,
+	}, label, t);
+	return (
+		<TwoRowTimelineMarker
+			message={copy.message}
+			detail={copy.detail}
+			tone={detail.phase === "failed" ? "text-destructive" : undefined}
+			wrapDetail
+		/>
+	);
 }
 
 function ReauthRow({ activity }: { activity: ConversationActivity }) {

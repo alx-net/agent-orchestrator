@@ -18,7 +18,7 @@ import { SettingsSection } from "./SettingsSection";
 import { ThemePaletteSwatch } from "./ThemePaletteSwatch";
 import { Switch } from "../ui/switch";
 import { cn } from "../../lib/utils";
-import { useSettings, useUpdateCloudOffering, useUpdateSessionInterface, useUpdateVersionRefresh } from "../../hooks/useSettings";
+import { useSettings, useUpdateAccountAutoSwitch, useUpdateCloudOffering, useUpdateSessionInterface, useUpdateVersionRefresh } from "../../hooks/useSettings";
 import type { SessionMode } from "../../types/workspace";
 import type { TerminalShellKind } from "../../../shared/ui-locale";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/platform";
@@ -75,6 +75,34 @@ function VersionRefreshRow() {
 				<Switch
 					aria-label={t("settings.versionRefresh.label")}
 					checked={settings?.versionRefresh ?? false}
+					disabled={isLoading || saving || !settings}
+					onCheckedChange={update}
+				/>
+			</SettingsRow>
+			{error ? (
+				<p role="alert" className="px-3 pb-2 text-caption leading-4 text-error">
+					{error}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
+/**
+ * A chat that reaches its account's usage limit moves to another signed-in
+ * account with usage left and runs its turn again there. Daemon-owned: the
+ * daemon does the moving.
+ */
+function AccountAutoSwitchRow() {
+	const { t } = useTranslation();
+	const { settings, isLoading } = useSettings();
+	const { update, saving, error } = useUpdateAccountAutoSwitch();
+	return (
+		<div className="flex w-full flex-col">
+			<SettingsRow className="rounded-none" label={t("settings.accountAutoSwitch.label")} description={t("settings.accountAutoSwitch.description")}>
+				<Switch
+					aria-label={t("settings.accountAutoSwitch.label")}
+					checked={settings?.accountAutoSwitch ?? false}
 					disabled={isLoading || saving || !settings}
 					onCheckedChange={update}
 				/>
@@ -259,6 +287,7 @@ export function GeneralSettingsSection({
 			<SettingsSection title={t("settings.sessions")} grouped>
 				<SessionInterfaceRow />
 				<VersionRefreshRow />
+				<AccountAutoSwitchRow />
 				{isWindowsPlatform() ? <TerminalShellRows /> : null}
 				<SettingsRow label={t("settings.terminalCopyOnSelect")}>
 					<Switch

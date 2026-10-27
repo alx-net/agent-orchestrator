@@ -1,5 +1,8 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { agentAccountsQueryKey } from "../../hooks/useAgentAccounts";
+import type { UsageLimitSwitch } from "../../types/conversation";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 
 const now = new Date("2026-10-14T15:00:00Z");
@@ -175,5 +178,41 @@ describe("UsageLimitNotice", () => {
 		fireEvent.focus(window);
 
 		expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+	});
+
+	describe("after AO moved the turn to another account", () => {
+		function renderSwitched(accountSwitch: UsageLimitSwitch, onResume = vi.fn(), onAutoResumeChange = vi.fn()) {
+			const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+			queryClient.setQueryData(agentAccountsQueryKey, [
+				{ id: "device-claude", provider: "claude", device: true, default: true, signedIn: true, email: "alex.seeverlp@gmail.com" },
+				{ id: "seever", provider: "claude", device: false, default: false, signedIn: true, email: "alex.seeverlp@gmail.com" },
+				{ id: "kugel", provider: "claude", device: false, default: false, signedIn: true, email: "alex@kugelaudio.com" },
+			]);
+			render(
+				<QueryClientProvider client={queryClient}>
+					<UsageLimitNotice usageLimit={{ resetsAt, autoResume: false }} onResume={onResume} onAutoResumeChange={onAutoResumeChange} accountSwitch={accountSwitch} />
+				</QueryClientProvider>,
+			);
+		}
+
+		it("offers Resume at once on the new account, without waiting for the reset", () => {
+			const onResume = vi.fn();
+			renderSwitched({ phase: "switched", accountId: "kugel", fromAccountId: "device-claude" }, onResume);
+
+			expect(screen.getByTestId("usage-limit-account-switch")).toHaveTextContent(
+				"Switched to alex@kugelaudio.com alex.seeverlp@gmail.com · This computer reached its usage limit.",
+			);
+			expect(screen.queryByRole("button", { name: "Auto-resume at reset" })).not.toBeInTheDocument();
+			fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+			expect(onResume).toHaveBeenCalledOnce();
+		});
+
+		it("names a restart on the same account, which picks up its current sign-in", () => {
+			renderSwitched({ phase: "switching", accountId: "kugel", fromAccountId: "kugel" });
+
+			expect(screen.getByTestId("usage-limit-account-switch")).toHaveTextContent("Restarting on alex@kugelaudio.com…");
+			expect(screen.queryByRole("button")).not.toBeInTheDocument();
+			expect(screen.getByTestId("usage-limit-notice")).toHaveAttribute("aria-busy", "true");
+		});
 	});
 });

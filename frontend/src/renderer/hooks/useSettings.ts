@@ -37,6 +37,8 @@ export interface Settings {
 	trackerIntakeEnabled: boolean;
 	/** Idle open sessions move to a harness release installed while they ran. */
 	versionRefresh?: boolean;
+	/** A chat that reaches its account's usage limit moves to another account with usage left. */
+	accountAutoSwitch?: boolean;
 }
 
 export function useSettings(hostId?: string, enabled = true) {
@@ -67,6 +69,8 @@ export function useSettings(hostId?: string, enabled = true) {
 				trackerIntakeEnabled: data?.trackerIntakeEnabled ?? false,
 				// A daemon that predates the setting never moves sessions.
 				versionRefresh: data?.versionRefresh ?? false,
+				// A daemon that predates the setting never switches accounts.
+				accountAutoSwitch: data?.accountAutoSwitch ?? false,
 			};
 		},
 	});
@@ -140,6 +144,27 @@ export function useUpdateHarnessDefault(hostId?: string) {
 		},
 	});
 	return { update: mutation.mutateAsync, error: mutation.error ? apiErrorMessage(mutation.error) : undefined };
+}
+
+export function useUpdateAccountAutoSwitch() {
+	const queryClient = useQueryClient();
+	const mutation = useMutation({
+		mutationFn: async (enabled: boolean) => {
+			const { data, error } = await apiClient.PATCH("/api/v1/settings/account-auto-switch", {
+				body: { enabled },
+			});
+			if (error) throw error;
+			return data;
+		},
+		// The daemon is the source of truth; refetch what it persisted.
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsQueryKey }),
+	});
+
+	return {
+		update: (enabled: boolean) => mutation.mutate(enabled),
+		saving: mutation.isPending,
+		error: mutation.error ? apiErrorMessage(mutation.error) : undefined,
+	};
 }
 
 export function useUpdateVersionRefresh() {

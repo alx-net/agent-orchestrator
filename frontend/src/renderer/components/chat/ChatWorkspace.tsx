@@ -193,6 +193,7 @@ import {
 	type ConversationUsageLimit,
 	type TurnDiff,
 	type TurnSettings,
+	type UsageLimitSwitch,
 } from "../../types/conversation";
 
 const EMPTY_CHAT_PLACEHOLDERS = [
@@ -829,6 +830,7 @@ function ChatWorkspaceContent({
 		!snapshot.turns.some((entry) => entry.retryOfTurnId === latestSettledTurn.id) &&
 		latestSettledTurn.hasHumanPrompt
 		? latestSettledTurn : undefined;
+	const limitedTurnSwitch = limitedTurn ? usageLimitSwitchOf(snapshot.items, limitedTurn.id) : undefined;
 	// The primary Chat view wakes a sleeping provider in the background. Its
 	// marker clears before the new controller is ready, so an intermediate
 	// "stopped" snapshot is still part of that wake, not a crashed agent.
@@ -2041,6 +2043,7 @@ function ChatWorkspaceContent({
 									<UsageLimitNotice
 										key={limitedTurn.id}
 										usageLimit={limitedTurn.usageLimit}
+										accountSwitch={limitedTurnSwitch}
 										onResume={() => { void Promise.resolve(retryControl.retry(limitedTurn.id)).catch(() => undefined); }}
 										onAutoResumeChange={retryControl.setAutoResume
 											? (enabled) => { void Promise.resolve(retryControl.setAutoResume?.(limitedTurn.id, enabled)).catch(() => undefined); }
@@ -4865,6 +4868,15 @@ const TurnGroup = memo(function TurnGroup({
 	);
 });
 
+/** The latest move AO made on a usage-limited turn, from its account.limit_switch row. */
+function usageLimitSwitchOf(items: ConversationItem[], turnId: string): UsageLimitSwitch | undefined {
+	const row = items.findLast((item): item is ConversationActivity =>
+		item.kind === "activity" && item.turnId === turnId && item.detail?.event === "account.limit_switch");
+	const detail = row?.detail;
+	if (!detail?.phase) return undefined;
+	return { phase: detail.phase, accountId: detail.accountId, fromAccountId: detail.fromAccountId, error: detail.error, mcpNeedsAuth: detail.mcpNeedsAuth };
+}
+
 function TurnLiveStatus({
 	blocked,
 	providerFailure,
@@ -5474,7 +5486,11 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 			);
 		if (turn.state === "running" || turn.state === "queued" || turn.state === "cancelled") continue;
 		group.rollbackable = Boolean(turn.providerTurnId);
-		group.accountSwitched = group.items.some((item) => item.kind === "activity" && item.detail?.event === "account.switched");
+		// A move after a usage limit stands in for the turn's outcome, unless it failed
+		// and the turn waits for the reset as before.
+		group.accountSwitched = group.items.some((item) => item.kind === "activity" &&
+			(item.detail?.event === "account.switched" ||
+				(item.detail?.event === "account.limit_switch" && Boolean(item.detail.phase) && item.detail.phase !== "failed")));
 		group.outcome = {
 			state: turn.state,
 			usageLimit: turn.usageLimit,

@@ -1,7 +1,7 @@
 import { LoaderCircle, Plus, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { agentAccountName, agentAccountProviderNames, useAgentAccountActions, useAgentAccounts, useAgentAccountUsage, type AgentAccount, type AgentAccountLimitWindow, type AgentAccountLogin, type AgentAccountProvider } from "../../hooks/useAgentAccounts";
+import { agentAccountName, agentAccountOptionName, agentAccountProviderNames, useAgentAccountActions, useAgentAccounts, useAgentAccountUsage, type AgentAccount, type AgentAccountLimitWindow, type AgentAccountLogin, type AgentAccountProvider } from "../../hooks/useAgentAccounts";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
 import { useShellMaybe } from "../../lib/shell-context";
 import { useResolvedTheme } from "../../stores/ui-store";
@@ -104,6 +104,7 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 			{accounts.isLoading ? <p className="px-3 py-2.5 text-xs text-muted-foreground">{t("settings.agentAccounts.loading")}</p> : null}
 			{rows.map((account) => <AccountRow
 				key={account.id}
+				name={agentAccountOptionName(account, rows, t)}
 				account={account}
 				aoTokens={tokensByAccount.get(account.id)}
 				busy={busy}
@@ -126,8 +127,10 @@ export function AgentAccountsPanel({ provider, cliLogin }: { provider: AgentAcco
 	</>;
 }
 
-function AccountRow({ account, aoTokens, busy, cliLogin, onMakeDefault, onUseReset, onSignInAgain, onRemove }: {
+function AccountRow({ account, name, aoTokens, busy, cliLogin, onMakeDefault, onUseReset, onSignInAgain, onRemove }: {
 	account: AgentAccount;
+	/** The account's name, marked when another account shares its email. */
+	name: string;
 	aoTokens: number | undefined;
 	busy: string | null;
 	/** Only on the CLI's own login, which has no folder of its own to remove. */
@@ -148,7 +151,7 @@ function AccountRow({ account, aoTokens, busy, cliLogin, onMakeDefault, onUseRes
 	return <div className="px-3 py-2.5" data-agent-account={account.id}>
 		<div className="flex items-start justify-between gap-3">
 			<div className="min-w-0">
-				<p className="truncate text-sm font-medium text-foreground">{agentAccountName(account, t)}</p>
+				<p className="truncate text-sm font-medium text-foreground">{name}</p>
 				<p className="mt-0.5 truncate text-xs text-muted-foreground">{meta}</p>
 			</div>
 			<div className="flex shrink-0 items-center gap-2">
@@ -167,6 +170,7 @@ function AccountRow({ account, aoTokens, busy, cliLogin, onMakeDefault, onUseRes
 			</div>
 		</div>
 		{account.problem ? <p className="mt-2 text-xs text-warning">{account.problem}</p> : null}
+		{account.mcpNeedsAuth?.length ? <p className="mt-2 text-xs text-muted-foreground">{t("settings.agentAccounts.mcpNeedsAuth", { servers: account.mcpNeedsAuth.join(", ") })}</p> : null}
 		<AccountLimits account={account} />
 	</div>;
 }
