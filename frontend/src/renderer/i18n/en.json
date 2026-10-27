@@ -1458,7 +1458,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "Browser",
 	"settings.downloads": "Downloads",
-	"settings.browserProfiles.description": "Temporary is isolated per worker and discarded. Named profiles retain sign-ins and site state and are shared only by workers you explicitly bind to the same profile.",
+	"settings.browserProfiles.description": "Workers use the default profile, so signing in once works in every worker. Temporary is isolated per worker and discarded. Other named profiles are shared only by workers you bind to them.",
 	"settings.browserProfiles.profiles": "Profiles",
 	"settings.browserProfiles.create": "Create profile",
 	"settings.browserProfiles.name": "Profile name",

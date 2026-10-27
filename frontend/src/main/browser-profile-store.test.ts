@@ -172,7 +172,7 @@ describe("BrowserProfileStore", () => {
 		const stateDir = await makeStateDir();
 		const store = await createBrowserProfileStore({ stateDir });
 
-		expect(store.profiles.map((profile) => profile.name)).toEqual(["Default"]);
+		expect(store.profiles.map((profile) => profile.name)).toEqual(["Shared"]);
 		const seeded = store.profiles[0]!;
 		expect(store.getDefaultProfileId()).toBe(seeded.id);
 		// Concurrent and repeated calls do not add a second profile.

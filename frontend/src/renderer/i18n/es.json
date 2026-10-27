@@ -2447,7 +2447,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "Navegador",
 	"settings.downloads": "Descargas",
-	"settings.browserProfiles.description": "El perfil temporal está aislado por trabajador y se descarta. Los perfiles con nombre conservan los inicios de sesión y el estado de los sitios, y solo se comparten entre trabajadores vinculados explícitamente al mismo perfil.",
+	"settings.browserProfiles.description": "Los trabajadores usan el perfil predeterminado, así que un inicio de sesión sirve para todos. El perfil temporal está aislado por trabajador y se descarta. Los demás perfiles con nombre solo se comparten entre trabajadores vinculados explícitamente a ellos.",
 	"settings.browserProfiles.profiles": "Perfiles",
 	"settings.browserProfiles.create": "Crear perfil",
 	"settings.browserProfiles.name": "Nombre del perfil",

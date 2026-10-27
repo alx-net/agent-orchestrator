@@ -2404,7 +2404,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "ブラウザ",
 	"settings.downloads": "ダウンロード",
-	"settings.browserProfiles.description": "一時プロファイルはワーカーごとに分離され、破棄されます。名前付きプロファイルはログイン情報とサイト状態を保持し、同じプロファイルに明示的にバインドしたワーカーだけが共有します。",
+	"settings.browserProfiles.description": "ワーカーは既定のプロファイルを使うため、一度ログインすればすべてのワーカーで有効です。一時プロファイルはワーカーごとに分離され、破棄されます。その他の名前付きプロファイルは、明示的にバインドしたワーカーだけが共有します。",
 	"settings.browserProfiles.profiles": "プロファイル",
 	"settings.browserProfiles.create": "プロファイルを作成",
 	"settings.browserProfiles.name": "プロファイル名",

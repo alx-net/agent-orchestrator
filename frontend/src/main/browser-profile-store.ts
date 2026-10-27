@@ -39,7 +39,8 @@ export type BrowserProfileStoreOptions = {
 
 type ProfileOperation<T> = () => Promise<T>;
 
-const DEFAULT_BROWSER_PROFILE_NAME = "Default";
+// Not "Default": Settings appends a "(Default)" badge to the default profile.
+const DEFAULT_BROWSER_PROFILE_NAME = "Shared";
 
 const DEFAULT_REGISTRY: BrowserProfileRegistry = {
 	version: BROWSER_PROFILE_REGISTRY_VERSION,

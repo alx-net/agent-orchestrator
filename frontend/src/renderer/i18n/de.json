@@ -2404,7 +2404,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "Browser",
 	"settings.downloads": "Downloads",
-	"settings.browserProfiles.description": "Das temporäre Profil ist pro Worker isoliert und wird verworfen. Benannte Profile behalten Anmeldungen und Website-Zustände und werden nur von Workern geteilt, die ausdrücklich an dasselbe Profil gebunden sind.",
+	"settings.browserProfiles.description": "Worker verwenden das Standardprofil, sodass eine Anmeldung in allen Workern gilt. Das temporäre Profil ist pro Worker isoliert und wird verworfen. Andere benannte Profile werden nur von Workern geteilt, die ausdrücklich an sie gebunden sind.",
 	"settings.browserProfiles.profiles": "Profile",
 	"settings.browserProfiles.create": "Profil erstellen",
 	"settings.browserProfiles.name": "Profilname",

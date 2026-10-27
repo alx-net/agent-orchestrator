@@ -2447,7 +2447,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "Navegador",
 	"settings.downloads": "Downloads",
-	"settings.browserProfiles.description": "O perfil temporário é isolado por trabalhador e descartado. Perfis nomeados mantêm logins e o estado dos sites, compartilhados apenas por trabalhadores explicitamente vinculados ao mesmo perfil.",
+	"settings.browserProfiles.description": "Os trabalhadores usam o perfil padrão, então um login vale para todos. O perfil temporário é isolado por trabalhador e descartado. Os demais perfis nomeados são compartilhados apenas por trabalhadores explicitamente vinculados a eles.",
 	"settings.browserProfiles.profiles": "Perfis",
 	"settings.browserProfiles.create": "Criar perfil",
 	"settings.browserProfiles.name": "Nome do perfil",

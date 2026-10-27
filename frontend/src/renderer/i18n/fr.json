@@ -2447,7 +2447,7 @@
 	"settings.developer": "Developer",
 	"settings.browserProfiles": "Navigateur",
 	"settings.downloads": "Téléchargements",
-	"settings.browserProfiles.description": "Le profil temporaire est isolé par worker et supprimé. Les profils nommés conservent les connexions et l’état des sites, et ne sont partagés qu’entre les workers explicitement liés au même profil.",
+	"settings.browserProfiles.description": "Les workers utilisent le profil par défaut : une seule connexion vaut pour tous. Le profil temporaire est isolé par worker et supprimé. Les autres profils nommés ne sont partagés qu’entre les workers explicitement liés à eux.",
 	"settings.browserProfiles.profiles": "Profils",
 	"settings.browserProfiles.create": "Créer un profil",
 	"settings.browserProfiles.name": "Nom du profil",

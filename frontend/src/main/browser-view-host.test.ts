@@ -3511,7 +3511,7 @@ describe("shared Default browser profile and stale temporary partitions", () => 
 			expect(host.getProfileState(nav.viewId)).toEqual({
 				viewId: nav.viewId,
 				profileId: defaultProfileId,
-				profileName: "Default",
+				profileName: "Shared",
 				temporary: false,
 			});
 		}
@@ -3533,7 +3533,7 @@ describe("shared Default browser profile and stale temporary partitions", () => 
 		expect(constructorOptions[0]!.webPreferences.partition).toMatch(/^persist:ao-browser-temporary-/);
 		expect(host.getProfileState(shared.viewId)).toMatchObject({
 			profileId: store.getDefaultProfileId(),
-			profileName: "Default",
+			profileName: "Shared",
 			temporary: false,
 		});
 	});
