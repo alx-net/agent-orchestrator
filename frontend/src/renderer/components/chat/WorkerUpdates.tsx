@@ -242,6 +242,29 @@ export function splitHeadline(body: string): { headline: string; detail: string 
 	return { headline: plain(sentence.replace(/[.;]$/, "")), detail: body };
 }
 
+// How an orchestrator signs what it sends, whatever its session is titled.
+const ORCHESTRATOR = "Orchestrator";
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The message without the sender naming itself first, as agents sign what they
+ * send: "kugelaudio-8: ready #5506", "Orchestrator, two things: …". Only a name
+ * followed by `:` or `,`, or by a "re <topic>" that stays, is taken off.
+ */
+export function stripSenderPrefix(text: string, senderNames: readonly (string | undefined)[]): string {
+	const names = [...new Set(senderNames.map((name) => name?.trim()).filter((name): name is string => Boolean(name)))];
+	if (names.length === 0) return text;
+	// The name may be bold, with its colon inside the bold or after it.
+	const signed = new RegExp(String.raw`^(\*\*|__)?(?:${names.map(escapeRegExp).join("|")})(?:\s*[:,]\1|\1\s*[:,]|\1(?=\s+re[\s:]))\s*`, "i");
+	const rest = text.trimStart().replace(signed, "");
+	return rest.trim() === "" ? text : rest;
+}
+
+/** The one line a collapsed agent message shows: its headline, unsigned. */
+export function agentMessageGist(body: string, senderNames: readonly (string | undefined)[]): string {
+	return splitHeadline(stripSenderPrefix(body.trim(), senderNames)).headline.replace(/^#{1,6}\s+/, "");
+}
+
 const sessionHref = (update: Pick<WorkerUpdate, "sessionId" | "projectId">) =>
 	update.sessionId && update.projectId
 		? `ao://sessions/${encodeURIComponent(update.projectId)}/${encodeURIComponent(update.sessionId)}`
@@ -291,6 +314,66 @@ function AgentProse({ text, muted, className }: { text: string; muted?: boolean;
 	return <ChatMarkdown text={text} muted={muted} safeOrigin remarkPlugins={references} className={className} />;
 }
 
+/**
+ * The fixed-height line another agent's message folds into: who sent it, an
+ * optional state, its headline and time, with a chevron for what opens beneath.
+ */
+function AgentRowLine({
+	provider,
+	name,
+	href,
+	state,
+	headline,
+	createdAt,
+	open,
+	onToggle,
+}: {
+	provider?: WorkspaceSession["provider"];
+	name: string;
+	href?: string;
+	state?: ReactNode;
+	headline: string;
+	createdAt: string;
+	open: boolean;
+	onToggle: () => void;
+}) {
+	const label = <span className="block truncate">{name}</span>;
+	return (
+		<div className="group -mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-interactive-hover">
+			{provider ? (
+				<AgentAvatar provider={provider} decorative className="size-4 shrink-0" />
+			) : (
+				<Bot aria-hidden="true" className="size-3.5 shrink-0" />
+			)}
+			{/* The sender opens its session, as the "[from …]" label on a worker message does; the rest of the row expands. */}
+			{href ? (
+				<SessionLabelLink
+					href={href}
+					className="max-w-[40%] shrink-0 font-medium text-foreground decoration-foreground/40 underline-offset-2 hover:underline"
+				>
+					{label}
+				</SessionLabelLink>
+			) : (
+				<span className="max-w-[40%] shrink-0 font-medium text-foreground">{label}</span>
+			)}
+			<button
+				type="button"
+				aria-expanded={open}
+				onClick={onToggle}
+				className="flex h-full min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+			>
+				{state}
+				<span className="min-w-0 flex-1 truncate transition-colors group-hover:text-foreground">{headline}</span>
+				<span className="shrink-0 tabular-nums">{formatTime(createdAt)}</span>
+				<ChevronRight
+					aria-hidden="true"
+					className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")}
+				/>
+			</button>
+		</div>
+	);
+}
+
 function WorkerUpdateRow({ update }: { update: WorkerUpdate }) {
 	const [open, setOpen] = useState(false);
 	const session = useWorkerSession(update.sessionId, update.projectId);
@@ -301,43 +384,18 @@ function WorkerUpdateRow({ update }: { update: WorkerUpdate }) {
 	const attention = state?.attention && isCurrent(index, update);
 	// An older message names its sender only by session id; the session supplies its project and title.
 	const href = sessionHref({ sessionId: update.sessionId, projectId: update.projectId ?? session?.workspaceId });
-	const name = <span className="block truncate">{update.name === update.sessionId ? session?.title || update.name : update.name}</span>;
 	return (
 		<div className="min-w-0 text-xs" data-testid="worker-update">
-			<div className="group -mx-1.5 flex h-7 w-[calc(100%+0.75rem)] min-w-0 items-center gap-2 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-interactive-hover">
-				{session?.provider ? (
-					<AgentAvatar provider={session.provider} decorative className="size-4 shrink-0" />
-				) : (
-					<Bot aria-hidden="true" className="size-3.5 shrink-0" />
-				)}
-				{/* The sender opens its session, as the "[from …]" label on a worker message does; the rest of the row expands. */}
-				{href ? (
-					<SessionLabelLink
-						href={href}
-						className="max-w-[40%] shrink-0 font-medium text-foreground decoration-foreground/40 underline-offset-2 hover:underline"
-					>
-						{name}
-					</SessionLabelLink>
-				) : (
-					<span className="max-w-[40%] shrink-0 font-medium text-foreground">{name}</span>
-				)}
-				<button
-					type="button"
-					aria-expanded={open}
-					onClick={() => setOpen((current) => !current)}
-					className="flex h-full min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-				>
-					{state ? (
-						<span className={cn("shrink-0", attention && "font-medium text-status-needs-you")}>{state.label}</span>
-					) : null}
-					<span className="min-w-0 flex-1 truncate transition-colors group-hover:text-foreground">{headline}</span>
-					<span className="shrink-0 tabular-nums">{formatTime(update.createdAt)}</span>
-					<ChevronRight
-						aria-hidden="true"
-						className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")}
-					/>
-				</button>
-			</div>
+			<AgentRowLine
+				provider={session?.provider}
+				name={update.name === update.sessionId ? session?.title || update.name : update.name}
+				href={href}
+				state={state ? <span className={cn("shrink-0", attention && "font-medium text-status-needs-you")}>{state.label}</span> : null}
+				headline={headline}
+				createdAt={update.createdAt}
+				open={open}
+				onToggle={() => setOpen((current) => !current)}
+			/>
 			{artifacts.map((path) => (
 				<p key={path} className="ml-6 flex h-6 min-w-0 items-center gap-1.5 text-muted-foreground">
 					<FileText aria-hidden="true" className="size-3.5 shrink-0" />
@@ -374,36 +432,40 @@ export function WorkerUpdateRows({ updates }: { updates: readonly WorkerUpdate[]
 
 /**
  * In a worker's chat, a message another agent sent it (its orchestrator, or a
- * sibling worker), drawn the way the orchestrator chat draws a worker: avatar,
- * linked name and time, with what it sent open beneath at the row's indent.
- * Any other message draws as `children`.
+ * sibling worker), folded into one row the way the orchestrator chat draws a
+ * worker: avatar, the sender's short name, the message's gist and time. Agents
+ * coordinate in long, dense prose the user rarely needs, so the row keeps the
+ * chat the user's; it opens to the full message at the row's indent. Any other
+ * message draws as `children`.
  */
 export function FromAgent({ item, children }: { item: ConversationItem; children: ReactNode }) {
 	const { t } = useTranslation();
+	const [open, setOpen] = useState(false);
 	const updates = workerUpdatesOf(item);
 	const update = updates.length === 1 && !updates[0]!.state ? updates[0] : undefined;
 	const session = useWorkerSession(update?.sessionId, update?.projectId);
-	if (!update || !session) return <>{children}</>;
-	const name = session.kind === "orchestrator" ? t("shell.orchestrator") : session.title || update.name;
-	const href = sessionHref({ sessionId: update.sessionId, projectId: update.projectId ?? session.workspaceId });
+	if (!update) return <>{children}</>;
+	// Agents name each other by session id in what they send; the link's card shows the task.
+	const name = session?.kind === "orchestrator" ? t("shell.orchestrator") : update.sessionId ?? update.name;
+	const href = sessionHref({ sessionId: update.sessionId, projectId: update.projectId ?? session?.workspaceId });
+	// An orchestrator that was replaced is no longer listed, so its signature is taken off either way.
+	const gist = agentMessageGist(update.body, [update.sessionId, ORCHESTRATOR, t("shell.orchestrator")]);
 	return (
-		<div className="relative min-w-0 pl-6" data-testid="agent-message">
-			<AgentAvatar provider={session.provider} decorative className="absolute left-0 top-[3px] size-4" />
-			<Folded watch={update.body}>
-				{/* The name and time float into the message's first line; the rest wraps under the name. */}
-				<span className="float-right ml-3 text-xs leading-[calc(var(--chat-readable-font-size)*1.58)] tabular-nums text-muted-foreground">
-					{formatTime(update.createdAt)}
-				</span>
-				{href ? (
-					<SessionLabelLink
-						href={href}
-						className="float-left mr-2 text-[length:var(--chat-readable-font-size)] font-medium leading-[1.58] text-foreground decoration-foreground/40 underline-offset-2 hover:underline"
-					>
-						{name}
-					</SessionLabelLink>
-				) : null}
-				<AgentProse text={update.body} />
-			</Folded>
+		<div className="min-w-0" data-testid="agent-message">
+			<AgentRowLine
+				provider={session?.provider}
+				name={name}
+				href={href}
+				headline={gist}
+				createdAt={update.createdAt}
+				open={open}
+				onToggle={() => setOpen((current) => !current)}
+			/>
+			{open ? (
+				<div className="mb-2 ml-6 mt-1 min-w-0">
+					<AgentProse text={update.body} />
+				</div>
+			) : null}
 		</div>
 	);
 }

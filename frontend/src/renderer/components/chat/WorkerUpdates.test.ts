@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationActivity, ConversationItem, ConversationMessage } from "../../types/conversation";
 import {
+	agentMessageGist,
 	asksUser,
 	isWorkerLead,
 	piggybackedUpdates,
@@ -8,6 +9,7 @@ import {
 	renamedTitle,
 	spawnedSessionIds,
 	splitHeadline,
+	stripSenderPrefix,
 	workerUpdatesOf,
 } from "./WorkerUpdates";
 
@@ -94,6 +96,39 @@ describe("worker updates", () => {
 	it("takes a short first line as the headline, else the first sentence", () => {
 		expect(splitHeadline("Fixed the menu\nIt now renders in a portal.")).toEqual({ headline: "Fixed the menu", detail: "It now renders in a portal." });
 		expect(splitHeadline("Rebased **#5051**; disk full during validation. Retrying.").headline).toBe("Rebased #5051");
+	});
+
+	it("takes the sender's own name off the front of what it sent", () => {
+		const names = ["kugelaudio-8", "Orchestrator"];
+		expect(stripSenderPrefix("kugelaudio-8: ready #5506 @2716046663, gate pass", names)).toBe("ready #5506 @2716046663, gate pass");
+		expect(stripSenderPrefix("Orchestrator: both Publish defaults accepted.", names)).toBe("both Publish defaults accepted.");
+		expect(stripSenderPrefix("Orchestrator, Alex's bar for staging: everything visible must work.", names)).toBe("Alex's bar for staging: everything visible must work.");
+		expect(stripSenderPrefix("kugelaudio-8, re-diffed against fa84259fe9.", names)).toBe("re-diffed against fa84259fe9.");
+		expect(stripSenderPrefix("orchestrator:\n\nMerge it now.", names)).toBe("Merge it now.");
+		expect(stripSenderPrefix("**Orchestrator:** merge it.", names)).toBe("merge it.");
+		expect(stripSenderPrefix("**kugelaudio-8**: merged.", names)).toBe("merged.");
+	});
+
+	it("keeps the topic after a sender's name, and leaves anything else that merely starts with a name", () => {
+		const names = ["kugelaudio-8", "Orchestrator"];
+		expect(stripSenderPrefix("kugelaudio-8 re Publish (553b6f6c1f): confirmed, with notes.", names)).toBe("re Publish (553b6f6c1f): confirmed, with notes.");
+		expect(stripSenderPrefix("kugelaudio-8 correction to my last message: not in #5505.", names)).toBe("kugelaudio-8 correction to my last message: not in #5505.");
+		expect(stripSenderPrefix("kugelaudio-8 (1) Curb in the workspace image", names)).toBe("kugelaudio-8 (1) Curb in the workspace image");
+		expect(stripSenderPrefix("kugelaudio-88: a different session.", names)).toBe("kugelaudio-88: a different session.");
+		expect(stripSenderPrefix("kugelaudio-3: another session.", names)).toBe("kugelaudio-3: another session.");
+		expect(stripSenderPrefix("Orchestrators: plural is not a signature.", names)).toBe("Orchestrators: plural is not a signature.");
+		expect(stripSenderPrefix("Orchestrator:", names)).toBe("Orchestrator:");
+		expect(stripSenderPrefix("proj.1: dots are literal", ["proj-1"])).toBe("proj.1: dots are literal");
+		expect(stripSenderPrefix("kugelaudio-8: ready", [undefined, ""])).toBe("kugelaudio-8: ready");
+	});
+
+	it("gists an agent's message as its first sentence, unsigned", () => {
+		const names = ["kugelaudio-2", "Orchestrator"];
+		expect(agentMessageGist("Orchestrator: #5502 MERGED (57151acf68). #5506 now targets master.", names)).toBe("#5502 MERGED (57151acf68)");
+		expect(agentMessageGist("Orchestrator: go with the plan (W1, A1, K1); I merge each green PR.", names)).toBe("go with the plan (W1, A1, K1)");
+		expect(agentMessageGist("  kugelaudio-2: see [the run](https://ci.example/run/4) for `deploy`. Then push.", names)).toBe("see the run for deploy");
+		expect(agentMessageGist("## Status\nAll green.", names)).toBe("Status");
+		expect(agentMessageGist("Merge -> staging, measured today:\n\nWEB 10m12s", names)).toBe("Merge -> staging, measured today:");
 	});
 
 	it("tells a question from a ? in code, links and chained calls", () => {
