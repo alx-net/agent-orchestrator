@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artifactLinkForPath, findPlainReferences, findSessionLinks, isAoLink, parseArtifactLink, parseSessionLink, resolveSessionLink } from "./session-links";
+import { artifactLinkForPath, findPlainPaths, findPlainReferences, findSessionLinks, isAoLink, parseArtifactLink, parseSessionLink, PLAIN_PATH_PROPERTY, resolveSessionLink } from "./session-links";
 
 describe("session links", () => {
 	it.each([
@@ -93,5 +93,16 @@ describe("session links", () => {
 		]);
 		expect(found("and/or CI/CD /review /tmp 1/2")).toEqual([]);
 		expect(findPlainReferences("proj-297", sessions)[0]!.node.url).toBe("ao://sessions/proj/proj-297");
+	});
+
+	it("marks bare paths in an agent's prose as inline code to verify, and nothing else", () => {
+		const found = (text: string) => findPlainPaths(text).map((match) => text.slice(match.start, match.end));
+		expect(found("The plan is in products/platform/docs/22-workspaces.md; run infrastructure/hetzner-agents/scripts/apply.")).toEqual([
+			"products/platform/docs/22-workspaces.md", "infrastructure/hetzner-agents/scripts/apply",
+		]);
+		expect(found("See (src/a.tsx:42) and ~/.ao, not and/or CI/CD /review proj-297.")).toEqual(["src/a.tsx:42", "~/.ao"]);
+		expect(findPlainPaths("docs/plan.md")[0]!.node).toEqual({
+			type: "inlineCode", value: "docs/plan.md", data: { hProperties: { [PLAIN_PATH_PROPERTY]: "" } },
+		});
 	});
 });

@@ -7,6 +7,7 @@ import { agentModelsQueryKey } from "../../hooks/useAgentModelsQuery";
 import { groupScriptRuns } from "../../lib/cloud-script-runs";
 import type { ConversationMessage } from "../../types/conversation";
 import { TooltipProvider } from "../ui/tooltip";
+import { ChatLinkProvider } from "./ChatMarkdown";
 
 function render(ui: ReactElement) {
 	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -146,6 +147,27 @@ describe("TurnOutcome", () => {
 			"href",
 			"https://example.com/billing",
 		);
+	});
+});
+
+describe("AssistantMessage file paths", () => {
+	it("opens a bare path the worktree has in Files and leaves a missing one as prose", () => {
+		const onFileOpen = vi.fn();
+		const text = "Run infrastructure/hetzner-agents/scripts/apply:12, then read products/platform/docs/22-workspaces.md.";
+		render(
+			<ChatLinkProvider onFileOpen={onFileOpen} workspacePaths={["infrastructure/hetzner-agents/scripts/apply"]} pullRequestFileBase="https://github.com/acme/app/blob/feat/x/">
+				<AssistantMessage message={message({ text, streaming: false })} />
+			</ChatLinkProvider>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Open infrastructure/hetzner-agents/scripts/apply in Files" }));
+
+		expect(onFileOpen).toHaveBeenCalledExactlyOnceWith("infrastructure/hetzner-agents/scripts/apply", 12);
+		expect(document.querySelector("p")?.textContent).toBe(text);
+		// The missing path stays prose: no button, no guessed PR link, not restyled as code.
+		expect([...document.querySelectorAll("code")].map((code) => code.textContent)).toEqual(["infrastructure/hetzner-agents/scripts/apply:12"]);
+		expect(screen.getAllByRole("button").filter((button) => button.textContent?.includes("22-workspaces"))).toEqual([]);
+		expect(screen.queryByRole("link")).toBeNull();
 	});
 });
 

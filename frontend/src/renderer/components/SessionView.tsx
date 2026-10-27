@@ -1613,7 +1613,10 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 
 	const handleOpenFile = useCallback(
 		(path: string, line?: number) => {
-			void revealResolvedWorkspaceFile(path, { line, mode: "file" });
+			// A Markdown file named in chat (usually a plan or spec) opens rendered;
+			// a line can only be shown in the source.
+			const rendered = line == null && /\.(?:md|markdown)$/i.test(normalizeWorkspaceFileReference(path));
+			void revealResolvedWorkspaceFile(path, { line, mode: rendered ? "rendered" : "file" });
 		},
 		[revealResolvedWorkspaceFile],
 	);

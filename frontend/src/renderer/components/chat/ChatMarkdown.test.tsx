@@ -247,6 +247,49 @@ describe("ChatMarkdown", () => {
 		openExternal.mockRestore();
 	});
 
+	it("opens a GitHub link in the system browser without revealing the AO Browser", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const pr = "https://github.com/Kugelaudio/KugelAudio/pull/5449";
+		renderWithLinkHandler(`Opened [#5449](${pr}), see ${pr}/files.`, onLinkOpen);
+
+		await user.click(screen.getByRole("link", { name: "#5449" }));
+		await user.click(screen.getByRole("link", { name: `${pr}/files` }));
+
+		expect(openExternal.mock.calls).toEqual([[pr], [`${pr}/files`]]);
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("links a path the worktree lacks to the open PR's branch on GitHub, opened externally", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const onFileOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const base = "https://github.com/Kugelaudio/KugelAudio/blob/ao/kugelaudio-3/cloud-workspace-spec/";
+		render(
+			<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onFileOpen} workspacePaths={["README.md"]} pullRequestFileBase={base}>
+				<ChatMarkdown text={"The plan is `products/platform/docs/22-workspaces.md`; the branch is `ao/kugelaudio-3/cloud-workspace-spec`."} />
+			</ChatLinkProvider>,
+		);
+
+		const plan = screen.getByRole("link", { name: "products/platform/docs/22-workspaces.md" });
+		expect(plan).toHaveAttribute("href", `${base}products/platform/docs/22-workspaces.md`);
+		await user.click(plan);
+
+		expect(openExternal).toHaveBeenCalledExactlyOnceWith(`${base}products/platform/docs/22-workspaces.md`);
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		expect(onFileOpen).not.toHaveBeenCalled();
+		expect(screen.getByText("ao/kugelaudio-3/cloud-workspace-spec").closest("a, button")).toBeNull();
+		openExternal.mockRestore();
+	});
+
+	it("keeps a path the worktree lacks as plain code without an open PR", () => {
+		renderWithLinkHandler("The plan is `products/platform/docs/22-workspaces.md`.", vi.fn(), ["README.md"], vi.fn());
+		expect(screen.getByText("products/platform/docs/22-workspaces.md").closest("a, button")).toBeNull();
+	});
+
 	it.each([
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",

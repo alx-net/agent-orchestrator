@@ -75,6 +75,7 @@ import { getApiBaseUrl } from "../../lib/api-client";
 import { readArtifactRef, readRenderRef } from "../../lib/render-frame";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { ActivityTitle, ChatMarkdown, OriginPreviewMarkdown, SessionLabelLink, SessionLinkedText } from "./ChatMarkdown";
+import { remarkPlainPaths } from "../../lib/session-links";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { ScriptRunPanel } from "../ScriptRunPanel";
@@ -906,6 +907,9 @@ function AutomationExpandButton({ expanded, onClick }: { expanded: boolean; onCl
 	);
 }
 
+// Bare file paths in the agent's prose open like inline code paths once the chat can find the file.
+const ASSISTANT_REMARK_PLUGINS = [remarkPlainPaths];
+
 /** The agent's prose. Streaming is represented by text arriving in place. */
 export function AssistantMessage({
 	message,
@@ -943,7 +947,7 @@ export function AssistantMessage({
 			data-chat-message-revision={!live && !renderingStreaming ? message.revision : undefined}
 			data-chat-message-role={!live && !renderingStreaming ? message.role : undefined}
 		>
-			<div data-chat-message-body=""><ChatMarkdown text={visibleText} streaming={renderingStreaming} /></div>
+			<div data-chat-message-body=""><ChatMarkdown text={visibleText} streaming={renderingStreaming} remarkPlugins={ASSISTANT_REMARK_PLUGINS} /></div>
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and

@@ -546,6 +546,8 @@ export interface ChatWorkspaceProps {
 	filePaths?: string[];
 	/** The path list was capped by the daemon rather than being all of them. */
 	filePathsTruncated?: boolean;
+	/** GitHub `blob/{branch}/` root of the session's open PR, for named files the worktree lacks. */
+	pullRequestFileBase?: string;
 	/** Renderer-only human messages awaiting their exact durable counterpart. */
 	localEchos?: ConversationLocalEcho[];
 	/**
@@ -777,6 +779,7 @@ function ChatWorkspaceContent({
 	skills,
 	filePaths,
 	filePathsTruncated,
+	pullRequestFileBase,
 	localEchos,
 	onStageAttachments,
 	nativeImages,
@@ -1944,6 +1947,7 @@ function ChatWorkspaceContent({
 							sessionLinkHostId={activeRemoteHostId}
 							sessionLinkSourceKind={session?.cloud ? "cloud" : undefined}
 							workspacePaths={filePaths}
+							pullRequestFileBase={pullRequestFileBase}
 						>
 							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)} artifacts={session?.artifactFiles}>
 							<ChatHostId.Provider value={activeRemoteHostId}>
