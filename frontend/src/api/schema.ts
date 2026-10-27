@@ -3987,6 +3987,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/account-auto-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Choose whether a chat that reaches its account's usage limit moves to another account */
+        patch: operations["updateAccountAutoSwitch"];
+        trace?: never;
+    };
     "/api/v1/settings/chat-hibernation": {
         parameters: {
             query?: never;
@@ -4408,6 +4425,8 @@ export interface components {
             email?: string;
             id: string;
             limits?: components["schemas"]["AgentAccountLimits"];
+            /** @description MCP servers the provider's CLI found not signed in for this account's folder. A session on the account runs without them. */
+            mcpNeedsAuth?: string[];
             plan?: string;
             problem?: string;
             /** @enum {string} */
@@ -7090,6 +7109,8 @@ export interface components {
             enabled: null | boolean;
         };
         SettingsResponse: {
+            /** @description When a chat's turn reaches its account's usage limit, AO moves the session to another signed-in account of the same provider with usage left and runs the turn again there, instead of waiting for the reset. */
+            accountAutoSwitch: boolean;
             chatHarnesses: string[];
             chatHibernationEnabled: boolean;
             client: string;
@@ -7553,6 +7574,9 @@ export interface components {
         UnregisterPushDeviceResponse: {
             deleted: boolean;
             token: string;
+        };
+        UpdateAccountAutoSwitchRequest: {
+            enabled: null | boolean;
         };
         UpdateArtifactFileRequest: {
             /** @description The file's new UTF-8 text content. */
@@ -22645,6 +22669,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateAccountAutoSwitch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountAutoSwitchRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */

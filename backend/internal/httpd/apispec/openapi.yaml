@@ -12126,6 +12126,44 @@ paths:
       summary: Read the daemon-owned user preferences
       tags:
       - settings
+  /api/v1/settings/account-auto-switch:
+    patch:
+      operationId: updateAccountAutoSwitch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountAutoSwitchRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Choose whether a chat that reaches its account's usage limit moves
+        to another account
+      tags:
+      - settings
   /api/v1/settings/chat-hibernation:
     patch:
       operationId: updateChatHibernation
@@ -13119,6 +13157,12 @@ components:
           type: string
         limits:
           $ref: '#/components/schemas/AgentAccountLimits'
+        mcpNeedsAuth:
+          description: MCP servers the provider's CLI found not signed in for this
+            account's folder. A session on the account runs without them.
+          items:
+            type: string
+          type: array
         plan:
           type: string
         problem:
@@ -20132,6 +20176,11 @@ components:
       type: object
     SettingsResponse:
       properties:
+        accountAutoSwitch:
+          description: When a chat's turn reaches its account's usage limit, AO moves
+            the session to another signed-in account of the same provider with usage
+            left and runs the turn again there, instead of waiting for the reset.
+          type: boolean
         chatHarnesses:
           items:
             type: string
@@ -20171,6 +20220,7 @@ components:
       - cloudOffering
       - chatHibernationEnabled
       - versionRefresh
+      - accountAutoSwitch
       - cloudEnabled
       - cloudControlPlaneUrl
       - trackerIntakeEnabled
@@ -21323,6 +21373,15 @@ components:
       required:
       - token
       - deleted
+      type: object
+    UpdateAccountAutoSwitchRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
       type: object
     UpdateArtifactFileRequest:
       properties:

@@ -27,8 +27,13 @@ func (s settingsStore) GetAppSettings(ctx context.Context) (settingssvc.Snapshot
 		HarnessDefaults:    row.HarnessDefaults,
 		CloudOffering:      row.CloudOffering,
 		VersionRefresh:     row.VersionRefresh,
+		AccountAutoSwitch:  row.AccountAutoSwitch,
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
+}
+
+func (s settingsStore) SetAccountAutoSwitch(ctx context.Context, enabled bool, now time.Time) error {
+	return s.store.SetAccountAutoSwitch(ctx, enabled, now)
 }
 
 func (s settingsStore) SetDefaultSessionMode(

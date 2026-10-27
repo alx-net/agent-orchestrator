@@ -57,10 +57,11 @@ func (m *Manager) SetUsageLimitSwitch(enabled func() bool) {
 func (m *Manager) UsageLimitReached(id domain.SessionID, providerTurnID string) {
 	m.usageLimitSwitchMu.Lock()
 	enabled := m.usageLimitSwitchOn
+	m.usageLimitSwitchMu.Unlock()
 	if enabled != nil && !enabled() {
-		m.usageLimitSwitchMu.Unlock()
 		return
 	}
+	m.usageLimitSwitchMu.Lock()
 	if run, busy := m.usageLimitSwitches[id]; busy {
 		// The move under way may be continuing on an account that refuses at
 		// once; this refusal is handled when it ends.

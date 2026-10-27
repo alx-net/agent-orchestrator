@@ -572,6 +572,9 @@ func Run(buildVersion string) error {
 	if switcher, ok := wiredSessMgr.(chatsvc.UsageLimitSwitcher); ok {
 		chatSvc.SetUsageLimitSwitcher(switcher)
 	}
+	if setting, ok := wiredSessMgr.(interface{ SetUsageLimitSwitch(func() bool) }); ok {
+		setting.SetUsageLimitSwitch(func() bool { return settingsSvc.AccountAutoSwitchEnabled(ctx) })
+	}
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	if wired, ok := sessMgr.(interface {

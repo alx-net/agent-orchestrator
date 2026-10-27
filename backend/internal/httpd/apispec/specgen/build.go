@@ -201,6 +201,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersUpdateSessionInterfaceRequest":             "UpdateSessionInterfaceRequest",
 	"ControllersUpdateChatHibernationRequest":              "UpdateChatHibernationRequest",
 	"ControllersUpdateVersionRefreshRequest":               "UpdateVersionRefreshRequest",
+	"ControllersUpdateAccountAutoSwitchRequest":            "UpdateAccountAutoSwitchRequest",
 	"ControllersConversationSnapshotResponse":              "ConversationSnapshotResponse",
 	"ControllersConversationTurnResponse":                  "ConversationTurnResponse",
 	"ControllersConversationUsageLimitResponse":            "ConversationUsageLimitResponse",
@@ -1085,6 +1086,17 @@ func shellTerminalOperations() []operation {
 			method: http.MethodPatch, path: "/api/v1/settings/version-refresh", id: "updateVersionRefresh", tag: "settings",
 			summary: "Choose whether idle open sessions move to newly installed harness releases",
 			reqBody: controllers.UpdateVersionRefreshRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SettingsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/settings/account-auto-switch", id: "updateAccountAutoSwitch", tag: "settings",
+			summary: "Choose whether a chat that reaches its account's usage limit moves to another account",
+			reqBody: controllers.UpdateAccountAutoSwitchRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SettingsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},

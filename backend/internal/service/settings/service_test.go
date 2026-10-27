@@ -142,3 +142,41 @@ func TestVersionRefreshToggleIsReadOnceAndCached(t *testing.T) {
 		t.Fatalf("turn off: snapshot=%+v err=%v enabled=%t", snapshot, err, svc.VersionRefreshEnabled(ctx))
 	}
 }
+
+func (*hibernationSettingsStore) SetAccountAutoSwitch(context.Context, bool, time.Time) error {
+	return nil
+}
+
+type accountAutoSwitchStore struct {
+	hibernationSettingsStore
+	on    bool
+	reads int
+}
+
+func (s *accountAutoSwitchStore) GetAppSettings(context.Context) (Snapshot, error) {
+	s.reads++
+	return Snapshot{AccountAutoSwitch: s.on}, s.err
+}
+
+func (s *accountAutoSwitchStore) SetAccountAutoSwitch(_ context.Context, enabled bool, _ time.Time) error {
+	s.on = enabled
+	return nil
+}
+
+func TestAccountAutoSwitchToggleIsCachedAndOnWhenUnreadable(t *testing.T) {
+	ctx := context.Background()
+	store := &accountAutoSwitchStore{on: true}
+	store.err = errors.New("database unavailable")
+	svc := New(store, nil, Offering{}, nil)
+	if !svc.AccountAutoSwitchEnabled(ctx) {
+		t.Fatal("an unreadable store turned the default-on switch off")
+	}
+	store.err = nil
+	if !svc.AccountAutoSwitchEnabled(ctx) || !svc.AccountAutoSwitchEnabled(ctx) || store.reads != 2 {
+		t.Fatalf("reads = %d, want one failed and one cached read", store.reads)
+	}
+	snapshot, err := svc.SetAccountAutoSwitch(ctx, false)
+	if err != nil || snapshot.AccountAutoSwitch || svc.AccountAutoSwitchEnabled(ctx) {
+		t.Fatalf("turn off: snapshot=%+v err=%v", snapshot, err)
+	}
+}

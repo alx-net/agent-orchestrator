@@ -3630,6 +3630,8 @@ type SettingsResponse struct {
 	ChatHibernationEnabled bool `json:"chatHibernationEnabled"`
 	// VersionRefresh moves idle open sessions to a harness release installed while they ran.
 	VersionRefresh bool `json:"versionRefresh" description:"After a harness update, idle open sessions restart on the new release instead of running the old one until they happen to restart."`
+	// AccountAutoSwitch moves a chat whose turn hit its account's usage limit to another account.
+	AccountAutoSwitch bool `json:"accountAutoSwitch" description:"When a chat's turn reaches its account's usage limit, AO moves the session to another signed-in account of the same provider with usage left and runs the turn again there, instead of waiting for the reset."`
 	// CloudEnabled reports whether the cloud offering is effectively available:
 	// the user's toggle (or the env override) plus a configured control plane.
 	CloudEnabled bool `json:"cloudEnabled"`
@@ -3666,6 +3668,11 @@ type UpdateCloudOfferingRequest struct {
 
 // UpdateVersionRefreshRequest flips whether open sessions move to new harness releases.
 type UpdateVersionRefreshRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// UpdateAccountAutoSwitchRequest flips whether a usage-limited chat moves to another account.
+type UpdateAccountAutoSwitchRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 
@@ -3881,6 +3888,9 @@ type AgentAccountResponse struct {
 	// Problem says why identity or limits could not be read.
 	Problem string                     `json:"problem,omitempty"`
 	Limits  *domain.AgentAccountLimits `json:"limits,omitempty"`
+	// McpNeedsAuth names the MCP servers not signed in on this account, so a
+	// session on it runs without them.
+	McpNeedsAuth []string `json:"mcpNeedsAuth,omitempty" description:"MCP servers the provider's CLI found not signed in for this account's folder. A session on the account runs without them."`
 }
 
 // AgentAccountsResponse is the body of GET /agents/accounts.

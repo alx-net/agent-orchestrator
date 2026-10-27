@@ -21,6 +21,7 @@ type SettingsService interface {
 	SetHarnessDefault(ctx context.Context, agent domain.AgentHarness, value domain.HarnessDefault) (settingssvc.Snapshot, error)
 	SetChatHibernationEnabled(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
 	SetVersionRefresh(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
+	SetAccountAutoSwitch(ctx context.Context, enabled bool) (settingssvc.Snapshot, error)
 	ChatHarnesses(candidates []domain.AgentHarness) []domain.AgentHarness
 	Offering() settingssvc.Offering
 }
@@ -41,6 +42,7 @@ func (c *SettingsController) Register(r chi.Router) {
 	r.Patch("/settings/cloud-offering", c.setCloudOffering)
 	r.Patch("/settings/chat-hibernation", c.setChatHibernation)
 	r.Patch("/settings/version-refresh", c.setVersionRefresh)
+	r.Patch("/settings/account-auto-switch", c.setAccountAutoSwitch)
 	r.Patch("/settings/harness-defaults/{agent}", c.setHarnessDefault)
 }
 
@@ -150,6 +152,28 @@ func (c *SettingsController) setVersionRefresh(w http.ResponseWriter, r *http.Re
 	envelope.WriteJSON(w, http.StatusOK, c.response(snapshot))
 }
 
+func (c *SettingsController) setAccountAutoSwitch(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "PATCH", "/api/v1/settings/account-auto-switch")
+		return
+	}
+	var req UpdateAccountAutoSwitchRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"ACCOUNT_AUTO_SWITCH_INVALID", "enabled must be true or false", nil)
+		return
+	}
+	snapshot, err := c.Svc.SetAccountAutoSwitch(r.Context(), *req.Enabled)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, c.response(snapshot))
+}
+
 func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsResponse {
 	// Reported so the client can warn that choosing chat narrows which agents are
 	// available, instead of letting the user discover it at spawn time.
@@ -168,6 +192,7 @@ func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsRes
 		CloudOffering:          snapshot.CloudOffering,
 		ChatHibernationEnabled: snapshot.ChatHibernationEnabled,
 		VersionRefresh:         snapshot.VersionRefresh,
+		AccountAutoSwitch:      snapshot.AccountAutoSwitch,
 		CloudEnabled:           offering.CloudEnabled(snapshot),
 		CloudControlPlaneURL:   offering.CloudControlPlaneURL,
 		TrackerIntakeEnabled:   offering.TrackerIntakeEnabled,
