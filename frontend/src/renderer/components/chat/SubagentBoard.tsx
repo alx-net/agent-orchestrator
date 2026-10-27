@@ -596,9 +596,12 @@ function AgentMessageField({
 	);
 }
 
-/** The main agent's now line: what a pending request waits for, else how the turn ended, else what it is doing. */
-export function mainNowLine(t: TFunction, summary: MainAgentSummary): ReactNode {
-	if (summary.nowSource === "outcome" && summary.result) return <OutcomeText outcome={summary.result.kind} text={summary.nowLine} />;
+/**
+ * The main agent's now line: what a pending request waits for, else how the turn
+ * ended, else what it is doing. `tinted` colors how it ended by what it means.
+ */
+export function mainNowLine(t: TFunction, summary: MainAgentSummary, tinted = false): ReactNode {
+	if (summary.nowSource === "outcome" && summary.result) return <OutcomeText outcome={summary.result.kind} text={summary.nowLine} tinted={tinted} />;
 	if (summary.state === "needs_you") return summary.blockedOn ? t("subagents.waitingFor", { what: summary.blockedOn }) : t("subagents.waiting");
 	return summary.nowLine;
 }
@@ -653,12 +656,23 @@ const OUTCOME_KEYS = {
 	stopped: "subagents.outcome.stopped",
 } as const satisfies Record<AgentOutcomeKind, string>;
 
-/** How an agent finished, named, then what it said about it. */
-export function OutcomeText({ outcome, text }: { outcome: AgentOutcomeKind; text?: string }) {
+// The semantic color of how a turn ended: needs you, failure, success; a stop is neutral.
+const OUTCOME_TONES = {
+	done: "text-status-ready",
+	blocked: "text-status-needs-you",
+	needs_input: "text-status-needs-you",
+	failed: "text-destructive",
+	stopped: "text-muted-foreground",
+} as const satisfies Record<AgentOutcomeKind, string>;
+
+/** How an agent finished, named, then what it said about it. `tinted` colors the name by what it means. */
+export function OutcomeText({ outcome, text, tinted = false }: { outcome: AgentOutcomeKind; text?: string; tinted?: boolean }) {
 	const { t } = useTranslation();
 	return (
 		<>
-			<span className="font-medium text-foreground" data-outcome={outcome} data-testid="agent-outcome">{t(OUTCOME_KEYS[outcome])}</span>
+			<span className={cn("font-medium", tinted ? OUTCOME_TONES[outcome] : "text-foreground")} data-outcome={outcome} data-testid="agent-outcome">
+				{t(OUTCOME_KEYS[outcome])}
+			</span>
 			{text ? ` ${text}` : null}
 		</>
 	);

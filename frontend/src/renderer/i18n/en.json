@@ -3472,6 +3472,8 @@
 	"subagents.main": "Main agent",
 	"subagents.running_one": "{{count}} running",
 	"subagents.running_other": "{{count}} running",
+	"subagents.count_one": "{{count}} subagent",
+	"subagents.count_other": "{{count}} subagents",
 	"subagents.lane.working": "Working",
 	"subagents.lane.needsYou": "Needs you",
 	"subagents.lane.done": "Done",

@@ -203,6 +203,9 @@ describe("overviewSessionsToLoad", () => {
 		];
 		expect(overviewSessionsToLoad(workspaces)).toEqual(["new", "talked", "old"]);
 		expect(overviewSessionsToLoad(workspaces, 2)).toEqual(["new", "talked"]);
+		// Only the sessions asked for, still readable ones only, in the same order.
+		expect(overviewSessionsToLoad(workspaces, 30, new Set(["old", "tui", "new", "missing"]))).toEqual(["new", "old"]);
+		expect(overviewSessionsToLoad(workspaces, 1, new Set(["old", "talked"]))).toEqual(["talked"]);
 	});
 });
 

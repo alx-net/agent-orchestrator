@@ -3,17 +3,17 @@
  * sessions they spawned nested under them, then each session's subagents, each
  * row with what it is doing now and its latest updates.
  *
- * The rows read what the agents board derives for a session
- * ({@link useSubagentBoard}); nothing here parses a conversation. Conversations
- * load for the most recently active chat sessions only, and stay live through
- * the same event invalidation the session's own chat uses.
+ * The rows read what the agents board derives for a session (`useSubagentBoard`);
+ * nothing here parses a conversation. The shared `AgentSummariesProvider` loads
+ * the most recently active chat sessions, with the same loaders the board's
+ * cards read, and they stay live through the same event invalidation the
+ * session's own chat uses.
  */
 
 import { createContext, memo, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, ChevronRight, Folder } from "lucide-react";
 import { ScrollArea } from "radix-ui";
-import { useConversation } from "../hooks/useConversation";
 import { useStableArray } from "../hooks/useStable";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import {
@@ -23,78 +23,39 @@ import {
 	type OverviewDetail,
 	type OverviewProject,
 	type OverviewSessionNode,
-	type SessionAgentsDetail,
 } from "../lib/agents-overview";
 import { formatTimeCompact } from "../lib/format-time";
 import { useNavigateToSession } from "../lib/navigate-to-session";
 import { hidesShellTopbar } from "../lib/platform";
-import { useSubagentBoard, type MainAgentState, type MainAgentSummary, type SubagentCard, type SubagentNote } from "../lib/subagent-board";
+import type { MainAgentState, MainAgentSummary, SubagentCard, SubagentNote } from "../lib/subagent-board";
 import { cn } from "../lib/utils";
-import type { ConversationItem, ConversationTurn } from "../types/conversation";
 import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace";
+import { useAgentSummaries, useAgentSummaryDemand } from "./AgentSummariesProvider";
 import { formatDuration, formatTime } from "./chat/ChatTimelineItems";
 import { mainNowLine, NotesTimeline, StatusGlyph, subagentNowLine } from "./chat/SubagentBoard";
 import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
 import { topbarProjectLabelClass } from "./TopbarButton";
 
-const NO_ITEMS: readonly ConversationItem[] = [];
-const NO_TURNS: readonly ConversationTurn[] = [];
 /** Inline updates per row; the full timeline opens below it. */
 const SESSION_UPDATES = 3;
 const SUBAGENT_UPDATES = 2;
 
-type DetailListener = (sessionId: string, detail: SessionAgentsDetail | undefined) => void;
-
-function sameDetail(a: SessionAgentsDetail | undefined, b: SessionAgentsDetail | undefined): boolean {
-	if (a === b) return true;
-	if (!a || !b || a.status !== b.status) return false;
-	return a.status !== "ready" || a.model === (b as typeof a).model;
-}
-
-/**
- * Loads one chat session's conversation and derives its agents with the board's
- * own deriver, which keeps unchanged cards and summaries by identity.
- */
-const SessionAgentsSource = memo(function SessionAgentsSource({ onDetail, sessionId }: { onDetail: DetailListener; sessionId: string }) {
-	const conversation = useConversation(sessionId);
-	const snapshot = conversation.snapshot;
-	const model = useSubagentBoard(snapshot?.items ?? NO_ITEMS, snapshot?.turns ?? NO_TURNS);
-	const status: SessionAgentsDetail["status"] = snapshot ? "ready" : conversation.unavailable ? "unavailable" : conversation.error ? "error" : "loading";
-	useEffect(() => {
-		onDetail(sessionId, status === "ready" ? { status, model } : { status });
-	}, [model, onDetail, sessionId, status]);
-	useEffect(() => () => onDetail(sessionId, undefined), [onDetail, sessionId]);
-	return null;
-});
-
-/** The overview route: loads what it shows, then hands it to {@link AgentsOverviewView}. */
+/** The overview route: asks for what it shows, then hands it to {@link AgentsOverviewView}. */
 export function AgentsOverview() {
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data;
 	const navigateToSession = useNavigateToSession();
-	const loaded = useStableArray(useMemo(() => overviewSessionsToLoad(workspaces ?? []), [workspaces]));
-	const [details, setDetails] = useState<ReadonlyMap<string, SessionAgentsDetail>>(() => new Map());
-	const onDetail = useCallback<DetailListener>((sessionId, detail) => {
-		setDetails((current) => {
-			if (sameDetail(current.get(sessionId), detail)) return current;
-			const next = new Map(current);
-			if (detail) next.set(sessionId, detail);
-			else next.delete(sessionId);
-			return next;
-		});
-	}, []);
+	useAgentSummaryDemand(useStableArray(useMemo(() => overviewSessionsToLoad(workspaces ?? []), [workspaces])));
+	const details = useAgentSummaries();
 	const overview = useMemo(() => buildAgentsOverview(workspaces ?? [], details), [details, workspaces]);
 	const openSession = useCallback((session: WorkspaceSession) => navigateToSession(session.workspaceId, session.id), [navigateToSession]);
 	return (
-		<>
-			{loaded.map((sessionId) => <SessionAgentsSource key={sessionId} onDetail={onDetail} sessionId={sessionId} />)}
-			<AgentsOverviewView
-				error={workspaceQuery.error ? workspaceQuery.error.message : undefined}
-				isLoading={workspaceQuery.isLoading}
-				onOpenSession={openSession}
-				overview={overview}
-			/>
-		</>
+		<AgentsOverviewView
+			error={workspaceQuery.error ? workspaceQuery.error.message : undefined}
+			isLoading={workspaceQuery.isLoading}
+			onOpenSession={openSession}
+			overview={overview}
+		/>
 	);
 }
 

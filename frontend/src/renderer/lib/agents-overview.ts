@@ -83,10 +83,19 @@ function readable(session: WorkspaceSession): boolean {
 	return session.mode === "chat" && !session.hostId && !session.cloud && sessionIsActive(session);
 }
 
-/** The chat sessions whose conversations the overview loads, most recently active first. */
-export function overviewSessionsToLoad(workspaces: readonly WorkspaceSummary[], cap = OVERVIEW_SESSION_CAP): string[] {
+/**
+ * The chat sessions whose conversations are loaded, most recently active first:
+ * every readable one, or only those `wanted` names.
+ */
+export function overviewSessionsToLoad(
+	workspaces: readonly WorkspaceSummary[],
+	cap = OVERVIEW_SESSION_CAP,
+	wanted?: ReadonlySet<string>,
+): string[] {
 	const candidates: WorkspaceSession[] = [];
-	for (const workspace of workspaces) for (const session of workspace.sessions) if (readable(session)) candidates.push(session);
+	for (const workspace of workspaces) {
+		for (const session of workspace.sessions) if (readable(session) && (!wanted || wanted.has(session.id))) candidates.push(session);
+	}
 	candidates.sort((a, b) => sessionActivityTime(b) - sessionActivityTime(a) || a.id.localeCompare(b.id));
 	return candidates.slice(0, cap).map((session) => session.id);
 }

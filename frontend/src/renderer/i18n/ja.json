@@ -3491,6 +3491,8 @@
 	"subagents.main": "メインエージェント",
 	"subagents.running_one": "{{count}} 件実行中",
 	"subagents.running_other": "{{count}} 件実行中",
+	"subagents.count_one": "サブエージェント {{count}} 件",
+	"subagents.count_other": "サブエージェント {{count}} 件",
 	"subagents.lane.working": "作業中",
 	"subagents.lane.needsYou": "対応が必要",
 	"subagents.lane.done": "完了",

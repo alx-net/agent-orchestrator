@@ -3491,6 +3491,8 @@
 	"subagents.main": "메인 에이전트",
 	"subagents.running_one": "{{count}}개 실행 중",
 	"subagents.running_other": "{{count}}개 실행 중",
+	"subagents.count_one": "하위 에이전트 {{count}}개",
+	"subagents.count_other": "하위 에이전트 {{count}}개",
 	"subagents.lane.working": "작업 중",
 	"subagents.lane.needsYou": "조치 필요",
 	"subagents.lane.done": "완료",

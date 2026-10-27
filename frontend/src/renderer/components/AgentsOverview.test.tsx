@@ -3,8 +3,28 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { buildAgentsOverview, type SessionAgentsDetail } from "../lib/agents-overview";
 import type { MainAgentSummary, SubagentCard } from "../lib/subagent-board";
+import type { ConversationSnapshot } from "../types/conversation";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { AgentsOverviewView } from "./AgentsOverview";
+
+const { conversationCalls, conversationsMock, workspaceQueryMock } = vi.hoisted(() => ({
+	conversationCalls: new Set<string>(),
+	conversationsMock: new Map<string, unknown>(),
+	workspaceQueryMock: vi.fn(),
+}));
+
+// Only the route component loads anything; the view tests below pass a built overview.
+vi.mock("../hooks/useConversation", () => ({
+	useConversation: (sessionId: string) => {
+		conversationCalls.add(sessionId);
+		const snapshot = conversationsMock.get(sessionId);
+		return { snapshot, isLoading: !snapshot, hasOlder: false, isLoadingOlder: false, loadOlder: () => {} };
+	},
+}));
+vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => workspaceQueryMock() }));
+vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => vi.fn() }));
+
+import { AgentsOverview, AgentsOverviewView } from "./AgentsOverview";
+import { AgentSummariesProvider } from "./AgentSummariesProvider";
 
 function session(id: string, overrides: Partial<WorkspaceSession> = {}): WorkspaceSession {
 	return {
@@ -210,5 +230,22 @@ describe("AgentsOverviewView", () => {
 
 		rerender(<AgentsOverviewView error="daemon unreachable" onOpenSession={vi.fn()} overview={buildAgentsOverview([], new Map())} />);
 		expect(screen.getByRole("alert")).toHaveTextContent("daemon unreachable");
+	});
+});
+
+describe("AgentsOverview", () => {
+	it("reads its sessions' agents from the shared summaries, loading each chat session once and no terminal one", () => {
+		workspaceQueryMock.mockReturnValue({ data: [workspace([
+			session("api", { title: "Pause API" }),
+			session("ui", { title: "Pause UI", mode: "tui" }),
+		])], isLoading: false, error: null });
+		conversationsMock.set("api", {
+			turns: [{ id: "turn-1", state: "running", requestedAt: at(0) }],
+			items: [{ kind: "message", id: "said", turnId: "turn-1", sequence: 1, revision: 1, role: "assistant", origin: "provider", text: "Status: Writing the pause handler\n", streaming: false, createdAt: at(1) }],
+		} as unknown as ConversationSnapshot);
+		render(<AgentSummariesProvider><AgentsOverview /></AgentSummariesProvider>);
+		expect(within(rowOf("Pause API")).getByTestId("agents-overview-now")).toHaveTextContent("Writing the pause handler");
+		expect(rowOf("Pause UI")).toHaveAttribute("data-detail", "tui");
+		expect([...conversationCalls]).toEqual(["api"]);
 	});
 });

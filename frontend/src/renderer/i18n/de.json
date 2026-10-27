@@ -3491,6 +3491,8 @@
 	"subagents.main": "Hauptagent",
 	"subagents.running_one": "{{count}} läuft",
 	"subagents.running_other": "{{count}} laufen",
+	"subagents.count_one": "{{count}} Subagent",
+	"subagents.count_other": "{{count}} Subagenten",
 	"subagents.lane.working": "In Arbeit",
 	"subagents.lane.needsYou": "Ihre Aktion nötig",
 	"subagents.lane.done": "Fertig",

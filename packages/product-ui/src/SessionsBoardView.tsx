@@ -230,6 +230,14 @@ export type SessionCardViewProps = {
 	branchAction?: ReactNode;
 	branchIcon?: ReactNode;
 	branchLabel?: ReactNode;
+	/**
+	 * The agent's live context (its latest decision, what it is doing now or how
+	 * its turn ended), shown after the evidence and right above the status line it
+	 * refines. Takes no room when it renders nothing.
+	 */
+	context?: ReactNode;
+	/** Compact metadata before the card's time ("2 subagents"); its separator goes when it renders nothing. */
+	meta?: ReactNode;
 	error?: string;
 	externalLink: ExternalLinkComponent;
 	footer?: ReactNode;
@@ -259,11 +267,13 @@ export function SessionCardView({
 	branchAction,
 	branchIcon,
 	branchLabel,
+	context,
 	error,
 	externalLink,
 	footer,
 	interactive = true,
 	labels,
+	meta,
 	onOpen,
 	overlay,
 	prs = [],
@@ -394,6 +404,12 @@ export function SessionCardView({
 				</div>
 			)}
 			{artifacts ? <div className="relative z-10 min-w-0 px-3.5 pb-2">{artifacts}</div> : null}
+			{/* A slot that renders nothing leaves the div empty, and `empty:hidden` drops its padding. */}
+			{context ? (
+				<div className="min-w-0 px-3.5 pb-2.5 empty:hidden" data-testid="session-card-context">
+					{context}
+				</div>
+			) : null}
 			<div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border px-3.5 py-2.5">
 				<div className="flex min-w-0 flex-1">
 					<span
@@ -411,6 +427,12 @@ export function SessionCardView({
 					</span>
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
+					{meta ? (
+						<>
+							<span className="peer tabular-nums empty:hidden" data-testid="session-card-meta">{meta}</span>
+							<span aria-hidden="true" className="text-border-strong peer-empty:hidden">·</span>
+						</>
+					) : null}
 					{resource ? (
 						<SessionUsageMetricView
 							className={cn(resource.tone === "critical" && "text-destructive", resource.tone === "warning" && "text-warning")}

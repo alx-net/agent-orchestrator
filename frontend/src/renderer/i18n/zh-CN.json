@@ -3473,6 +3473,8 @@
 	"subagents.main": "主代理",
 	"subagents.running_one": "{{count}} 个运行中",
 	"subagents.running_other": "{{count}} 个运行中",
+	"subagents.count_one": "{{count}} 个子代理",
+	"subagents.count_other": "{{count}} 个子代理",
 	"subagents.lane.working": "工作中",
 	"subagents.lane.needsYou": "需要你处理",
 	"subagents.lane.done": "完成",
