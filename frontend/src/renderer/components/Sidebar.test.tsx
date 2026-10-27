@@ -744,6 +744,73 @@ describe("Sidebar", () => {
 		expect(agents.textContent).toBe("Agents");
 	});
 
+	const prFact = (number: number, overrides: Partial<WorkspaceSession["prs"][number]> = {}): WorkspaceSession["prs"][number] => ({
+		url: `https://github.com/acme/app/pull/${number}`,
+		number,
+		state: "open",
+		ci: "passing",
+		review: "none",
+		mergeability: "mergeable",
+		reviewComments: false,
+		updatedAt: "2026-06-30T00:00:00Z",
+		...overrides,
+	});
+
+	it("shows the PRs row after Agents with a count of open and draft PRs, tinted for conflicts", async () => {
+		const user = userEvent.setup();
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, prs: [prFact(1), prFact(2, { state: "draft" }), prFact(3, { state: "merged" })] },
+					{ ...session, id: "proj-1-2", prs: [prFact(4, { mergeability: "conflicting" })] },
+					// An ended session's PR facts are no longer observed.
+					{ ...session, id: "proj-1-3", isTerminated: true, status: "terminated", prs: [prFact(5, { ci: "failing" })] },
+				],
+			}],
+		});
+
+		const agents = screen.getByRole("button", { name: "Agents" });
+		const prs = screen.getByRole("button", { name: "PRs" });
+		expect(agents.compareDocumentPosition(prs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const count = within(prs).getByText("3");
+		expect(count).toHaveAttribute("data-tone", "conflicts");
+		expect(count).toHaveClass("text-status-needs-you");
+		await user.click(prs);
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/prs" });
+	});
+
+	it("tints the PRs count for failing CI before conflicts", () => {
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, prs: [prFact(4, { mergeability: "conflicting" })] },
+					{ ...session, id: "proj-1-2", prs: [prFact(6, { ci: "failing" })] },
+				],
+			}],
+		});
+		const count = within(screen.getByRole("button", { name: "PRs" })).getByText("2");
+		expect(count).toHaveAttribute("data-tone", "failing");
+		expect(count).toHaveClass("text-status-exited");
+	});
+
+	it("keeps the PRs count calm while checks only run, and marks the row active on its route", () => {
+		mockLocation.pathname = "/prs";
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [{ ...session, prs: [prFact(7, { ci: "pending", mergeability: "unknown" })] }] }] });
+
+		const prs = screen.getByRole("button", { name: "PRs" });
+		expect(prs).toHaveAttribute("aria-current", "page");
+		const count = within(prs).getByText("1");
+		expect(count).not.toHaveAttribute("data-tone");
+		expect(count).toHaveClass("text-passive");
+	});
+
+	it("omits the PRs count with no open PRs", () => {
+		renderSidebar();
+		expect(screen.getByRole("button", { name: "PRs" }).textContent).toBe("PRs");
+	});
+
 	it("omits the Artifacts count when there are none and marks the row active on its route", () => {
 		mockLocation.pathname = "/artifacts";
 		renderSidebar();

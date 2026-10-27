@@ -236,9 +236,11 @@ function SessionBranch({ node, ...tree }: TreeProps & { node: OverviewSessionNod
 
 // A click anywhere in the row does what its title does; the title stays the keyboard target.
 const ROW_CLASS = cn("group/nav-row relative flex min-w-0 cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2.5", NAV_ROW_HIGHLIGHT_HOST_CLASS);
-const ROW_TITLE_CLASS = "min-w-0 truncate rounded-sm text-left leading-tight tracking-tight text-foreground outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50";
+/** Shared with the PRs page's session rows. */
+export const ROW_TITLE_CLASS = "min-w-0 truncate rounded-sm text-left leading-tight tracking-tight text-foreground outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/50";
 
-function DisclosureButton({ controls, expanded, label, onClick }: { controls: string; expanded: boolean; label: string; onClick: () => void }) {
+/** A row's chevron that opens its detail below; shared with the PRs page's rows. */
+export function DisclosureButton({ controls, expanded, label, onClick }: { controls: string; expanded: boolean; label: string; onClick: () => void }) {
 	return (
 		<button
 			aria-controls={expanded ? controls : undefined}
