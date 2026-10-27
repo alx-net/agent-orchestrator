@@ -112,6 +112,10 @@ type Service struct {
 	ownerControllers map[domain.ConversationOwner]*Controller
 	startConfigs     map[domain.ConversationOwner]StartConfig
 	awakeInterrupted map[domain.ConversationOwner]domain.AwakeAgentTarget
+	// unadoptableHosts are session hosts a reattached controller could not
+	// project. The next start that may launch a provider replaces such a host
+	// instead of adopting it again.
+	unadoptableHosts map[domain.ConversationOwner]struct{}
 	// handoffInterrupted is the provider turn each session's pending handoff
 	// stopped, kept until the account move that stopped it commits.
 	handoffInterrupted map[domain.SessionID]string
@@ -232,6 +236,7 @@ func New(opts Options) *Service {
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
+		unadoptableHosts:       make(map[domain.ConversationOwner]struct{}),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 		waking:                 make(map[domain.SessionID]int),
@@ -514,11 +519,18 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+		existing.mu.Lock()
+		replayFailed := existing.replayFailed && !existing.explicitClose
+		existing.mu.Unlock()
 		s.mu.Lock()
 		if current := s.ownerControllers[owner]; current == existing {
 			delete(s.ownerControllers, owner)
 			if owner.Kind == domain.ConversationOwnerSession {
 				delete(s.controllers, cfg.SessionID)
+				if replayFailed {
+					// The registry cleanup has not recorded this yet.
+					s.unadoptableHosts[owner] = struct{}{}
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -812,6 +824,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 
 	var conv ports.ChatConversation
 	hostID := providerHostID(cfg)
+	if err := s.replaceUnadoptableHost(ctx, owner, hostID, cfg); err != nil {
+		return nil, err
+	}
 	freshIfMissing := cfg.FreshIfProviderConversationMissing
 	if cfg.ProviderConversationID != "" {
 		// A target that has not answered yet still needs its standing context, though
@@ -1036,6 +1051,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// replaced can be told apart from the current one's.
 	controller := newController(
 		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.reader)
+	controller.reattached = liveReconnect
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
@@ -1229,9 +1245,13 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		if current, ok := s.ownerControllers[owner]; ok && current == controller {
 			controller.mu.Lock()
 			interrupted := controller.transportInterrupted && !controller.explicitClose
+			replayFailed := controller.replayFailed && !controller.explicitClose
 			controller.mu.Unlock()
 			if interrupted && owner.Kind == domain.ConversationOwnerSession && cfg.ExpectedControllerOwner.ControllerGeneration != "" {
 				s.awakeInterrupted[owner] = domain.AwakeAgentTarget{SessionID: cfg.SessionID, Owner: cfg.ExpectedControllerOwner}
+			}
+			if replayFailed && owner.Kind == domain.ConversationOwnerSession {
+				s.unadoptableHosts[owner] = struct{}{}
 			}
 			delete(s.ownerControllers, owner)
 			if owner.Kind == domain.ConversationOwnerSession {
@@ -1242,6 +1262,32 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}()
 
 	return controller, nil
+}
+
+// replaceUnadoptableHost stops a session's provider host that a reattached
+// controller could not project, so this start launches a replacement that
+// resumes the provider conversation natively, as Exit agent and Resume agent
+// would. The host is alive, but adopting it again only replays the output that
+// stopped the last controller. Reconnect-only starts cannot launch, so they
+// leave the host alone.
+func (s *Service) replaceUnadoptableHost(ctx context.Context, owner domain.ConversationOwner, hostID domain.SessionID, cfg StartConfig) error {
+	if cfg.ReconnectOnly || cfg.ProviderConversationID == "" || s.stopProviderHost == nil {
+		return nil
+	}
+	s.mu.RLock()
+	_, unadoptable := s.unadoptableHosts[owner]
+	s.mu.RUnlock()
+	if !unadoptable {
+		return nil
+	}
+	if err := s.stopProviderHost(ctx, hostID); err != nil {
+		return fmt.Errorf("%w: stop chat host whose output could not be recorded: %w", ports.ErrChatRecoveryInconclusive, err)
+	}
+	s.mu.Lock()
+	delete(s.unadoptableHosts, owner)
+	s.mu.Unlock()
+	s.log.Warn("chat start: replaced a provider host that could not be reattached", "session", cfg.SessionID)
+	return nil
 }
 
 // cleanupUnpublishedConversation rolls back a provider opened before its AO
@@ -1710,6 +1756,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		s.mu.Lock()
 		delete(s.startConfigs, owner)
 		delete(s.awakeInterrupted, owner)
+		delete(s.unadoptableHosts, owner)
 		s.mu.Unlock()
 		var stopErr error
 		if s.stopProviderHost != nil {
@@ -1751,6 +1798,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		}
 		delete(s.startConfigs, owner)
 		delete(s.awakeInterrupted, owner)
+		delete(s.unadoptableHosts, owner)
 		s.mu.Unlock()
 	default:
 	}

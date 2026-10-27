@@ -3358,6 +3358,9 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
 		err := m.reconcileLive(recoveryCtx, rec)
+		if m.chatHostUnattachable(rec, err) {
+			err = m.replaceUnattachableChatHost(ctx, rec, err)
+		}
 		m.finishStatusRecovery(ctx, rec, err)
 		if err != nil {
 			return RestoreResult{}, err
@@ -3464,6 +3467,37 @@ func (m *Manager) launchedTUIAgentStillAlive(ctx context.Context, rec domain.Ses
 		return false
 	}
 	return alive
+}
+
+// chatHostUnattachable reports a Chat whose provider host is still running but
+// could not be reattached by the startup check, its retries, or an explicit
+// Resume. Inconclusive ownership is not proof the provider died; it only means
+// this daemon cannot adopt that host.
+func (m *Manager) chatHostUnattachable(rec domain.SessionRecord, err error) bool {
+	return err != nil && errors.Is(err, ports.ErrChatRecoveryInconclusive) &&
+		domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
+		m.chat != nil && !m.chat.HasLiveChatController(rec.ID)
+}
+
+// replaceUnattachableChatHost does what Exit agent then Resume agent would: it
+// stops the host deliberately and resumes the provider conversation natively in
+// a new one. The turn the old host was running ends; the conversation is kept.
+func (m *Manager) replaceUnattachableChatHost(ctx context.Context, rec domain.SessionRecord, reattachErr error) error {
+	m.logger.Warn("resume agent: replacing a chat host that could not be reattached",
+		"sessionID", rec.ID, "error", reattachErr)
+	replaceCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
+	defer cancel()
+	if err := m.chat.StopChat(replaceCtx, rec.ID); err != nil {
+		return errors.Join(reattachErr, fmt.Errorf("stop chat host that could not be reattached: %w", err))
+	}
+	current, found, err := m.store.GetSession(replaceCtx, rec.ID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return m.reconcileLive(replaceCtx, current)
 }
 
 func (m *Manager) resumeAgentRecordWithPolicy(

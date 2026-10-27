@@ -285,6 +285,12 @@ type Controller struct {
 	preserveProviderOnStop bool
 	transportInterrupted   bool
 	explicitClose          bool
+	// reattached is set before start for a controller adopted from a provider
+	// host that was already running. replayFailed records that such a
+	// controller could not project the host's output: adopting that host again
+	// replays the same output and fails the same way.
+	reattached   bool
+	replayFailed bool
 
 	// account, threadState and mcpServers are merged here before being written,
 	// because the provider reports each of them in pieces: account/updated carries
@@ -2893,6 +2899,7 @@ func (c *Controller) projectUnit(
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 		c.mu.Lock()
 		c.preserveProviderOnStop = true
+		c.replayFailed = c.reattached
 		c.state = ports.ChatControllerStopped
 		c.mu.Unlock()
 		if lifecycle {
