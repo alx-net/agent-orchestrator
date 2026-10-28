@@ -3607,7 +3607,7 @@ func sessionOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/send", id: "sendSessionMessage", tag: "sessions",
-			summary:    "Send a message to a running session's agent",
+			summary:    "Send a message to a running session's agent, or hold an FYI for its next turn",
 			pathParams: []any{controllers.SessionIDParam{}},
 			reqBody:    controllers.SendSessionMessageRequest{},
 			resps: []respUnit{

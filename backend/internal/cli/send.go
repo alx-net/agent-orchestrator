@@ -16,6 +16,7 @@ type sendOptions struct {
 	session         string
 	message         string
 	steer           bool
+	fyi             bool
 	clientMessageID string
 	recoverOnly     bool
 }
@@ -27,6 +28,12 @@ type sendAPIRequest struct {
 	UserAuthored    bool   `json:"userAuthored,omitempty"`
 	SenderSessionID string `json:"senderSessionId,omitempty"`
 	Message         string `json:"message"`
+	FYI             bool   `json:"fyi,omitempty"`
+}
+
+// sendAPIResponse mirrors the SendSessionMessageResponse fields the CLI reads.
+type sendAPIResponse struct {
+	PendingFYIs int `json:"pendingFyis"`
 }
 
 // The steering DTOs mirror the daemon conversation API without coupling the
@@ -60,12 +67,16 @@ func newSendCommand(ctx *commandContext) *cobra.Command {
 	cmd.Flags().StringVar(&opts.session, "session", "", "Session id (required)")
 	cmd.Flags().StringVar(&opts.message, "message", "", "Message body (required unless --recover-only)")
 	cmd.Flags().BoolVar(&opts.steer, "steer", false, "Steer an active Chat turn, or start the next turn when idle")
+	cmd.Flags().BoolVar(&opts.fyi, "fyi", false, "Hold an informational message for the session's next turn instead of starting one")
 	cmd.Flags().StringVar(&opts.clientMessageID, "client-message-id", "", "Stable steering delivery handle")
 	cmd.Flags().BoolVar(&opts.recoverOnly, "recover-only", false, "Recover a steering result without contacting the provider")
 	return cmd
 }
 
 func (c *commandContext) sendMessage(ctx context.Context, opts sendOptions) error {
+	if opts.fyi && opts.steer {
+		return usageError{errors.New("usage: --fyi cannot be combined with --steer")}
+	}
 	if opts.recoverOnly && !opts.steer {
 		return usageError{errors.New("usage: --recover-only requires --steer")}
 	}
@@ -79,7 +90,9 @@ func (c *commandContext) sendMessage(ctx context.Context, opts sendOptions) erro
 		return usageError{errors.New("usage: --message is required")}
 	}
 	message := opts.message
-	if sender := strings.TrimSpace(os.Getenv("AO_SESSION_ID")); !opts.recoverOnly && sender != "" {
+	sender := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
+	if !opts.recoverOnly && !opts.fyi && sender != "" {
+		// An FYI is labeled with its sender when AO delivers it.
 		message = "[from " + sender + "] " + message
 	}
 	session := strings.TrimSpace(opts.session)
@@ -90,6 +103,15 @@ func (c *commandContext) sendMessage(ctx context.Context, opts sendOptions) erro
 	// PathEscape: session ids are already "-"/digit safe, but may later come
 	// from sanitized issue refs; keep the URL well-formed regardless.
 	path := "sessions/" + url.PathEscape(session)
+	if opts.fyi {
+		var result sendAPIResponse
+		if err := c.postJSON(ctx, path+"/send", sendAPIRequest{Message: message, SenderSessionID: sender, UserAuthored: sender == "", FYI: true}, &result); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(c.deps.Out,
+			"FYI held for %s without waking it (%d waiting); AO adds it to that session's next turn.\n", session, result.PendingFYIs)
+		return nil
+	}
 	if !opts.steer {
 		return c.postJSON(ctx, path+"/send", sendAPIRequest{Message: message, SenderSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID")), UserAuthored: strings.TrimSpace(os.Getenv("AO_SESSION_ID")) == ""}, nil)
 	}

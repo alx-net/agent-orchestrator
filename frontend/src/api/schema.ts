@@ -3689,7 +3689,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a message to a running session's agent */
+        /** Send a message to a running session's agent, or hold an FYI for its next turn */
         post: operations["sendSessionMessage"];
         delete?: never;
         options?: never;
@@ -6662,6 +6662,7 @@ export interface components {
         };
         SendSessionMessageRequest: {
             attachment?: components["schemas"]["AttachmentInput"];
+            fyi?: boolean;
             message: string;
             senderSessionId?: string;
             userAuthored?: boolean;
@@ -6669,6 +6670,7 @@ export interface components {
         SendSessionMessageResponse: {
             message: string;
             ok: boolean;
+            pendingFyis?: number;
             sessionId: string;
         };
         SendSideQuestionRequest: {

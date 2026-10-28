@@ -10907,7 +10907,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
-      summary: Send a message to a running session's agent
+      summary: Send a message to a running session's agent, or hold an FYI for its
+        next turn
       tags:
       - sessions
   /api/v1/sessions/{sessionId}/terminal-commands:
@@ -19055,6 +19056,8 @@ components:
       properties:
         attachment:
           $ref: '#/components/schemas/AttachmentInput'
+        fyi:
+          type: boolean
         message:
           maxLength: 4096
           minLength: 1
@@ -19072,6 +19075,8 @@ components:
           type: string
         ok:
           type: boolean
+        pendingFyis:
+          type: integer
         sessionId:
           type: string
       required:

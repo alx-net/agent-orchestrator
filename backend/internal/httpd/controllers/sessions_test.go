@@ -57,6 +57,8 @@ type fakeSessionService struct {
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
 	sentDeliveryOptions        ports.MessageDeliveryOptions
+	queuedFYIs                 []string
+	queuedFYIOptions           ports.MessageDeliveryOptions
 	delegationInput            sessionsvc.DelegateTaskInput
 	delegationErr              error
 	preparedProject            domain.ProjectID
@@ -487,6 +489,12 @@ func (f *fakeSessionService) SendWithOptions(_ context.Context, _ domain.Session
 	f.sentAttachment = attachment
 	f.sentDeliveryOptions = options
 	return nil
+}
+
+func (f *fakeSessionService) QueueFYI(_ context.Context, _ domain.SessionID, message string, options ports.MessageDeliveryOptions) (int, error) {
+	f.queuedFYIs = append(f.queuedFYIs, message)
+	f.queuedFYIOptions = options
+	return len(f.queuedFYIs), nil
 }
 
 func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error) {
@@ -4904,6 +4912,36 @@ func TestSessionsAPI_SendWithAttachment(t *testing.T) {
 	}
 	if svc.sentDeliveryOptions.AuthoredByUser {
 		t.Fatal("ordinary automation send was marked user-authored")
+	}
+}
+
+func TestSessionsAPI_SendFYIHoldsMessageWithoutDelivering(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"PR #7 merged.","fyi":true,"senderSessionId":"ao-2"}`)
+	if status != http.StatusOK {
+		t.Fatalf("fyi send = %d, want 200; body=%s", status, body)
+	}
+	var got controllers.SendSessionMessageResponse
+	mustJSON(t, body, &got)
+	if !got.OK || got.PendingFYIs != 1 || got.Message != "PR #7 merged." {
+		t.Fatalf("response = %#v", got)
+	}
+	if svc.sent != "" {
+		t.Fatalf("fyi was delivered as a turn: %q", svc.sent)
+	}
+	if len(svc.queuedFYIs) != 1 || svc.queuedFYIs[0] != "PR #7 merged." || svc.queuedFYIOptions.SenderSessionID != "ao-2" {
+		t.Fatalf("queued = %q options = %+v", svc.queuedFYIs, svc.queuedFYIOptions)
+	}
+
+	attachment := `{"message":"see this","fyi":true,"attachment":{"mimeType":"image/png","data":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}}`
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", attachment)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "FYI_ATTACHMENT_UNSUPPORTED")
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"   ","fyi":true}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "MESSAGE_REQUIRED")
+	if len(svc.queuedFYIs) != 1 {
+		t.Fatalf("rejected fyi requests were queued: %q", svc.queuedFYIs)
 	}
 }
 

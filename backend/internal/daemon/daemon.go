@@ -203,6 +203,9 @@ func Run(buildVersion string) error {
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
 	}
+	if _, err := store.RequeueClaimedFYIMessages(context.Background()); err != nil {
+		return fmt.Errorf("recover fyi delivery claims: %w", err)
+	}
 	// Refresh the embedded using-ao skill into the data dir so worker sessions
 	// in any project can read the ao CLI catalog from a stable absolute path.
 	// Non-fatal: the skill is an enhancement over `ao --help`, not required.
@@ -669,9 +672,15 @@ func Run(buildVersion string) error {
 	}})
 	reportCoordinator = reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{
 		Store:    store,
+		FYIs:     store,
 		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
+	if fyiSessions, ok := sessMgr.(interface {
+		SetFYIDelivery(sessionmanager.FYIDelivery)
+	}); ok {
+		fyiSessions.SetFYIDelivery(reportCoordinator)
+	}
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()

@@ -1408,9 +1408,14 @@ func (s *Service) Send(
 		return domain.ConversationTurn{}, err
 	}
 	var reports reportsvc.PreparedBatch
-	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation {
+	if s.reports != nil {
 		var err error
-		reports, err = s.reports.PreparePiggyback(ctx, id)
+		if msg.Origin != domain.MessageOriginAutomation {
+			reports, err = s.reports.PreparePiggyback(ctx, id)
+		} else {
+			// Worker reports ride only on human turns; FYIs ride on any turn.
+			reports, err = s.reports.PrepareFYIs(ctx, id)
+		}
 		if err != nil {
 			return domain.ConversationTurn{}, fmt.Errorf("prepare worker reports: %w", err)
 		}
@@ -2838,6 +2843,37 @@ func (s *Service) relayChatTurn(
 		SenderSessionID: options.SenderSessionID, InteractionAt: options.InteractionAt,
 		Origin: domain.MessageOriginAutomation, AuthoredByUser: options.AuthoredByUser,
 	})
+	// Bind a retry to its first attempt before FYIs join the text, so a retry
+	// carrying a different FYI set is still recognized as the same delivery.
+	var err error
+	if msg.ClientPayloadHash, err = clientPayloadHash(msg); err != nil {
+		return "", err
+	}
+	fyis, err := s.reports.PrepareFYIs(ctx, id)
+	if err != nil {
+		// FYIs never block the message they would ride on; they stay pending.
+		s.log.Warn("chat relay: fyi messages stay pending", "session", id, "error", err)
+		fyis = reportsvc.PreparedBatch{}
+	}
+	msg.Text = fyis.AppendToUserMessage(msg.Text)
+	turnID, err := s.deliverRelay(ctx, id, msg)
+	switch {
+	case err != nil:
+		_ = s.reports.ReleasePiggyback(ctx, fyis, err)
+	case turnID == "":
+		// A retried delivery did not record the newly claimed FYIs.
+		_ = s.reports.ReleasePiggyback(ctx, fyis, errors.New("duplicate chat message"))
+	default:
+		if ackErr := s.reports.AcceptPiggyback(ctx, fyis); ackErr != nil {
+			// The turn is accepted; failing it would make the sender deliver twice.
+			// The claim is requeued on the next daemon start.
+			s.log.Warn("chat relay: acknowledge fyi messages", "session", id, "error", ackErr)
+		}
+	}
+	return turnID, err
+}
+
+func (s *Service) deliverRelay(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (string, error) {
 	// A relay never wakes a sleeping session inline: it queues and wakes in the
 	// background, as a user's send does. Waking here would hold the caller
 	// through the provider start, and a caller holding the session's input

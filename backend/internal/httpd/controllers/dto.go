@@ -1259,6 +1259,10 @@ type SendSessionMessageRequest struct {
 	// snapshot) delivered alongside the message. The daemon writes it into the
 	// session worktree and appends a path reference to the message.
 	Attachment *AttachmentInput `json:"attachment,omitempty"`
+	// FYI holds an informational message instead of delivering it: it never
+	// starts a turn. AO appends it, labeled with sender and time, to the next
+	// turn the session starts. Not combinable with an attachment.
+	FYI bool `json:"fyi,omitempty"`
 }
 
 // SendSessionMessageResponse is the body of POST /api/v1/sessions/{sessionId}/send.
@@ -1266,6 +1270,9 @@ type SendSessionMessageResponse struct {
 	OK        bool             `json:"ok"`
 	SessionID domain.SessionID `json:"sessionId"`
 	Message   string           `json:"message"`
+	// PendingFYIs counts the FYI messages now waiting for the session's next
+	// turn; set only for an FYI send.
+	PendingFYIs int `json:"pendingFyis,omitempty"`
 }
 
 // DelegateTaskRequest is the body of POST /api/v1/orchestrators/delegate.

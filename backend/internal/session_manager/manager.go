@@ -420,6 +420,7 @@ type Manager struct {
 		Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
 	}
 	lcm                         lifecycleRecorder
+	fyis                        FYIDelivery // late-bound by SetFYIDelivery; nil leaves terminal sends unchanged
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
 	browserCapabilities         BrowserCapabilityIssuer
@@ -5111,6 +5112,12 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return err
 	}
 
+	// FYIs (`ao send --fyi`) ride on this turn, inside its delivery envelope.
+	fyis := m.prepareFYIs(ctx, id, message)
+	message = fyis.AppendToUserMessage(message)
+	fyisDelivered := false
+	defer func() { m.settleFYIs(context.WithoutCancel(ctx), id, fyis, fyisDelivered) }()
+
 	if _, coordination := domain.CoordinationDeliveryID(message); !coordination && !options.AuthoredByUser && strings.TrimSpace(message) != "" {
 		deliveryID := clientMessageID
 		if deliveryID == "" {
@@ -5197,6 +5204,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	case sessionguard.SuppressedInputGated:
 		return fmt.Errorf("send %s: %w", id, ErrOperationInProgress)
 	}
+	fyisDelivered = outcome == sessionguard.Sent
 	// Chat and transition queues persist interaction in their acceptance transaction.
 	// Only direct terminal sends need this separate fact; outbox replay already has it.
 	if options.SenderSessionID != "" && clientMessageID == "" {

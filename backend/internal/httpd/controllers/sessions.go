@@ -151,6 +151,11 @@ type sessionMessageOptionsSender interface {
 	SendWithOptions(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error
 }
 
+// sessionFYIQueuer holds an `ao send --fyi` message for the target's next turn.
+type sessionFYIQueuer interface {
+	QueueFYI(ctx context.Context, id domain.SessionID, message string, options ports.MessageDeliveryOptions) (int, error)
+}
+
 // ActivityRecorder applies an agent activity-state signal to a session. It is
 // satisfied directly by *lifecycle.Manager: an activity signal is a pure
 // lifecycle reduction (no runtime/workspace teardown), so it bypasses
@@ -2203,6 +2208,10 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "MESSAGE_TOO_LONG", "Message is too long", nil)
 		return
 	}
+	if in.FYI {
+		c.queueFYI(w, r, in)
+		return
+	}
 	var attachment *ports.SpawnAttachment
 	if in.Attachment != nil {
 		decoded, attachErr := decodeAttachment(*in.Attachment, maxAttachmentBytes)
@@ -2229,6 +2238,31 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, SendSessionMessageResponse{OK: true, SessionID: sessionID(r), Message: message})
+}
+
+// queueFYI stores an informational message for the session's next turn
+// instead of delivering it now.
+func (c *SessionsController) queueFYI(w http.ResponseWriter, r *http.Request, in SendSessionMessageRequest) {
+	if in.Attachment != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "FYI_ATTACHMENT_UNSUPPORTED", "An FYI message cannot carry an attachment", nil)
+		return
+	}
+	message := domain.SanitizeControlChars(in.Message)
+	if strings.TrimSpace(message) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "MESSAGE_REQUIRED", "Message is required", nil)
+		return
+	}
+	queuer, ok := c.Svc.(sessionFYIQueuer)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/send")
+		return
+	}
+	pending, err := queuer.QueueFYI(r.Context(), sessionID(r), message, ports.MessageDeliveryOptions{AuthoredByUser: in.UserAuthored, SenderSessionID: in.SenderSessionID})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SendSessionMessageResponse{OK: true, SessionID: sessionID(r), Message: message, PendingFYIs: pending})
 }
 
 func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request) {

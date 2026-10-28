@@ -431,6 +431,18 @@ type Cue struct {
 	UpdatedAt time.Time
 }
 
+type FyiMessage struct {
+	ID              int64
+	TargetSessionID string
+	SenderSessionID string
+	Message         string
+	CreatedAt       time.Time
+	DeliveryState   string
+	ClaimToken      string
+	ClaimedAt       sql.NullTime
+	AcknowledgedAt  sql.NullTime
+}
+
 type ManagedHarnessRelease struct {
 	Harness   string
 	Release   string
