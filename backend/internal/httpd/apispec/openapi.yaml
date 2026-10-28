@@ -10974,6 +10974,166 @@ paths:
       summary: Run a command from an agent's reply in a new shell tab
       tags:
       - shellTerminals
+  /api/v1/sessions/{sessionId}/waits:
+    get:
+      operationId: listSessionWaits
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWaitsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a session's pending waits
+      tags:
+      - sessions
+    post:
+      operationId: createSessionWait
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWaitRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWaitResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWaitResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "429":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Too Many Requests
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Register a wait that wakes the session once a PR's CI, merge or review
+        lands, or a timer elapses
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/waits/{waitId}:
+    delete:
+      operationId: cancelSessionWait
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Wait identifier, e.g. w-1a2b3c4d.
+        in: path
+        name: waitId
+        required: true
+        schema:
+          description: Wait identifier, e.g. w-1a2b3c4d.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel one of a session's pending waits without waking it
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/branches:
     get:
       operationId: listSessionWorkspaceBranches
@@ -16542,6 +16702,54 @@ components:
       required:
       - id
       type: object
+    CreateWaitRequest:
+      properties:
+        durationSeconds:
+          description: Timer length for a time wait.
+          format: int64
+          minimum: 0
+          type: integer
+        for:
+          description: PR event to wait for; defaults to checks. Every PR wait also
+            resolves when the PR merges or closes.
+          enum:
+          - checks
+          - merge
+          - review
+          - any
+          type: string
+        kind:
+          enum:
+          - pr
+          - time
+          type: string
+        note:
+          description: Why the agent is waiting; echoed back in the wake message.
+          maxLength: 500
+          type: string
+        prNumber:
+          minimum: 1
+          type: integer
+        prUrl:
+          description: Complete GitHub PR or GitLab MR URL.
+          type: string
+        timeoutSeconds:
+          description: How long a PR wait may stay pending; defaults to 24 hours.
+          format: int64
+          minimum: 0
+          type: integer
+      required:
+      - kind
+      type: object
+    CreateWaitResponse:
+      properties:
+        existing:
+          type: boolean
+        wait:
+          $ref: '#/components/schemas/WaitResponse'
+      required:
+      - wait
+      type: object
     CueDefinitionRequest:
       properties:
         command:
@@ -17725,6 +17933,15 @@ components:
           type: array
       required:
       - shellTerminals
+      type: object
+    ListWaitsResponse:
+      properties:
+        waits:
+          items:
+            $ref: '#/components/schemas/WaitResponse'
+          type: array
+      required:
+      - waits
       type: object
     ListWorkspaceFilesResponse:
       properties:
@@ -21701,6 +21918,70 @@ components:
           type: string
       required:
       - status
+      type: object
+    WaitEnvelope:
+      properties:
+        wait:
+          $ref: '#/components/schemas/WaitResponse'
+      required:
+      - wait
+      type: object
+    WaitResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        expiresAt:
+          format: date-time
+          type: string
+        fireAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        for:
+          enum:
+          - checks
+          - merge
+          - review
+          - any
+          type: string
+        id:
+          type: string
+        kind:
+          enum:
+          - pr
+          - time
+          type: string
+        note:
+          type: string
+        outcome:
+          type: string
+        prNumber:
+          type: integer
+        prUrl:
+          type: string
+        resolvedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        sessionId:
+          type: string
+        state:
+          enum:
+          - pending
+          - fired
+          - expired
+          - cancelled
+          type: string
+      required:
+      - id
+      - sessionId
+      - kind
+      - state
+      - createdAt
+      - expiresAt
       type: object
     WorkspaceBranchResponse:
       properties:

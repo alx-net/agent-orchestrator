@@ -77,6 +77,58 @@ type ListReportsQuery struct {
 	ProjectID string `query:"projectId" required:"true" description:"Stable project identifier."`
 }
 
+// CreateWaitRequest registers one zero-token wait (`ao wait`) for the session
+// in the path. A pr wait names the PR by number (resolved in the session's
+// project) and/or URL; a time wait sets durationSeconds.
+type CreateWaitRequest struct {
+	Kind            string `json:"kind" enum:"pr,time"`
+	PRNumber        int    `json:"prNumber,omitempty" minimum:"1"`
+	PRURL           string `json:"prUrl,omitempty" description:"Complete GitHub PR or GitLab MR URL."`
+	For             string `json:"for,omitempty" enum:"checks,merge,review,any" description:"PR event to wait for; defaults to checks. Every PR wait also resolves when the PR merges or closes."`
+	DurationSeconds int64  `json:"durationSeconds,omitempty" minimum:"0" description:"Timer length for a time wait."`
+	TimeoutSeconds  int64  `json:"timeoutSeconds,omitempty" minimum:"0" description:"How long a PR wait may stay pending; defaults to 24 hours."`
+	Note            string `json:"note,omitempty" maxLength:"500" description:"Why the agent is waiting; echoed back in the wake message."`
+}
+
+// WaitResponse is one registered wait.
+type WaitResponse struct {
+	ID         string     `json:"id"`
+	SessionID  string     `json:"sessionId"`
+	Kind       string     `json:"kind" enum:"pr,time"`
+	For        string     `json:"for,omitempty" enum:"checks,merge,review,any"`
+	PRNumber   int        `json:"prNumber,omitempty"`
+	PRURL      string     `json:"prUrl,omitempty"`
+	Note       string     `json:"note,omitempty"`
+	State      string     `json:"state" enum:"pending,fired,expired,cancelled"`
+	Outcome    string     `json:"outcome,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	FireAt     *time.Time `json:"fireAt,omitempty"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+}
+
+// CreateWaitResponse returns the wait; existing marks an identical pending
+// wait returned instead of registering a second.
+type CreateWaitResponse struct {
+	Wait     WaitResponse `json:"wait"`
+	Existing bool         `json:"existing,omitempty"`
+}
+
+// ListWaitsResponse lists a session's pending waits, oldest first.
+type ListWaitsResponse struct {
+	Waits []WaitResponse `json:"waits"`
+}
+
+// WaitEnvelope wraps one wait.
+type WaitEnvelope struct {
+	Wait WaitResponse `json:"wait"`
+}
+
+// WaitIDParam is the {waitId} path parameter.
+type WaitIDParam struct {
+	WaitID string `path:"waitId" description:"Wait identifier, e.g. w-1a2b3c4d."`
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served

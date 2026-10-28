@@ -3714,6 +3714,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/waits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a session's pending waits */
+        get: operations["listSessionWaits"];
+        put?: never;
+        /** Register a wait that wakes the session once a PR's CI, merge or review lands, or a timer elapses */
+        post: operations["createSessionWait"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/waits/{waitId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel one of a session's pending waits without waking it */
+        delete: operations["cancelSessionWait"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/branches": {
         parameters: {
             query?: never;
@@ -5699,6 +5734,34 @@ export interface components {
         CreateReportResponse: {
             id: string;
         };
+        CreateWaitRequest: {
+            /**
+             * Format: int64
+             * @description Timer length for a time wait.
+             */
+            durationSeconds?: number;
+            /**
+             * @description PR event to wait for; defaults to checks. Every PR wait also resolves when the PR merges or closes.
+             * @enum {string}
+             */
+            for?: "checks" | "merge" | "review" | "any";
+            /** @enum {string} */
+            kind: "pr" | "time";
+            /** @description Why the agent is waiting; echoed back in the wake message. */
+            note?: string;
+            prNumber?: number;
+            /** @description Complete GitHub PR or GitLab MR URL. */
+            prUrl?: string;
+            /**
+             * Format: int64
+             * @description How long a PR wait may stay pending; defaults to 24 hours.
+             */
+            timeoutSeconds?: number;
+        };
+        CreateWaitResponse: {
+            existing?: boolean;
+            wait: components["schemas"]["WaitResponse"];
+        };
         CueDefinitionRequest: {
             /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
             command?: string;
@@ -6125,6 +6188,9 @@ export interface components {
         };
         ListShellTerminalsResponse: {
             shellTerminals: components["schemas"]["ShellTerminalResponse"][];
+        };
+        ListWaitsResponse: {
+            waits: components["schemas"]["WaitResponse"][];
         };
         ListWorkspaceFilesResponse: {
             ahead?: null | number;
@@ -7689,6 +7755,31 @@ export interface components {
             account?: components["schemas"]["AgentAccountResponse"];
             /** @enum {string} */
             status: "waiting" | "complete" | "duplicate" | "mismatch";
+        };
+        WaitEnvelope: {
+            wait: components["schemas"]["WaitResponse"];
+        };
+        WaitResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            fireAt?: null | string;
+            /** @enum {string} */
+            for?: "checks" | "merge" | "review" | "any";
+            id: string;
+            /** @enum {string} */
+            kind: "pr" | "time";
+            note?: string;
+            outcome?: string;
+            prNumber?: number;
+            prUrl?: string;
+            /** Format: date-time */
+            resolvedAt?: null | string;
+            sessionId: string;
+            /** @enum {string} */
+            state: "pending" | "fired" | "expired" | "cancelled";
         };
         WorkspaceBranchResponse: {
             checkedOut: boolean;
@@ -21556,6 +21647,207 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionWaits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListWaitsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createSessionWait: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWaitRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWaitResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWaitResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelSessionWait: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Wait identifier, e.g. w-1a2b3c4d. */
+                waitId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -842,6 +842,27 @@ type SessionTerminalTurn struct {
 	RespondedAt     sql.NullTime
 }
 
+type SessionWait struct {
+	ID               string
+	SessionID        string
+	ProjectID        string
+	Kind             string
+	Condition        string
+	PRNumber         int64
+	PRURL            string
+	Note             string
+	Baseline         string
+	CreatedAt        time.Time
+	FireAt           sql.NullTime
+	ExpiresAt        time.Time
+	State            string
+	Outcome          string
+	Message          string
+	ResolvedAt       sql.NullTime
+	DeliveryAttempts int64
+	LastError        string
+}
+
 type SessionWorktree struct {
 	SessionID    domain.SessionID
 	RepoName     string

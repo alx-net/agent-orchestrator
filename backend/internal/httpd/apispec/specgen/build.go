@@ -535,6 +535,12 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersReportOutputResponse":             "ReportOutputResponse",
 	"ControllersReportResponse":                   "ReportResponse",
 	"ControllersListReportsResponse":              "ListReportsResponse",
+	"ControllersCreateWaitRequest":                "CreateWaitRequest",
+	"ControllersCreateWaitResponse":               "CreateWaitResponse",
+	"ControllersWaitResponse":                     "WaitResponse",
+	"ControllersListWaitsResponse":                "ListWaitsResponse",
+	"ControllersWaitEnvelope":                     "WaitEnvelope",
+	"ControllersWaitIDParam":                      "WaitIDParam",
 	"ControllersClearNotificationsResponse":       "ClearNotificationsResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
@@ -745,6 +751,7 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
+	ops = append(ops, waitOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -869,6 +876,49 @@ func reportOperations() []operation {
 			{http.StatusCreated, controllers.CreateReportResponse{}},
 			{http.StatusBadRequest, envelope.APIError{}},
 			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
+}
+
+// waitOperations declares a session's zero-token waits (`ao wait`). Must stay
+// 1:1 with the routes WaitsController.Register mounts.
+func waitOperations() []operation {
+	session := []any{controllers.SessionIDParam{}}
+	return []operation{{
+		method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/waits", id: "listSessionWaits", tag: "sessions",
+		summary:    "List a session's pending waits",
+		pathParams: session,
+		resps: []respUnit{
+			{http.StatusOK, controllers.ListWaitsResponse{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/waits", id: "createSessionWait", tag: "sessions",
+		summary:    "Register a wait that wakes the session once a PR's CI, merge or review lands, or a timer elapses",
+		pathParams: session,
+		reqBody:    controllers.CreateWaitRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CreateWaitResponse{}},
+			{http.StatusOK, controllers.CreateWaitResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusTooManyRequests, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodDelete, path: "/api/v1/sessions/{sessionId}/waits/{waitId}", id: "cancelSessionWait", tag: "sessions",
+		summary:    "Cancel one of a session's pending waits without waking it",
+		pathParams: []any{controllers.SessionIDParam{}, controllers.WaitIDParam{}},
+		resps: []respUnit{
+			{http.StatusOK, controllers.WaitEnvelope{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusConflict, envelope.APIError{}},
 			{http.StatusInternalServerError, envelope.APIError{}},
 			{http.StatusNotImplemented, envelope.APIError{}},
 		},

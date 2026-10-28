@@ -896,6 +896,11 @@ func Run(buildVersion string) error {
 	lcStack.automationDone = automationDone
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)
+	waitSvc, waitDone := startWaits(ctx, store, lcStack.LCM, prReader, log)
+	defer func() {
+		stop()
+		<-waitDone
+	}()
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
 	// to start the daemon. pushRegistry (interface) is assigned only when load
@@ -1024,6 +1029,7 @@ func Run(buildVersion string) error {
 		Reviews:            reviewSvc,
 		Notifications:      notifier,
 		Reports:            reportSvc,
+		Waits:              waitSvc,
 		NotificationStream: notificationHub,
 		Push:               pushRegistry,
 		Presence:           presenceTracker,
