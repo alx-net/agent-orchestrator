@@ -172,6 +172,7 @@ type AppSetting struct {
 	HarnessDefaults    string
 	VersionRefresh     bool
 	AccountAutoSwitch  bool
+	CompactAt          int64
 }
 
 type Automation struct {

@@ -19,6 +19,7 @@ import {
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
 	patchClaudeRetryDetails,
+	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
 	patchClaudeSteerSettlement,
 	patchClaudeSubagentControl,
@@ -92,6 +93,7 @@ patchClaudeRetryDetails(claudeAdapter);
 patchClaudeContextUsage(claudeAdapter);
 patchClaudeHibernationCheck(claudeAdapter);
 patchClaudeFoldedPromptSettlement(claudeAdapter);
+patchClaudeSessionSettings(claudeAdapter);
 patchClaudeStaleIdleDebt(claudeAdapter);
 patchClaudeSteerSettlement(claudeAdapter);
 patchClaudeSubagentProgress(claudeAdapter);

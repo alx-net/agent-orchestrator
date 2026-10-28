@@ -202,6 +202,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersUpdateChatHibernationRequest":              "UpdateChatHibernationRequest",
 	"ControllersUpdateVersionRefreshRequest":               "UpdateVersionRefreshRequest",
 	"ControllersUpdateAccountAutoSwitchRequest":            "UpdateAccountAutoSwitchRequest",
+	"ControllersUpdateCompactAtRequest":                    "UpdateCompactAtRequest",
 	"ControllersConversationSnapshotResponse":              "ConversationSnapshotResponse",
 	"ControllersConversationTurnResponse":                  "ConversationTurnResponse",
 	"ControllersConversationUsageLimitResponse":            "ConversationUsageLimitResponse",
@@ -1097,6 +1098,17 @@ func shellTerminalOperations() []operation {
 			method: http.MethodPatch, path: "/api/v1/settings/account-auto-switch", id: "updateAccountAutoSwitch", tag: "settings",
 			summary: "Choose whether a chat that reaches its account's usage limit moves to another account",
 			reqBody: controllers.UpdateAccountAutoSwitchRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SettingsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/settings/compact-at", id: "updateCompactAt", tag: "settings",
+			summary: "Choose the token count at which Claude Code agents AO launches compact their conversation",
+			reqBody: controllers.UpdateCompactAtRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SettingsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},

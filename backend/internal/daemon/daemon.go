@@ -341,6 +341,12 @@ func Run(buildVersion string) error {
 		settingssvc.OfferingFromConfig(cfg),
 		func() time.Time { return time.Now().UTC() },
 	)
+	// Claude Code chats read "Compact agent conversations at" when they start.
+	if claude, err := chatDrivers.Driver(domain.HarnessClaudeCode); err == nil {
+		if compaction, ok := claude.(interface{ SetCompactAt(func() int) }); ok {
+			compaction.SetCompactAt(func() int { return settingsSvc.CompactAt(ctx) })
+		}
+	}
 
 	// Chat service. The driver registry is the capability gate: a harness with no
 	// registered driver cannot start in chat mode, so an unsupported request fails

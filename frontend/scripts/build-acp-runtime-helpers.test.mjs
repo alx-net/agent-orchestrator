@@ -20,6 +20,7 @@ import {
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
 	patchClaudeRetryDetails,
+	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
 	patchClaudeSteerSettlement,
 	patchClaudeSubagentControl,
@@ -294,6 +295,54 @@ describe("patchClaudeFoldedPromptSettlement", () => {
 		writeFileSync(adapterPath, "const isAutonomousResult = isAutonomous(message);\n");
 
 		expect(() => patchClaudeFoldedPromptSettlement(adapterPath)).toThrow(/folded-prompt patch/);
+	});
+});
+
+describe("patchClaudeSessionSettings", () => {
+	// claude-agent-acp 0.70's settings option, as compiled.
+	const adapterSource = `
+        const configuredSettings = userProvidedOptions?.settings ??
+            (modelConfig
+                ? {
+                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
+                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
+                }
+                : undefined);
+        // Claude Code applies env from settings.json after the subprocess env.
+`;
+
+	function patchedSettings() {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		expect(patchClaudeSessionSettings(adapterPath)).toBe(true);
+		expect(patchClaudeSessionSettings(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		const start = patched.indexOf("// AO: merge session settings over the model settings.");
+		const end = patched.indexOf("// Claude Code applies env", start);
+		return new Function("userProvidedOptions", "modelConfig", `${patched.slice(start, end)}\nreturn configuredSettings;`);
+	}
+
+	it("keeps the model settings when a session also sends settings", () => {
+		const settings = patchedSettings();
+		const compaction = { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "383000" }, hooks: { PreCompact: [] } };
+
+		expect(settings({ settings: compaction }, { availableModels: ["opus"], modelOverrides: { opus: "x" } })).toEqual({
+			availableModels: ["opus"],
+			modelOverrides: { opus: "x" },
+			...compaction,
+		});
+		expect(settings({ settings: compaction }, undefined)).toEqual(compaction);
+		expect(settings(undefined, { availableModels: ["opus"] })).toEqual({ availableModels: ["opus"] });
+		expect(settings(undefined, undefined)).toBeUndefined();
+		// A settings file path still goes to the SDK unchanged.
+		expect(settings({ settings: "claude.json" }, { availableModels: ["opus"] })).toBe("claude.json");
+	});
+
+	it("fails packaging when the adapter's settings option changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "const configuredSettings = userProvidedOptions?.settings;\n");
+
+		expect(() => patchClaudeSessionSettings(adapterPath)).toThrow(/session settings patch/);
 	});
 });
 

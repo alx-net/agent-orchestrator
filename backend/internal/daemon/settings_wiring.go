@@ -28,12 +28,17 @@ func (s settingsStore) GetAppSettings(ctx context.Context) (settingssvc.Snapshot
 		CloudOffering:      row.CloudOffering,
 		VersionRefresh:     row.VersionRefresh,
 		AccountAutoSwitch:  row.AccountAutoSwitch,
+		CompactAt:          row.CompactAt,
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
 }
 
 func (s settingsStore) SetAccountAutoSwitch(ctx context.Context, enabled bool, now time.Time) error {
 	return s.store.SetAccountAutoSwitch(ctx, enabled, now)
+}
+
+func (s settingsStore) SetCompactAt(ctx context.Context, tokens int, now time.Time) error {
+	return s.store.SetCompactAt(ctx, tokens, now)
 }
 
 func (s settingsStore) SetDefaultSessionMode(

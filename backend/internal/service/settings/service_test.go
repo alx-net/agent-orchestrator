@@ -181,3 +181,55 @@ func TestAccountAutoSwitchToggleIsCachedAndOnWhenUnreadable(t *testing.T) {
 		t.Fatalf("turn off: snapshot=%+v err=%v", snapshot, err)
 	}
 }
+
+func (*hibernationSettingsStore) SetCompactAt(context.Context, int, time.Time) error { return nil }
+
+type compactAtStore struct {
+	hibernationSettingsStore
+	tokens int
+	reads  int
+	writes int
+}
+
+func (s *compactAtStore) GetAppSettings(context.Context) (Snapshot, error) {
+	s.reads++
+	return Snapshot{CompactAt: s.tokens}, s.err
+}
+
+func (s *compactAtStore) SetCompactAt(_ context.Context, tokens int, _ time.Time) error {
+	s.tokens = tokens
+	s.writes++
+	return nil
+}
+
+func TestCompactAtIsCachedAndDefaultsWhenUnreadable(t *testing.T) {
+	ctx := context.Background()
+	store := &compactAtStore{tokens: 500_000}
+	store.err = errors.New("database unavailable")
+	svc := New(store, nil, Offering{}, nil)
+	if got := svc.CompactAt(ctx); got != domain.DefaultCompactAt {
+		t.Fatalf("unreadable store CompactAt = %d, want the %d default", got, domain.DefaultCompactAt)
+	}
+	store.err = nil
+	first := svc.CompactAt(ctx)
+	if second := svc.CompactAt(ctx); first != 500_000 || second != 500_000 || store.reads != 2 {
+		t.Fatalf("CompactAt = %d, %d after %d reads; want 500000 from one failed and one cached read", first, second, store.reads)
+	}
+	snapshot, err := svc.SetCompactAt(ctx, domain.CompactAtRepositoryDefault)
+	if err != nil || snapshot.CompactAt != 0 || svc.CompactAt(ctx) != 0 {
+		t.Fatalf("repository default: snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestSetCompactAtRefusesSizesClaudeCodeWouldClamp(t *testing.T) {
+	store := &compactAtStore{tokens: domain.DefaultCompactAt}
+	svc := New(store, nil, Offering{}, nil)
+	for _, tokens := range []int{-1, 1, 99_999, 900_001, 1_000_000} {
+		if _, err := svc.SetCompactAt(context.Background(), tokens); !errors.Is(err, ErrInvalidCompactAt) {
+			t.Errorf("SetCompactAt(%d) error = %v, want ErrInvalidCompactAt", tokens, err)
+		}
+	}
+	if store.writes != 0 {
+		t.Fatalf("invalid sizes reached the store %d times", store.writes)
+	}
+}

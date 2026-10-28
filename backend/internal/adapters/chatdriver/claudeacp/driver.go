@@ -93,7 +93,8 @@ type claudeLaunchAuthenticator interface {
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
-	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
+	driver := &checkpointDriver{plugin: plugin}
+	driver.ChatDriver = acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		// A live rejection is the ground truth that outranks any cached
 		// verdict, so drop the cache the moment one arrives. This is also the
@@ -169,10 +170,11 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 				Env:     env,
 			}, nil
 		},
-		SessionMeta:    claudeSessionMeta,
+		SessionMeta:    driver.sessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
-	}, log)}
+	}, log)
+	return driver
 }
 
 func claudeCanHibernate(ctx context.Context, conn *acpsdk.ClientSideConnection, id acpsdk.SessionId) (bool, error) {
@@ -407,11 +409,9 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 			"type": "preset", "preset": "claude_code", "append": standing,
 		}
 	}
-	// Also per session, so a choice made after the adapter started still applies.
+	// Where the session compacts is added per session too (see sessionMeta), so
+	// a choice made after the adapter started still applies.
 	options := map[string]any{}
-	if window := cfg.Env[claudeAutoCompactWindowEnv]; window != "" {
-		options["env"] = map[string]string{claudeAutoCompactWindowEnv: window}
-	}
 	if cfg.DisableTools {
 		options["tools"] = []string{}
 		options["strictMcpConfig"] = true
@@ -425,8 +425,6 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 	}
 	return meta
 }
-
-const claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 
 func claudeSessionMode(permission ports.PermissionMode) string {
 	switch ports.NormalizePermissionMode(permission) {

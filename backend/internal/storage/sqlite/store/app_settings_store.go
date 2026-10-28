@@ -33,7 +33,10 @@ type AppSettings struct {
 	// AccountAutoSwitch moves a chat whose turn hit its account usage limit to
 	// another account with usage left.
 	AccountAutoSwitch bool
-	UpdatedAt         time.Time
+	// CompactAt is the token count at which Claude Code agents AO launches
+	// compact their conversation; 0 leaves it to Claude Code's own settings.
+	CompactAt int
+	UpdatedAt time.Time
 }
 
 // GetAppSettings reads the preference row.
@@ -54,6 +57,7 @@ func (s *Store) GetAppSettings(ctx context.Context) (AppSettings, error) {
 		CloudOffering:      row.CloudOffering,
 		VersionRefresh:     row.VersionRefresh,
 		AccountAutoSwitch:  row.AccountAutoSwitch,
+		CompactAt:          int(row.CompactAt),
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
 }
@@ -109,6 +113,20 @@ func (s *Store) SetAccountAutoSwitch(ctx context.Context, enabled bool, now time
 		UpdatedAt:         now,
 	}); err != nil {
 		return fmt.Errorf("set account auto-switch: %w", err)
+	}
+	return nil
+}
+
+// SetCompactAt persists the token count at which AO-launched Claude Code
+// agents compact their conversation. 0 leaves it to Claude Code's settings.
+func (s *Store) SetCompactAt(ctx context.Context, tokens int, now time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.SetCompactAt(ctx, gen.SetCompactAtParams{
+		CompactAt: int64(tokens),
+		UpdatedAt: now,
+	}); err != nil {
+		return fmt.Errorf("set compact-at: %w", err)
 	}
 	return nil
 }

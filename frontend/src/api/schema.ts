@@ -4038,6 +4038,23 @@ export interface paths {
         patch: operations["updateCloudOffering"];
         trace?: never;
     };
+    "/api/v1/settings/compact-at": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Choose the token count at which Claude Code agents AO launches compact their conversation */
+        patch: operations["updateCompactAt"];
+        trace?: never;
+    };
     "/api/v1/settings/harness-defaults/{agent}": {
         parameters: {
             query?: never;
@@ -7117,6 +7134,8 @@ export interface components {
             cloudControlPlaneUrl: string;
             cloudEnabled: boolean;
             cloudOffering: boolean;
+            /** @description Token count at which the Claude Code chat agents AO starts or resumes compact their conversation, overriding the repository's and the user's Claude Code settings. 0 leaves it to those settings. A conversation's own compaction choice, or a compaction variable in the project's AO environment, still wins. */
+            compactAt: number;
             /** @enum {string} */
             defaultSessionMode: "chat" | "tui";
             harnessDefaults?: {
@@ -7602,6 +7621,10 @@ export interface components {
         };
         UpdateChatHibernationRequest: {
             enabled: null | boolean;
+        };
+        UpdateCompactAtRequest: {
+            /** @description 0 for the repository default, or a token count from 100000 to 900000. */
+            tokens: null | number;
         };
         UpdateHarnessDefaultRequest: {
             disabledModels: null | string[];
@@ -22803,6 +22826,57 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ControllersUpdateCloudOfferingRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateCompactAt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCompactAtRequest"];
             };
         };
         responses: {

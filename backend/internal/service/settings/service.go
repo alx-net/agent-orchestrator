@@ -28,6 +28,7 @@ type Store interface {
 	SetHarnessDefault(ctx context.Context, agent domain.AgentHarness, value domain.HarnessDefault, now time.Time) error
 	SetVersionRefresh(ctx context.Context, enabled bool, now time.Time) error
 	SetAccountAutoSwitch(ctx context.Context, enabled bool, now time.Time) error
+	SetCompactAt(ctx context.Context, tokens int, now time.Time) error
 }
 
 // Snapshot is the current preference set.
@@ -44,7 +45,11 @@ type Snapshot struct {
 	// to another signed-in account with usage left (Settings, General). On by
 	// default.
 	AccountAutoSwitch bool
-	UpdatedAt         time.Time
+	// CompactAt is the token count at which the Claude Code agents AO launches
+	// compact their conversation (Settings, General). 0 leaves it to the
+	// repository's and the user's Claude Code settings. 350000 by default.
+	CompactAt int
+	UpdatedAt time.Time
 }
 
 // Offering reports which AO offerings this daemon exposes to clients. It is
@@ -105,6 +110,8 @@ type Service struct {
 	versionRefresh atomic.Int32
 	// accountAutoSwitch caches the durable toggle the same way.
 	accountAutoSwitch atomic.Int32
+	// compactAt caches the durable compaction size; nil until first read.
+	compactAt atomic.Pointer[int]
 }
 
 // New builds the service.
@@ -127,6 +134,7 @@ func (s *Service) Get(ctx context.Context) (Snapshot, error) {
 	if err == nil {
 		s.cacheVersionRefresh(snapshot.VersionRefresh)
 		cacheToggle(&s.accountAutoSwitch, snapshot.AccountAutoSwitch)
+		s.cacheCompactAt(snapshot.CompactAt)
 	}
 	return snapshot, err
 }
@@ -163,6 +171,41 @@ func (s *Service) SetAccountAutoSwitch(ctx context.Context, enabled bool) (Snaps
 		return Snapshot{}, err
 	}
 	cacheToggle(&s.accountAutoSwitch, enabled)
+	return s.Get(ctx)
+}
+
+// ErrInvalidCompactAt marks a compaction size AO cannot set.
+var ErrInvalidCompactAt = errors.New("invalid compact-at")
+
+func (s *Service) cacheCompactAt(tokens int) { s.compactAt.Store(&tokens) }
+
+// CompactAt reports the token count at which the Claude Code agents AO launches
+// compact their conversation, or 0 to leave it to Claude Code's own settings.
+// It reads the store once and then serves the cached value; an unreadable store
+// counts as the default until a read succeeds.
+func (s *Service) CompactAt(ctx context.Context) int {
+	if cached := s.compactAt.Load(); cached != nil {
+		return *cached
+	}
+	snapshot, err := s.store.GetAppSettings(ctx)
+	if err != nil {
+		return domain.DefaultCompactAt
+	}
+	s.cacheCompactAt(snapshot.CompactAt)
+	return snapshot.CompactAt
+}
+
+// SetCompactAt changes where Claude Code agents compact. An agent reads it when
+// it starts or resumes; a running one keeps the size it started with.
+func (s *Service) SetCompactAt(ctx context.Context, tokens int) (Snapshot, error) {
+	if !domain.ValidCompactAt(tokens) {
+		return Snapshot{}, fmt.Errorf("%w: tokens must be 0 or from %d to %d, got %d",
+			ErrInvalidCompactAt, domain.MinCompactAt, domain.MaxCompactAt, tokens)
+	}
+	if err := s.store.SetCompactAt(ctx, tokens, s.now()); err != nil {
+		return Snapshot{}, err
+	}
+	s.cacheCompactAt(tokens)
 	return s.Get(ctx)
 }
 

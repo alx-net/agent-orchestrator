@@ -3632,6 +3632,8 @@ type SettingsResponse struct {
 	VersionRefresh bool `json:"versionRefresh" description:"After a harness update, idle open sessions restart on the new release instead of running the old one until they happen to restart."`
 	// AccountAutoSwitch moves a chat whose turn hit its account's usage limit to another account.
 	AccountAutoSwitch bool `json:"accountAutoSwitch" description:"When a chat's turn reaches its account's usage limit, AO moves the session to another signed-in account of the same provider with usage left and runs the turn again there, instead of waiting for the reset."`
+	// CompactAt is the token count at which AO-launched Claude Code agents compact.
+	CompactAt int `json:"compactAt" description:"Token count at which the Claude Code chat agents AO starts or resumes compact their conversation, overriding the repository's and the user's Claude Code settings. 0 leaves it to those settings. A conversation's own compaction choice, or a compaction variable in the project's AO environment, still wins."`
 	// CloudEnabled reports whether the cloud offering is effectively available:
 	// the user's toggle (or the env override) plus a configured control plane.
 	CloudEnabled bool `json:"cloudEnabled"`
@@ -3674,6 +3676,11 @@ type UpdateVersionRefreshRequest struct {
 // UpdateAccountAutoSwitchRequest flips whether a usage-limited chat moves to another account.
 type UpdateAccountAutoSwitchRequest struct {
 	Enabled *bool `json:"enabled"`
+}
+
+// UpdateCompactAtRequest sets where AO-launched Claude Code agents compact.
+type UpdateCompactAtRequest struct {
+	Tokens *int `json:"tokens" description:"0 for the repository default, or a token count from 100000 to 900000."`
 }
 
 // UpdateChatHibernationRequest flips the daemon-owned idle Chat gate.
