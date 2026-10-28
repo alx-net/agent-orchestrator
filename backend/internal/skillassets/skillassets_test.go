@@ -252,6 +252,40 @@ func TestEmbeddedReportGuidanceDistinguishesDeliverablesFromDiagnostics(t *testi
 	}
 }
 
+func TestEmbeddedSendGuidanceKeepsCoordinationTrafficLean(t *testing.T) {
+	for file, wants := range map[string][]string{
+		"using-ao/commands/send.md": {
+			"| `--fyi` | Hold the message for the session's next turn instead of starting one |",
+			"`--fyi` stores the message durably and never starts a turn",
+			"labeled `[fyi]` with its sender and the time it was sent, and is delivered once",
+			"needs no reply",
+			"Never send a message that only acknowledges, thanks, or confirms receipt",
+			"do not relay CI or PR news",
+			"include everything it needs",
+		},
+		"using-ao/commands/report.md": {
+			"Do not report routine CI or PR state",
+			"use `ao send --fyi` instead; it never wakes the orchestrator",
+			"Report blockers and decisions with `--needs-input` or `--stuck` as soon as they arise",
+		},
+		"using-ao/commands/spawn.md": {
+			"Give each new, unrelated task to a fresh worker",
+			"only for follow-ups on its own task or PR",
+		},
+	} {
+		body, err := files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guidance := strings.Join(strings.Fields(string(body)), " ")
+		for _, want := range wants {
+			if !strings.Contains(guidance, want) {
+				t.Fatalf("%s missing %q", file, want)
+			}
+		}
+	}
+}
+
 func TestEmbeddedRenderGuidanceSeparatesRendersFromArtifacts(t *testing.T) {
 	body, err := files.ReadFile("using-ao/commands/render.md")
 	if err != nil {

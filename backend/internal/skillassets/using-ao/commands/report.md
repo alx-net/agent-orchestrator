@@ -25,6 +25,12 @@ Use reports for meaningful transitions, decisions, blockers, required input,
 outputs, and terminal judgment. Do not file a report for routine commands. Outputs do not
 imply completion, and `--done` does not terminate the session.
 
+Do not report routine CI or PR state, such as checks running, checks passing,
+or a merge: AO already tracks it and shows it to the orchestrator and the user.
+For context the orchestrator should have but need not act on, use
+`ao send --fyi` instead; it never wakes the orchestrator. Report blockers and
+decisions with `--needs-input` or `--stuck` as soon as they arise.
+
 Attach a reviewable deliverable as soon as it is ready, not only at `--done`:
 use `--artifact <absolute-path>` on the report for the milestone that produced it,
 one flag per deliverable, not its supporting files. Examples include a requested
