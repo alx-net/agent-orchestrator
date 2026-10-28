@@ -39,6 +39,11 @@ export interface Settings {
 	versionRefresh?: boolean;
 	/** A chat that reaches its account's usage limit moves to another account with usage left. */
 	accountAutoSwitch?: boolean;
+	/**
+	 * Token count at which Claude Code chats compact their conversation; 0 leaves
+	 * it to the repository's settings. Unset on a daemon that predates it.
+	 */
+	compactAt?: number;
 }
 
 export function useSettings(hostId?: string, enabled = true) {
@@ -71,6 +76,7 @@ export function useSettings(hostId?: string, enabled = true) {
 				versionRefresh: data?.versionRefresh ?? false,
 				// A daemon that predates the setting never switches accounts.
 				accountAutoSwitch: data?.accountAutoSwitch ?? false,
+				compactAt: data?.compactAt,
 			};
 		},
 	});
@@ -162,6 +168,27 @@ export function useUpdateAccountAutoSwitch() {
 
 	return {
 		update: (enabled: boolean) => mutation.mutate(enabled),
+		saving: mutation.isPending,
+		error: mutation.error ? apiErrorMessage(mutation.error) : undefined,
+	};
+}
+
+export function useUpdateCompactAt() {
+	const queryClient = useQueryClient();
+	const mutation = useMutation({
+		mutationFn: async (tokens: number) => {
+			const { data, error } = await apiClient.PATCH("/api/v1/settings/compact-at", {
+				body: { tokens },
+			});
+			if (error) throw error;
+			return data;
+		},
+		// The daemon is the source of truth; refetch what it persisted.
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsQueryKey }),
+	});
+
+	return {
+		update: (tokens: number) => mutation.mutate(tokens),
 		saving: mutation.isPending,
 		error: mutation.error ? apiErrorMessage(mutation.error) : undefined,
 	};
