@@ -286,6 +286,33 @@ func TestEmbeddedSendGuidanceKeepsCoordinationTrafficLean(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWaitGuidanceReplacesPolling(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/wait.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"ao wait pr <number|url> [--for checks|merge|review|any]",
+		"ao wait time <duration>",
+		"ao wait cancel <wait-id>",
+		"End your turn. Do not sleep, poll, or re-check the PR yourself.",
+		"Every PR wait also wakes when the PR is merged or closed.",
+		"[AO wait w-1a2b3c4d]",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("wait guidance missing %q", want)
+		}
+	}
+	skill, err := files.ReadFile("using-ao/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[commands/wait.md](commands/wait.md)") {
+		t.Fatal("skill catalog does not route to the wait guidance")
+	}
+}
+
 func TestEmbeddedRenderGuidanceSeparatesRendersFromArtifacts(t *testing.T) {
 	body, err := files.ReadFile("using-ao/commands/render.md")
 	if err != nil {

@@ -21,6 +21,7 @@ trigger: "Using the ao CLI in an AO workspace: creating Cues, spawning workers, 
 | `review` | Start, list, cancel, or submit AO's native reviewer for a worker's PR (default: this session) | Reviewing implementation PRs owned by AO workers. Use a normal review-only worker for someone else's PR | [commands/review.md](commands/review.md) |
 | `send` | Send a message to a running agent session | Messaging a live agent that must act; `--steer` corrects it mid-turn, `--fyi` holds information for its next turn without waking it | [commands/send.md](commands/send.md) |
 | `report` | Persist a meaningful worker report | Checkpoints, blockers, decisions, outputs, and completion | [commands/report.md](commands/report.md) |
+| `wait` | Wake this session once when a PR's CI finishes, it merges, a review arrives, or a timer elapses | Instead of any sleep/poll loop on `gh pr view`, `gh run view`, or `gh pr checks`: register, then end your turn | [commands/wait.md](commands/wait.md) |
 | `preview` | Start a session-owned app or open an exact URL/file | Running and showing the worker's relevant app, Markdown, HTML, PDF, or image | [commands/preview.md](commands/preview.md) |
 | `render` | Show a self-contained HTML page inline in a chat thread | Answering with a chart, table, diagram, or mockup | [commands/render.md](commands/render.md) |
 | `browser` | Inspect and control the session's shared live browser | Verifying a web app through snapshots, interactions, waits, screenshots, console, and errors | [commands/browser.md](commands/browser.md) |
