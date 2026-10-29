@@ -27,6 +27,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessioncheckout"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/termtheme"
@@ -2787,6 +2788,12 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		var cancelWorkspace context.CancelFunc
 		ctx, cancelWorkspace = context.WithTimeout(context.WithoutCancel(ctx), budget)
 		defer cancelWorkspace()
+		// `ao checkout` worktrees are registered in other repositories; remove
+		// them first so those repos keep no stale entries. One holding work
+		// preserves the whole workspace, like a dirty worktree.
+		if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+			return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, err, !workspaceProject)
+		}
 	}
 	if workspaceProject {
 		reclaim, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
@@ -2906,6 +2913,10 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	m.runReplacementPreRemove(rec.ID, rec.ProjectID, ws.Path)
 	ctx, cancelWorkspace := context.WithTimeout(context.WithoutCancel(ctx), killTeardownBudget)
 	defer cancelWorkspace()
+	// Best effort: the forced removal below must still release the branch.
+	if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+		m.logger.Warn("retire replacement: checkout teardown failed", "sessionID", id, "path", ws.Path, "error", err)
+	}
 	if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
 		if staleWorkspace {
 			m.logger.Warn("retire replacement: stale workspace cleanup failed", "sessionID", id, "path", ws.Path, "error", err)
@@ -5678,6 +5689,13 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	} else if inUse {
 		return ports.WorkspaceReclaimRemoved, "workspace in use by a live session"
 	}
+	// Same order as Kill: the session's `ao checkout` worktrees go first.
+	if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+		if !expectedWorkspaceRefusal(err) {
+			m.logger.Warn("cleanup: checkout teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
+		}
+		return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
+	}
 
 	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
 		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
@@ -6027,6 +6045,9 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 			return "", err
 		}
 		cfg.ProjectRules = rules
+		if projectID == "" {
+			cfg.Repositories, cfg.MoreRepositories = m.standaloneRepositories(ctx)
+		}
 	default:
 		return "", nil
 	}
@@ -6094,6 +6115,35 @@ func (m *Manager) aoSkillPointer(chat bool) string {
 		"If you cannot see them, search your tools for them. " +
 		"If you find nothing, read `" + renderFile + "` and use `ao render`. " +
 		"Do not use a built-in visualize skill."
+}
+
+// standaloneRepositories lists the user's local projects for a standalone
+// worker's prompt, capped so a large registry cannot bloat every turn. The
+// listing is best effort: without it the agent only loses the hint.
+func (m *Manager) standaloneRepositories(ctx context.Context) ([]promptRepository, int) {
+	lister, ok := m.store.(sessioncheckout.ProjectLister)
+	if !ok {
+		return nil, 0
+	}
+	projects, err := lister.ListProjects(ctx)
+	if err != nil {
+		m.logger.Warn("standalone prompt: list projects", "error", err)
+		return nil, 0
+	}
+	eligible := sessioncheckout.EligibleProjects(projects)
+	more := 0
+	if len(eligible) > sessioncheckout.MaxListedProjects {
+		more = len(eligible) - sessioncheckout.MaxListedProjects
+		eligible = eligible[:sessioncheckout.MaxListedProjects]
+	}
+	repos := make([]promptRepository, 0, len(eligible))
+	for _, p := range eligible {
+		repos = append(repos, promptRepository{
+			ID: p.ID, Name: sessioncheckout.DisplayName(p), Path: p.Path,
+			Remote: p.RepoOriginURL, DefaultBranch: sessioncheckout.CachedDefaultBranch(p),
+		})
+	}
+	return repos, more
 }
 
 func (m *Manager) workspaceProjectPrompt(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID) (string, error) {

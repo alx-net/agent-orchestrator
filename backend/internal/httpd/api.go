@@ -44,6 +44,7 @@ type APIDeps struct {
 	Notifications      controllers.NotificationService
 	Reports            controllers.ReportService
 	Waits              controllers.WaitService
+	Checkouts          controllers.CheckoutService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
@@ -140,6 +141,7 @@ type API struct {
 	notifications *controllers.NotificationsController
 	reports       *controllers.ReportsController
 	waits         *controllers.WaitsController
+	checkouts     *controllers.CheckoutsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
 	fs            *controllers.FSController
@@ -204,6 +206,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		reports:       &controllers.ReportsController{Svc: deps.Reports},
 		waits:         &controllers.WaitsController{Svc: deps.Waits},
+		checkouts:     &controllers.CheckoutsController{Svc: deps.Checkouts},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		fs:            &controllers.FSController{Svc: deps.Directories},
@@ -270,7 +273,14 @@ func (a *API) Register(root chi.Router) {
 				ordinary := middleware.Timeout(timeout)(next)
 				upload := middleware.Timeout(max(timeout, 10*time.Minute))(next)
 				clone := middleware.Timeout(max(timeout, 30*time.Minute))(next)
+				checkout := middleware.Timeout(max(timeout, 10*time.Minute))(next)
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					// `ao checkout` fetches and checks out a whole working tree,
+					// which can outlast one REST request on a large repository.
+					if chi.RouteContext(req.Context()).RoutePattern() == "/api/v1/sessions/{sessionId}/checkouts" {
+						checkout.ServeHTTP(w, req)
+						return
+					}
 					// A clone downloads the whole repository inside the request,
 					// which takes minutes for a large repository.
 					if pattern := chi.RouteContext(req.Context()).RoutePattern(); pattern == "/api/v1/projects/clone" ||
@@ -319,6 +329,7 @@ func (a *API) Register(root chi.Router) {
 			a.notifications.Register(r)
 			a.reports.Register(r)
 			a.waits.Register(r)
+			a.checkouts.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.fs.Register(r)

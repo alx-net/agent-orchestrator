@@ -39,7 +39,21 @@ type systemPromptConfig struct {
 	OrchestratorSessionID string
 	ProjectRules          string
 	OrchestratorRules     string
-	AdditionalSections    []string
+	// Repositories lists the user's local projects for a standalone worker,
+	// which reaches their code through `ao checkout`.
+	Repositories []promptRepository
+	// MoreRepositories counts eligible projects left out of Repositories.
+	MoreRepositories   int
+	AdditionalSections []string
+}
+
+// promptRepository is one of the user's projects as a standalone prompt lists it.
+type promptRepository struct {
+	ID            string
+	Name          string
+	Path          string
+	Remote        string
+	DefaultBranch string
 }
 
 type projectRulesConfig struct {
@@ -81,7 +95,11 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		}
 	case sessionPromptRoleWorker:
 		if cfg.Standalone {
-			sections = append(sections, standaloneWorkerSystemPrompt(), workerContainerLabelPrompt())
+			sections = append(sections, standaloneWorkerSystemPrompt())
+			if repos := repositoriesPrompt(cfg.Repositories, cfg.MoreRepositories); repos != "" {
+				sections = append(sections, repos)
+			}
+			sections = append(sections, workerContainerLabelPrompt())
 			break
 		}
 		orchestratorID := strings.TrimSpace(cfg.OrchestratorSessionID)
@@ -151,9 +169,36 @@ func publishingScopePrompt() string {
 func standaloneWorkerSystemPrompt() string {
 	return `## AO Standalone Agent
 
-You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
+You are a standalone Agent Orchestrator worker. This session has no orchestrator, assigned branch, issue tracker, PR/MR workflow, CI integration, or review automation.
 
-Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
+Work from the user's requests in this AO-managed workspace. Do not create branch, issue, PR/MR, CI, or review requirements the user did not ask for. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
+}
+
+// repositoriesPrompt tells a standalone worker which of the user's repositories
+// exist and how to get its own copy of one. Without it, an agent asked about
+// the user's code searches package caches, the registry, and the whole disk.
+func repositoriesPrompt(repos []promptRepository, more int) string {
+	if len(repos) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Your Repositories\n\n")
+	b.WriteString("These are the user's local projects in AO. When the task needs code from one of these repositories, run `ao checkout <project-id>` and work in the printed path; it is your own up-to-date copy. ")
+	b.WriteString("Do not edit the user's checkouts at the listed paths directly; read-only lookups there are fine. ")
+	b.WriteString("Don't search the disk, package caches, or the network for this code.\n")
+	for _, repo := range repos {
+		fmt.Fprintf(&b, "\n- %s (id `%s`): %s", repo.Name, repo.ID, repo.Path)
+		if remote := strings.TrimSpace(repo.Remote); remote != "" {
+			fmt.Fprintf(&b, ", remote %s", remote)
+		}
+		if branch := strings.TrimSpace(repo.DefaultBranch); branch != "" {
+			fmt.Fprintf(&b, ", default branch %s", branch)
+		}
+	}
+	if more > 0 {
+		fmt.Fprintf(&b, "\n- %d more: `ao project ls` lists them.", more)
+	}
+	return b.String()
 }
 
 func workerGitIsolationPrompt() string {

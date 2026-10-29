@@ -77,6 +77,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessioncheckout"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -1011,6 +1012,11 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	// `ao checkout` puts worktrees inside session workspaces, which all live
+	// under the managed root the workspace adapters use.
+	checkoutSvc := sessioncheckout.New(sessioncheckout.Deps{
+		Sessions: store, Projects: store, ManagedRoot: filepath.Join(cfg.DataDir, "worktrees"),
+	})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
@@ -1030,6 +1036,7 @@ func Run(buildVersion string) error {
 		Notifications:      notifier,
 		Reports:            reportSvc,
 		Waits:              waitSvc,
+		Checkouts:          checkoutSvc,
 		NotificationStream: notificationHub,
 		Push:               pushRegistry,
 		Presence:           presenceTracker,

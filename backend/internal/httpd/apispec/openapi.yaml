@@ -6353,6 +6353,70 @@ paths:
       summary: Keep a viewed chat awake or release its view lease
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/checkouts:
+    post:
+      operationId: createSessionCheckout
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCheckoutRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+          description: OK
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Fetch a project and create or refresh the session's detached worktree
+        of it under <workspace>/repos/<project-id>
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/conversation:
     get:
       operationId: getSessionConversation
@@ -14690,6 +14754,55 @@ components:
       required:
       - agents
       type: object
+    CheckoutResponse:
+      properties:
+        action:
+          description: 'kept: an existing checkout had local work and was left untouched.'
+          enum:
+          - created
+          - updated
+          - unchanged
+          - kept
+          type: string
+        commit:
+          type: string
+        commitDate:
+          format: date-time
+          type: string
+        fetchWarning:
+          description: Set when fetching the remote failed and the last fetched refs
+            were used.
+          type: string
+        note:
+          description: Why a kept checkout was not moved.
+          type: string
+        path:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        ref:
+          description: What the checkout was resolved from, e.g. origin/master.
+          type: string
+        shortCommit:
+          type: string
+        subject:
+          type: string
+        submodules:
+          description: The repository declares submodules; they are not initialized.
+          type: boolean
+      required:
+      - projectId
+      - projectName
+      - path
+      - ref
+      - commit
+      - shortCommit
+      - commitDate
+      - subject
+      - action
+      type: object
     ClaimPRRequest:
       properties:
         allowTakeover:
@@ -16649,6 +16762,23 @@ components:
       - prompt
       - kind
       - timezone
+      type: object
+    CreateCheckoutRequest:
+      properties:
+        project:
+          description: Project id or name, case-insensitive.
+          minLength: 1
+          type: string
+        ref:
+          description: Remote branch, tag, or commit SHA. Defaults to the project's
+            default branch.
+          type: string
+        refresh:
+          description: Fail with 409 instead of keeping an existing checkout that
+            has local work.
+          type: boolean
+      required:
+      - project
       type: object
     CreateConversationSideChatRequest:
       properties:

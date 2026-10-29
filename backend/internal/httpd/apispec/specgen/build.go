@@ -541,6 +541,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersListWaitsResponse":                "ListWaitsResponse",
 	"ControllersWaitEnvelope":                     "WaitEnvelope",
 	"ControllersWaitIDParam":                      "WaitIDParam",
+	"ControllersCreateCheckoutRequest":            "CreateCheckoutRequest",
+	"ControllersCheckoutResponse":                 "CheckoutResponse",
 	"ControllersClearNotificationsResponse":       "ClearNotificationsResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
@@ -752,6 +754,7 @@ func operations() []operation {
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
 	ops = append(ops, waitOperations()...)
+	ops = append(ops, checkoutOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -884,6 +887,26 @@ func reportOperations() []operation {
 
 // waitOperations declares a session's zero-token waits (`ao wait`). Must stay
 // 1:1 with the routes WaitsController.Register mounts.
+// checkoutOperations declares `ao checkout`, a session's own copy of one of
+// the user's projects. Must stay 1:1 with CheckoutsController.Register.
+func checkoutOperations() []operation {
+	return []operation{{
+		method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/checkouts", id: "createSessionCheckout", tag: "sessions",
+		summary:    "Fetch a project and create or refresh the session's detached worktree of it under <workspace>/repos/<project-id>",
+		pathParams: []any{controllers.SessionIDParam{}},
+		reqBody:    controllers.CreateCheckoutRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CheckoutResponse{}},
+			{http.StatusOK, controllers.CheckoutResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusConflict, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
+}
+
 func waitOperations() []operation {
 	session := []any{controllers.SessionIDParam{}}
 	return []operation{{

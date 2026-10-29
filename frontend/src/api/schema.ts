@@ -2373,6 +2373,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/checkouts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetch a project and create or refresh the session's detached worktree of it under <workspace>/repos/<project-id> */
+        post: operations["createSessionCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation": {
         parameters: {
             query?: never;
@@ -4993,6 +5010,29 @@ export interface components {
         ChatPermissionModesResponse: {
             agents: components["schemas"]["ChatAgentPermissionModes"][];
         };
+        CheckoutResponse: {
+            /**
+             * @description kept: an existing checkout had local work and was left untouched.
+             * @enum {string}
+             */
+            action: "created" | "updated" | "unchanged" | "kept";
+            commit: string;
+            /** Format: date-time */
+            commitDate: string;
+            /** @description Set when fetching the remote failed and the last fetched refs were used. */
+            fetchWarning?: string;
+            /** @description Why a kept checkout was not moved. */
+            note?: string;
+            path: string;
+            projectId: string;
+            projectName: string;
+            /** @description What the checkout was resolved from, e.g. origin/master. */
+            ref: string;
+            shortCommit: string;
+            subject: string;
+            /** @description The repository declares submodules; they are not initialized. */
+            submodules?: boolean;
+        };
         ClaimPRRequest: {
             allowTakeover?: null | boolean;
             pr: string;
@@ -5713,6 +5753,14 @@ export interface components {
             prompt: string;
             rrule?: string;
             timezone: string;
+        };
+        CreateCheckoutRequest: {
+            /** @description Project id or name, case-insensitive. */
+            project: string;
+            /** @description Remote branch, tag, or commit SHA. Defaults to the project's default branch. */
+            ref?: string;
+            /** @description Fail with 409 instead of keeping an existing checkout that has local work. */
+            refresh?: boolean;
         };
         CreateConversationSideChatRequest: {
             forceNew?: boolean;
@@ -16211,6 +16259,87 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createSessionCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCheckoutRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutResponse"];
+                };
             };
             /** @description Bad Request */
             400: {

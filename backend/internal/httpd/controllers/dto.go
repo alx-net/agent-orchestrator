@@ -129,6 +129,31 @@ type WaitIDParam struct {
 	WaitID string `path:"waitId" description:"Wait identifier, e.g. w-1a2b3c4d."`
 }
 
+// CreateCheckoutRequest asks for the session's own up-to-date copy of one of
+// the user's projects (`ao checkout`).
+type CreateCheckoutRequest struct {
+	Project string `json:"project" minLength:"1" description:"Project id or name, case-insensitive."`
+	Ref     string `json:"ref,omitempty" description:"Remote branch, tag, or commit SHA. Defaults to the project's default branch."`
+	Refresh bool   `json:"refresh,omitempty" description:"Fail with 409 instead of keeping an existing checkout that has local work."`
+}
+
+// CheckoutResponse is the session's checkout of a project: a detached Git
+// worktree at path inside the session workspace.
+type CheckoutResponse struct {
+	ProjectID    string    `json:"projectId"`
+	ProjectName  string    `json:"projectName"`
+	Path         string    `json:"path"`
+	Ref          string    `json:"ref" description:"What the checkout was resolved from, e.g. origin/master."`
+	Commit       string    `json:"commit"`
+	ShortCommit  string    `json:"shortCommit"`
+	CommitDate   time.Time `json:"commitDate"`
+	Subject      string    `json:"subject"`
+	Action       string    `json:"action" enum:"created,updated,unchanged,kept" description:"kept: an existing checkout had local work and was left untouched."`
+	Note         string    `json:"note,omitempty" description:"Why a kept checkout was not moved."`
+	FetchWarning string    `json:"fetchWarning,omitempty" description:"Set when fetching the remote failed and the last fetched refs were used."`
+	Submodules   bool      `json:"submodules,omitempty" description:"The repository declares submodules; they are not initialized."`
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served
