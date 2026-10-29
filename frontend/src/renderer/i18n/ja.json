@@ -1845,6 +1845,7 @@
 	"shell.removeProjectTitle": "プロジェクトを削除",
 	"shell.removingNamed": "{{name}} を削除中…",
 	"shell.renameSession": "{{title}} の名前を変更",
+	"shell.sessionFinishedUnread": "finished, not opened yet",
 	"shell.rename": "名前を変更",
 	"shell.restartToUpdate": "再起動して更新",
 	"shell.restartInstallUpdate": "再起動してアップデートをインストール",

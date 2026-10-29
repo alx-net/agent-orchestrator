@@ -2113,6 +2113,7 @@
 	"shell.removeProjectTitle": "Remove project",
 	"shell.removingNamed": "Removing {{name}}…",
 	"shell.renameSession": "Rename {{title}}",
+	"shell.sessionFinishedUnread": "finished, not opened yet",
 	"shell.rename": "Rename",
 	"shell.restartToUpdate": "Restart to update",
 	"shell.restartInstallUpdate": "Restart to install update",

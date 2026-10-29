@@ -1845,6 +1845,7 @@
 	"shell.removeProjectTitle": "Projekt entfernen",
 	"shell.removingNamed": "{{name}} wird entfernt…",
 	"shell.renameSession": "{{title}} umbenennen",
+	"shell.sessionFinishedUnread": "finished, not opened yet",
 	"shell.rename": "Umbenennen",
 	"shell.restartToUpdate": "Neu starten zum Aktualisieren",
 	"shell.restartInstallUpdate": "Neu starten, um Update zu installieren",

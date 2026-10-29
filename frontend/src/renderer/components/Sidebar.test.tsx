@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -32,6 +32,7 @@ import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 import { useUiStore } from "../stores/ui-store";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
+import { useSessionUnreadStore } from "../stores/session-unread-store";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import type { RemoteHost } from "../hooks/useRemoteHosts";
 
@@ -501,6 +502,7 @@ function fireDrag(
 beforeEach(() => {
 	window.localStorage.clear();
 	useSidebarOrderStore.setState({ projectOrder: [], pendingCreatedProjectIds: [], sessionOrders: {} });
+	useSessionUnreadStore.setState({ unread: {}, working: {} });
 	dragEnds.clear();
 	dragOvers.clear();
 	dragStarts.clear();
@@ -733,6 +735,26 @@ describe("Sidebar", () => {
 		expect(agents).toHaveTextContent("2");
 		await user.click(agents);
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/agents" });
+	});
+
+	it("bolds a session whose agent finished until the user opens it", () => {
+		const finished = { ...session, activity: { state: "idle" as const, lastActivityAt: "2026-06-30T00:00:00Z" } };
+		useSessionUnreadStore.setState({ unread: { [finished.id]: true }, working: {} });
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [finished] }] });
+
+		const title = screen.getByRole("button", { name: /Open fix login/ }).querySelector("[data-session-name]");
+		expect(title).toHaveAttribute("data-unread", "true");
+		expect(title).toHaveClass("font-semibold");
+		expect(title).toHaveTextContent("finished, not opened yet");
+		cleanup();
+
+		mockParams.projectId = finished.workspaceId;
+		mockParams.sessionId = finished.id;
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [finished] }] });
+		const opened = screen.getByRole("button", { name: /Open fix login/ }).querySelector("[data-session-name]");
+		expect(opened).not.toHaveAttribute("data-unread");
+		expect(opened).not.toHaveClass("font-semibold");
+		expect(useSessionUnreadStore.getState().unread).toEqual({});
 	});
 
 	it("omits the Agents count when nothing works and marks the row active on its route", () => {

@@ -135,6 +135,7 @@ import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { AwakeControl } from "./AwakeControl";
 import { SettingsSaveStatus, useSettingsPage } from "./SettingsDialog";
 import { useUiStore } from "../stores/ui-store";
+import { useSessionUnreadStore, useSessionUnreadTracking } from "../stores/session-unread-store";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
 import { applyOrder } from "../lib/sidebar-order";
 import { useKeybindingsStore } from "../stores/keybindings-store";
@@ -629,6 +630,7 @@ export function Sidebar({
 		[cloudArtifacts, workspaces],
 	);
 	const workingAgents = useMemo(() => workingSessionCount(workspaces), [workspaces]);
+	useSessionUnreadTracking(workspaces, selection.activeSessionId);
 	const prBadge = useMemo(() => openPRsBadge(workspaces), [workspaces]);
 	const existingProjectPaths = useMemo(
 		() => workspaces
@@ -2391,6 +2393,8 @@ const SessionRow = memo(function SessionRow({
 		[queryClient, session.hostId],
 	);
 	const rename = useSessionRename(session, refreshWorkspaces);
+	// Bold until opened: the agent finished while the user was elsewhere.
+	const unread = useSessionUnreadStore((state) => Boolean(state.unread[session.id])) && !active;
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
 	const hoverTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -2534,9 +2538,11 @@ const SessionRow = memo(function SessionRow({
 								<span
 									className={cn(
 										"min-w-0 flex-1 truncate",
-										active ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
+										active || unread ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
+										unread && "font-semibold",
 									)}
 									data-session-name=""
+									data-unread={unread ? "true" : undefined}
 									onPointerUp={(event) => {
 										if (event.pointerType !== "touch") return;
 										const now = Date.now();
@@ -2548,6 +2554,7 @@ const SessionRow = memo(function SessionRow({
 									}}
 								>
 									{session.title}
+									{unread ? <span className="sr-only">{`, ${t("shell.sessionFinishedUnread")}`}</span> : null}
 								</span>
 								{hostLabel ? <Badge variant="outline" className="h-4 shrink-0 px-1.5 text-2xs">{hostLabel}</Badge> : null}
 							</span>
