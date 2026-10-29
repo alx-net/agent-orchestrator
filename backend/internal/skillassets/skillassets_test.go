@@ -313,6 +313,34 @@ func TestEmbeddedWaitGuidanceReplacesPolling(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCheckoutGuidanceReplacesDiskSearches(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/checkout.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"ao checkout <project> [--ref <branch|tag|sha>] [--refresh] [--json]",
+		"instead of searching the disk, package caches, or the network",
+		"at `repos/<project-id>` in this session's workspace",
+		"Work in the printed path. Do not edit the user's own checkout of the project.",
+		"A copy with uncommitted changes, a branch, or commits no branch contains is left untouched",
+		"AO removes the session's checkouts",
+		"`--setup` is not supported",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("checkout guidance missing %q", want)
+		}
+	}
+	skill, err := files.ReadFile("using-ao/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[commands/checkout.md](commands/checkout.md)") {
+		t.Fatal("skill catalog does not route to the checkout guidance")
+	}
+}
+
 func TestEmbeddedRenderGuidanceSeparatesRendersFromArtifacts(t *testing.T) {
 	body, err := files.ReadFile("using-ao/commands/render.md")
 	if err != nil {

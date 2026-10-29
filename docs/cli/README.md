@@ -78,6 +78,7 @@ addresses change on restart.
 | `ao report ...`                     | `POST /api/v1/reports`                         |
 | `ao wait pr/time ...`               | `POST /api/v1/sessions/{id}/waits`             |
 | `ao wait ls` / `ao wait cancel <id>` | `GET /api/v1/sessions/{id}/waits`, `DELETE /api/v1/sessions/{id}/waits/{waitId}` |
+| `ao checkout <project>`             | `POST /api/v1/sessions/{id}/checkouts`         |
 | `ao preview [url]`                  | `POST /api/v1/sessions/{id}/preview`           |
 | `ao preview start/status/stop`      | `POST/GET/DELETE /api/v1/sessions/{id}/preview/server` |
 | `ao browser ...`                    | `GET /api/v1/browser/status`, `POST /api/v1/browser/commands` |
