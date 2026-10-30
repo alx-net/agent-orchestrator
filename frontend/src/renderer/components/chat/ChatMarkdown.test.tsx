@@ -468,6 +468,23 @@ describe("ChatMarkdown", () => {
 		expect(onSessionLinkOpen).toHaveBeenCalledWith(href);
 	});
 
+	it("opens an artifact named only by its file name, as agents write it", async () => {
+		linkSource.workspaces = [{ id: "project", sessions: [
+			{ id: "worker-1", artifactFiles: [{ path: "verdict.md" }] },
+			{ id: "worker-2", artifactFiles: [{ path: "verdict.md" }] },
+		] }];
+		const onSessionLinkOpen = vi.fn();
+		render(
+			<ChatLinkProvider onSessionLinkOpen={onSessionLinkOpen} sessionId="worker-2">
+				<ChatMarkdown text="The verdict is in `verdict.md`, not in `plain-code`." />
+			</ChatLinkProvider>,
+		);
+		const link = screen.getByRole("link");
+		expect(link).toHaveAttribute("href", "ao://sessions/project/worker-2/artifacts/verdict.md");
+		await userEvent.setup().click(link);
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/worker-2/artifacts/verdict.md");
+	});
+
 	it("leaves inline code naming an unlisted artifact as plain code", () => {
 		linkSource.workspaces = [{ id: "project", sessions: [{ id: "worker-1", artifactFiles: [{ path: "plan.md" }] }] }];
 		renderWithSessionLinkHandler("`worker-1/other.md` and `/tmp/ao/artifacts/worker-2/plan.md`", vi.fn());

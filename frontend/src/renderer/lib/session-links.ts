@@ -78,6 +78,24 @@ export function artifactLinkForPath(value: string, workspaces: ArtifactPathWorks
 	return undefined;
 }
 
+/**
+ * The artifact route for an artifact named by its path or bare file name, as
+ * agents usually write them. This chat's own session wins; otherwise the name
+ * must identify one artifact, so an ambiguous name stays plain text.
+ */
+export function artifactLinkForName(value: string, workspaces: ArtifactPathWorkspace[], sessionId?: string): string | undefined {
+	const name = value.trim();
+	if (!name || /\s/.test(name) || !/\.[A-Za-z0-9]{1,8}$/.test(name)) return undefined;
+	const matches = workspaces.flatMap((workspace) => workspace.sessions.flatMap((session) =>
+		(session.artifactFiles ?? [])
+			.filter((file) => file.path === name || file.path.endsWith(`/${name}`))
+			.map((file) => ({ projectId: workspace.id, sessionId: session.id, path: file.path }))));
+	const own = matches.filter((match) => match.sessionId === sessionId);
+	const candidates = own.length > 0 ? own : matches;
+	const match = candidates.length === 1 ? candidates[0] : undefined;
+	return match ? artifactLink(match.projectId, match.sessionId, match.path) : undefined;
+}
+
 /** True for either in-app route: a session or one of its artifacts. */
 export function isAoLink(value: string): boolean {
 	return parseSessionLink(value) !== undefined || parseArtifactLink(value) !== undefined;

@@ -43,7 +43,7 @@ import { fenceOf } from "../../lib/markdown-fence";
 import { EMOJI_GRAPHEME, rehypeStreamFade } from "../../lib/rehype-stream-fade";
 import { isInlineMath, remarkMath } from "../../lib/remark-math";
 import { useUiStore } from "../../stores/ui-store";
-import { artifactLinkForPath, findSessionLinks, isAoLink, isSessionLink, PLAIN_PATH_PROPERTY, remarkSessionLinks } from "../../lib/session-links";
+import { artifactLinkForName, artifactLinkForPath, findSessionLinks, isAoLink, isSessionLink, PLAIN_PATH_PROPERTY, remarkSessionLinks } from "../../lib/session-links";
 import { pullRequestFileUrl } from "../../lib/pr-display";
 import { useSessionLinkSource } from "../../lib/use-session-link-navigation";
 import {
@@ -112,6 +112,8 @@ const OpenChatLink = createContext<{
 	openSession?: (url: string) => void;
 	workspacePaths: string[];
 	pullRequestFileBase?: string;
+	/** The session this chat belongs to: a bare artifact name means its artifact first. */
+	sessionId?: string;
 }>({ workspacePaths: [] });
 const EMPTY_WORKSPACE_PATHS: string[] = [];
 
@@ -124,6 +126,7 @@ export function ChatLinkProvider({
 	onSessionLinkOpen,
 	workspacePaths = EMPTY_WORKSPACE_PATHS,
 	pullRequestFileBase,
+	sessionId,
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
@@ -135,11 +138,12 @@ export function ChatLinkProvider({
 	workspacePaths?: string[];
 	/** GitHub `blob/{branch}/` root of the session's open PR, for named files the workspace lacks. */
 	pullRequestFileBase?: string;
+	sessionId?: string;
 	children: ReactNode;
 }) {
 	const value = useMemo(
-		() => ({ open: onLinkOpen, openFile: onFileOpen, openSession: onSessionLinkOpen, remoteHost, sessionLinkHostId, sessionLinkSourceKind, workspacePaths, pullRequestFileBase }),
-		[onLinkOpen, onFileOpen, onSessionLinkOpen, remoteHost, sessionLinkHostId, sessionLinkSourceKind, workspacePaths, pullRequestFileBase],
+		() => ({ open: onLinkOpen, openFile: onFileOpen, openSession: onSessionLinkOpen, remoteHost, sessionLinkHostId, sessionLinkSourceKind, workspacePaths, pullRequestFileBase, sessionId }),
+		[onLinkOpen, onFileOpen, onSessionLinkOpen, remoteHost, sessionLinkHostId, sessionLinkSourceKind, workspacePaths, pullRequestFileBase, sessionId],
 	);
 	return <OpenChatLink.Provider value={value}>{children}</OpenChatLink.Provider>;
 }
@@ -526,8 +530,9 @@ export function useChatLinkWorkspaces() {
 
 /** Inline code naming a listed session artifact, linked to that artifact; `fallback` (the code itself by default) otherwise. */
 export function ArtifactPathCode({ text, children, fallback = children }: { text: string; children: ReactNode; fallback?: ReactNode }) {
+	const { sessionId } = useContext(OpenChatLink);
 	const workspaces = useChatLinkWorkspaces();
-	const href = artifactLinkForPath(text, workspaces);
+	const href = artifactLinkForPath(text, workspaces) ?? artifactLinkForName(text, workspaces, sessionId);
 	return href ? <MarkdownLink href={href}>{children}</MarkdownLink> : <>{fallback}</>;
 }
 
@@ -551,7 +556,9 @@ function InlineCode({ children, className, node }: { children?: ReactNode; class
 		// branch on GitHub. A bare path in prose is not vouched for that way.
 		const branchFile = !plainPath && text && pullRequestFileBase ? pullRequestFileUrl(pullRequestFileBase, text) : undefined;
 		const fallback = branchFile ? <MarkdownLink href={branchFile}>{code}</MarkdownLink> : plainPath ? <>{children}</> : code;
-		return text?.includes("/") && openSession ? <ArtifactPathCode text={text} fallback={fallback}>{code}</ArtifactPathCode> : fallback;
+		// Only a path or file name can name an artifact; most inline code is neither.
+		const mayNameArtifact = text !== undefined && (text.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(text));
+		return mayNameArtifact && openSession ? <ArtifactPathCode text={text} fallback={fallback}>{code}</ArtifactPathCode> : fallback;
 	}
 	return (
 		<button

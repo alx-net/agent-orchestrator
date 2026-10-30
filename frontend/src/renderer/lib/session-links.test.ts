@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artifactLinkForPath, findPlainPaths, findPlainReferences, findSessionLinks, isAoLink, parseArtifactLink, parseSessionLink, PLAIN_PATH_PROPERTY, resolveSessionLink } from "./session-links";
+import { artifactLinkForName, artifactLinkForPath, findPlainPaths, findPlainReferences, findSessionLinks, isAoLink, parseArtifactLink, parseSessionLink, PLAIN_PATH_PROPERTY, resolveSessionLink } from "./session-links";
 
 describe("session links", () => {
 	it.each([
@@ -104,5 +104,32 @@ describe("session links", () => {
 		expect(findPlainPaths("docs/plan.md")[0]!.node).toEqual({
 			type: "inlineCode", value: "docs/plan.md", data: { hProperties: { [PLAIN_PATH_PROPERTY]: "" } },
 		});
+	});
+});
+
+describe("artifactLinkForName", () => {
+	const workspaces = [{
+		id: "p",
+		sessions: [
+			{ id: "worker", artifactFiles: [{ path: "verdict.md" }, { path: "notes/plan.md" }] },
+			{ id: "other", artifactFiles: [{ path: "plan.md" }, { path: "verdict.md" }, { path: "only-here.md" }] },
+		],
+	}];
+
+	it("resolves a bare file name to this chat's own artifact first", () => {
+		expect(artifactLinkForName("verdict.md", workspaces, "worker")).toBe("ao://sessions/p/worker/artifacts/verdict.md");
+		expect(artifactLinkForName("plan.md", workspaces, "worker")).toBe("ao://sessions/p/worker/artifacts/notes/plan.md");
+		expect(artifactLinkForName("notes/plan.md", workspaces, "worker")).toBe("ao://sessions/p/worker/artifacts/notes/plan.md");
+	});
+
+	it("falls back to another session only when the name is unique", () => {
+		expect(artifactLinkForName("only-here.md", workspaces, "worker")).toBe("ao://sessions/p/other/artifacts/only-here.md");
+		expect(artifactLinkForName("verdict.md", workspaces)).toBeUndefined();
+	});
+
+	it("leaves code that is not a file name alone", () => {
+		expect(artifactLinkForName("verdict", workspaces, "worker")).toBeUndefined();
+		expect(artifactLinkForName("see verdict.md", workspaces, "worker")).toBeUndefined();
+		expect(artifactLinkForName("missing.md", workspaces, "worker")).toBeUndefined();
 	});
 });
