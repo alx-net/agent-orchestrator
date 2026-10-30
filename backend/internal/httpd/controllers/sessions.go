@@ -111,6 +111,8 @@ type SessionService interface {
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 	DelegateTask(ctx context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error)
 	PrepareTask(ctx context.Context, projectID domain.ProjectID) (string, error)
+	PrepareStandaloneTask(ctx context.Context) (string, error)
+	RenewTaskPreparation(ctx context.Context, token string) error
 	CancelTaskPreparation(ctx context.Context, token string) error
 	ListPRListing(ctx context.Context, id domain.SessionID) (sessionsvc.PRListing, error)
 	ClaimPR(ctx context.Context, id domain.SessionID, ref string, opts sessionsvc.ClaimPROptions) (sessionsvc.ClaimPRResult, error)
@@ -285,6 +287,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/orchestrators", c.spawnOrchestrator)
 	r.Post("/orchestrators/delegate", c.delegateTask)
 	r.Post("/projects/{id}/tasks/prepare", c.prepareTask)
+	r.Post("/standalone/tasks/prepare", c.prepareStandaloneTask)
+	r.Post("/task-preparations/{token}/renew", c.renewTaskPreparation)
 	r.Delete("/task-preparations/{token}", c.cancelTaskPreparation)
 	r.Get("/orchestrators/{id}", c.getOrchestrator)
 }
@@ -387,10 +391,11 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	if in.ClientRequestID != "" {
 		keyless := in
 		keyless.ClientRequestID = ""
+		keyless.TaskPreparation = ""
 		keyless.Attachments = nil
 		requestHash = clientRequestFingerprint("session", keyless, attachments)
 	}
-	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash})
+	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash, TaskPreparation: domain.TaskPreparationToken(strings.TrimSpace(in.TaskPreparation))})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -584,27 +589,34 @@ func (c *SessionsController) previewFile(w http.ResponseWriter, r *http.Request)
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/preview/files/*")
 		return
 	}
+	assetPath, _, pathErr := wildcardPath(r)
+	artifactSource := r.URL.Query().Get("source") == "artifact"
+	// A staged attachment answers before the session lookup: a task preparation
+	// stays hidden from session reads until it is claimed, yet its composer and
+	// opening message show the files staged into it. Canonical copies exist only
+	// under a session row AO owns, and their names are unguessable.
+	if pathErr == nil && !artifactSource && c.Attachments != nil {
+		if name, ok := attachmentstore.NameFromWorkspacePath(assetPath); ok {
+			file, info, openErr := c.Attachments.Open(r.Context(), sessionID(r), name)
+			if openErr == nil {
+				defer func() { _ = file.Close() }()
+				serveOpenedPreviewFile(w, r, file, info, assetPath)
+				return
+			}
+		}
+	}
 	sess, err := c.Svc.Get(r.Context(), sessionID(r))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	assetPath, _, err := wildcardPath(r)
-	if err != nil {
+	if pathErr != nil {
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PREVIEW_NOT_FOUND", "Preview not found", nil)
 		return
 	}
-	if r.URL.Query().Get("source") == "artifact" {
+	if artifactSource {
 		c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, assetPath)
 		return
-	}
-	if name, ok := attachmentstore.NameFromWorkspacePath(assetPath); ok && c.Attachments != nil {
-		file, info, openErr := c.Attachments.Open(r.Context(), sess.ID, name)
-		if openErr == nil {
-			defer func() { _ = file.Close() }()
-			serveOpenedPreviewFile(w, r, file, info, assetPath)
-			return
-		}
 	}
 	// __ao_artifacts__/ is a reserved marker AO itself prepends when it builds
 	// an artifact preview link (see ArtifactEntryPath), but it was a valid
@@ -2366,6 +2378,31 @@ func (c *SessionsController) prepareTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, PrepareTaskResponse{OK: true, TaskPreparation: token})
+}
+
+func (c *SessionsController) prepareStandaloneTask(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/standalone/tasks/prepare")
+		return
+	}
+	token, err := c.Svc.PrepareStandaloneTask(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, PrepareTaskResponse{OK: true, TaskPreparation: token})
+}
+
+func (c *SessionsController) renewTaskPreparation(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/task-preparations/{token}/renew")
+		return
+	}
+	if err := c.Svc.RenewTaskPreparation(r.Context(), chi.URLParam(r, "token")); err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *SessionsController) cancelTaskPreparation(w http.ResponseWriter, r *http.Request) {

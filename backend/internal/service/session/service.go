@@ -94,6 +94,7 @@ type commander interface {
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 	PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error)
+	RenewTaskPreparation(domain.TaskPreparationToken) bool
 	CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error
 }
 

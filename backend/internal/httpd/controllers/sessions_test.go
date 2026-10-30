@@ -63,6 +63,7 @@ type fakeSessionService struct {
 	delegationErr              error
 	preparedProject            domain.ProjectID
 	canceledPreparation        string
+	renewedPreparation         string
 	cleanupProjects            []domain.ProjectID
 	cleanupResult              []domain.SessionID
 	cleanupSkipped             []sessionsvc.CleanupSkipped
@@ -508,6 +509,19 @@ func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.Deleg
 func (f *fakeSessionService) PrepareTask(_ context.Context, projectID domain.ProjectID) (string, error) {
 	f.preparedProject = projectID
 	return "prep-token", nil
+}
+
+func (f *fakeSessionService) PrepareStandaloneTask(context.Context) (string, error) {
+	f.preparedProject = "standalone"
+	return "standalone-1", nil
+}
+
+func (f *fakeSessionService) RenewTaskPreparation(_ context.Context, token string) error {
+	if token != "standalone-1" {
+		return apierr.NotFound("TASK_PREPARATION_NOT_FOUND", "Unknown task preparation")
+	}
+	f.renewedPreparation = token
+	return nil
 }
 
 func (f *fakeSessionService) CancelTaskPreparation(_ context.Context, token string) error {
@@ -4727,6 +4741,69 @@ func TestSessionsAPI_PreparesAndCancelsTaskWorkspace(t *testing.T) {
 	_, status, _ = doRequest(t, srv, http.MethodDelete, "/api/v1/task-preparations/prep-token", "")
 	if status != http.StatusNoContent || svc.canceledPreparation != "prep-token" {
 		t.Fatalf("cancel = %d, token %q", status, svc.canceledPreparation)
+	}
+}
+
+func TestSessionsAPI_PreparesRenewsAndClaimsStandaloneTask(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/standalone/tasks/prepare", "")
+	if status != http.StatusAccepted || svc.preparedProject != "standalone" || !strings.Contains(string(body), `"taskPreparation":"standalone-1"`) {
+		t.Fatalf("prepare = %d %s, project %q", status, body, svc.preparedProject)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/task-preparations/standalone-1/renew", "")
+	if status != http.StatusNoContent || svc.renewedPreparation != "standalone-1" {
+		t.Fatalf("renew = %d, token %q", status, svc.renewedPreparation)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/task-preparations/gone/renew", "")
+	if status != http.StatusNotFound || !strings.Contains(string(body), "TASK_PREPARATION_NOT_FOUND") {
+		t.Fatalf("renew gone = %d %s", status, body)
+	}
+
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions", `{"kind":"worker","harness":"codex","prompt":"Read the screenshot","taskPreparation":" standalone-1 "}`)
+	if status != http.StatusCreated || svc.lastSpawn.TaskPreparation != "standalone-1" {
+		t.Fatalf("spawn = %d, token %q", status, svc.lastSpawn.TaskPreparation)
+	}
+}
+
+func TestSessionsAPI_SpawnClientRequestHashIgnoresPreparationButBindsTask(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	hashes := make([]string, 0, 3)
+	for _, request := range []string{
+		`{"kind":"worker","harness":"codex","prompt":"Fix it","taskPreparation":"prep-a","clientRequestId":"draft-1"}`,
+		`{"kind":"worker","harness":"codex","prompt":"Fix it","taskPreparation":"prep-b","clientRequestId":"draft-1"}`,
+		`{"kind":"worker","harness":"codex","prompt":"Fix something else","taskPreparation":"prep-b","clientRequestId":"draft-1"}`,
+	} {
+		_, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions", request)
+		if status != http.StatusCreated {
+			t.Fatalf("spawn = %d", status)
+		}
+		hashes = append(hashes, svc.lastSpawn.ClientRequestHash)
+	}
+	if hashes[0] == "" || hashes[0] != hashes[1] || hashes[1] == hashes[2] {
+		t.Fatalf("hashes = %q, want the token ignored and the task bound", hashes)
+	}
+}
+
+func TestSessionsAPI_PreviewServesAttachmentStagedIntoHiddenPreparation(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := attachmentstore.New(dataDir).PutCanonical(context.Background(), "standalone-1", "attachment-cafe.png", []byte("png-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	// A preparation's row is hidden: Get answers exactly as for an unknown session.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{DataDir: dataDir}, log, nil, httpd.APIDeps{Sessions: newFakeSessionService()}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/standalone-1/preview/files/.ao/attachments/attachment-cafe.png", "")
+	if status != http.StatusOK || string(body) != "png-bytes" {
+		t.Fatalf("staged preview = %d %q", status, body)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/standalone-1/preview/files/.ao/attachments/attachment-other.png", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown attachment = %d, want 404", status)
 	}
 }
 

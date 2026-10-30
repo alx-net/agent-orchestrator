@@ -12865,6 +12865,31 @@ paths:
       summary: ""
       tags:
       - conversations
+  /api/v1/standalone/tasks/prepare:
+    post:
+      operationId: prepareStandaloneTask
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepareTaskResponse'
+          description: Accepted
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Speculatively create the next Scratchpad task's empty folder
+      tags:
+      - sessions
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -13073,6 +13098,41 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Cancel an unclaimed speculative task worktree
+      tags:
+      - projects
+  /api/v1/task-preparations/{token}/renew:
+    post:
+      operationId: renewTaskPreparation
+      parameters:
+      - description: Opaque speculative task-worktree token.
+        in: path
+        name: token
+        required: true
+        schema:
+          description: Opaque speculative task-worktree token.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Keep an open composer's unclaimed task workspace from expiring
       tags:
       - projects
   /api/v1/telemetry/identity:
@@ -21193,6 +21253,8 @@ components:
         requestedOutput:
           enum:
           - artifact
+          type: string
+        taskPreparation:
           type: string
         trackerProvider:
           enum:

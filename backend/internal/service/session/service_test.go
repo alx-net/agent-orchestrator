@@ -249,6 +249,32 @@ func TestTaskPreparationsStayOutOfSessionReads(t *testing.T) {
 	}
 }
 
+func TestHiddenStandalonePreparationListsItsFolder(t *testing.T) {
+	st := newFakeStore()
+	folder := t.TempDir()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:                "standalone-1",
+		Kind:              domain.KindWorker,
+		IsTaskPreparation: true,
+		Metadata:          domain.SessionMetadata{WorkspacePath: folder},
+	}
+	svc := &Service{store: st}
+
+	files, err := svc.ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil || len(files.Files) != 0 {
+		t.Fatalf("empty folder = %+v, %v", files, err)
+	}
+	if err := os.MkdirAll(filepath.Join(folder, ".ao", "attachments"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, ".ao", "attachments", "attachment-1.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ListWorkspaceFiles(context.Background(), "standalone-1"); err != nil {
+		t.Fatalf("folder with a staged file: %v", err)
+	}
+}
+
 func TestGetRecordReadsOnlyTheStoredRow(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Metadata: domain.SessionMetadata{PreviewURL: "http://localhost:5173/"}}
@@ -2707,6 +2733,7 @@ func (f *fakeCommander) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domai
 func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
 	return "", nil
 }
+func (*fakeCommander) RenewTaskPreparation(domain.TaskPreparationToken) bool { return false }
 func (*fakeCommander) CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error {
 	return nil
 }

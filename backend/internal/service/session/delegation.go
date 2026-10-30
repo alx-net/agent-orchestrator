@@ -57,6 +57,21 @@ func (s *Service) PrepareTask(ctx context.Context, projectID domain.ProjectID) (
 	return string(token), err
 }
 
+// PrepareStandaloneTask is PrepareTask for Scratchpad: it reserves a projectless
+// session and its empty folder, so a first message can carry staged files.
+func (s *Service) PrepareStandaloneTask(ctx context.Context) (string, error) {
+	token, err := s.manager.PrepareTaskWorkspace(ctx, domain.ProjectRecord{})
+	return string(token), err
+}
+
+// RenewTaskPreparation keeps an open composer's unclaimed workspace from expiring.
+func (s *Service) RenewTaskPreparation(_ context.Context, token string) error {
+	if !s.manager.RenewTaskPreparation(domain.TaskPreparationToken(token)) {
+		return apierr.NotFound("TASK_PREPARATION_NOT_FOUND", "Unknown task preparation")
+	}
+	return nil
+}
+
 // CancelTaskPreparation releases an unclaimed speculative worktree. Unknown or
 // already-claimed tokens are intentionally idempotent.
 func (s *Service) CancelTaskPreparation(ctx context.Context, token string) error {

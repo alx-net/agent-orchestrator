@@ -3780,6 +3780,26 @@ func sessionOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/standalone/tasks/prepare", id: "prepareStandaloneTask", tag: "sessions",
+			summary: "Speculatively create the next Scratchpad task's empty folder",
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.PrepareTaskResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/task-preparations/{token}/renew", id: "renewTaskPreparation", tag: "projects",
+			summary:    "Keep an open composer's unclaimed task workspace from expiring",
+			pathParams: []any{controllers.TaskPreparationTokenParam{}},
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodDelete, path: "/api/v1/task-preparations/{token}", id: "cancelTaskPreparation", tag: "projects",
 			summary:    "Cancel an unclaimed speculative task worktree",
 			pathParams: []any{controllers.TaskPreparationTokenParam{}},

@@ -649,6 +649,10 @@ type SpawnSessionRequest struct {
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
 	Attachments []AttachmentInput `json:"attachments,omitempty"`
+	// TaskPreparation is the opaque workspace token returned while the composer
+	// is open. A worker claims it and keeps the files staged there. Missing or
+	// expired tokens fall back to normal creation.
+	TaskPreparation string `json:"taskPreparation,omitempty"`
 }
 
 // AttachmentInput is one file attached to a spawn, delegate, stage, or send
