@@ -55,7 +55,8 @@ func CLIActorType(actorType, commandPath string) string {
 	if _, ok := legacyActorlessUserCLICommands[normalized]; ok {
 		return "user"
 	}
-	if normalized == "ao hooks" || normalized == "ao report" {
+	// ao wait and ao checkout only run inside an agent session, like ao report.
+	if normalized == "ao hooks" || normalized == "ao report" || normalized == "ao checkout" || normalized == "ao wait" || strings.HasPrefix(normalized, "ao wait ") {
 		return "agent"
 	}
 	return "system"

@@ -71,6 +71,10 @@ function toSessionArtifact(artifact: components["schemas"]["SessionArtifact"]): 
 	};
 }
 
+/**
+ * The spawning session, read without trusting the generated type: a daemon too
+ * old to send it leaves it out, and a session without a parent has none.
+ */
 export function toWorkspaceSession(
 	session: components["schemas"]["ControllersSessionView"],
 	project: Pick<WorkspaceSummary, "id" | "name">,
@@ -103,6 +107,7 @@ export function toWorkspaceSession(
 			: undefined,
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
+		...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
 		mode: session.mode === "chat" ? "chat" : "tui",
 		branch: session.branch || undefined,
 		status,
@@ -207,6 +212,7 @@ function toLocalWorkspaceSession(
 			: undefined,
 		autoReviewEnabled: session.autoReviewEnabled ?? false,
 		kind: session.kind === "orchestrator" ? "orchestrator" : session.kind === "worker" ? "worker" : undefined,
+		...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
 		// Carried through verbatim: the session surface must render from
 		// the mode this session was created with, not from the current default.
 		mode: session.mode === "chat" ? "chat" : "tui",

@@ -11,6 +11,8 @@ import type {
 } from "electron";
 import { nativeImage } from "electron";
 import { randomUUID } from "node:crypto";
+import { readdir, rm } from "node:fs/promises";
+import path from "node:path";
 import type { BrowserCloseFailure } from "./browser-close-diagnostics";
 import type {
   BrowserAnnotationCancelPayload,
@@ -224,6 +226,8 @@ type BrowserBoundsInput = {
 type BrowserNavigateInput = {
   viewId: string;
   url: string;
+  /** The person typed this address: the keyboard moves to the page. */
+  focusPage?: boolean;
 };
 
 type BrowserHistorySuggestInput = {
@@ -500,6 +504,8 @@ export type BrowserViewHostOptions = {
   browserHistoryStore?: BrowserHistoryStore;
   browserDownloadManager?: BrowserDownloadManager;
   clearBrowserProfileData?: (partition: string) => Promise<void>;
+  // Electron's `<userData>/Partitions`, swept by removeStaleTemporaryPartitions.
+  partitionsDirectory?: string;
   // Electron 44 removed clipboard.writeImage; main.ts adapts the async
   // ClipboardItem API to this narrow image-only writer.
   clipboard?: { writeImage(image: Electron.NativeImage): void | Promise<void> };
@@ -546,6 +552,9 @@ export type BrowserViewHost = {
   detachProfile: (profileId: BrowserProfileId) => Promise<void>;
   isProfileLive: (profileId: BrowserProfileId) => boolean;
   clearProfileData: (profileId: BrowserProfileId) => Promise<void>;
+  // Delete temporary partition directories an earlier run left behind (crash,
+  // force quit) and resolve to how many were removed.
+  removeStaleTemporaryPartitions: () => Promise<number>;
   // Whether browser-owned UI was the most recently used application surface.
   isLastUsedBrowser: () => boolean;
   // Refresh the live page after raising the transparent shell for an overlay.
@@ -614,6 +623,8 @@ type BrowserEntry = {
   pendingNavigation?: { url: string };
   findState: BrowserFindState & { requestId?: number };
   annotationEnabled: boolean;
+  /** The person started the load in flight from the toolbar: picking gets the keyboard back. */
+  focusAfterLoad?: boolean;
   annotationSessions: Map<
     string,
     { session: BrowserAnnotationSession; token: string }
@@ -815,8 +826,20 @@ const PROFILE_SWITCH_SETTLE_MS = 10_000;
 // as the renderer's showPreview matches them.
 const REMOTE_PREVIEW_URL = /^https:\/\/ao-preview-[0-9a-f]{32}\.localhost(?::\d+)?\//;
 
+// Electron stores `persist:<name>` in `<userData>/Partitions/<name>`. Only a
+// directory named exactly like one temporaryBrowserPartition() creates is
+// ever swept.
+const TEMPORARY_BROWSER_PARTITION_DIRECTORY =
+  /^ao-browser-temporary-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Electron keeps a Session, and its open files, for every partition this
+// process has used, even after AO clears an ended worker's partition. The
+// sweep spares all of them, not just the ones live browsers still hold.
+const temporaryPartitionsOpenedThisProcess = new Set<string>();
+
 function temporaryBrowserPartition(): string {
-  return `${TEMPORARY_BROWSER_PARTITION_PREFIX}${randomUUID()}`;
+  const partition = `${TEMPORARY_BROWSER_PARTITION_PREFIX}${randomUUID()}`;
+  temporaryPartitionsOpenedThisProcess.add(partition);
+  return partition;
 }
 
 function isTemporaryBrowserPartition(partition: string): boolean {
@@ -954,8 +977,9 @@ export function createBrowserViewHost(
   // Workers whose human explicitly picked the temporary profile this run.
   const explicitTemporarySessionIds = new Set<string>();
 
-  // A worker without a durable binding starts in the first configured profile;
-  // temporary is used only when no profile exists or the human picked it.
+  // A worker without a durable binding starts in the default profile (the
+  // store seeds a shared Default on first run); temporary is used only when no
+  // default is set or the human picked it.
   const initialProfileIdForSession = (
     sessionId: string,
   ): BrowserProfileId | null => {
@@ -1134,6 +1158,12 @@ export function createBrowserViewHost(
     const webPreferences: Electron.WebPreferences = {
       backgroundThrottling: false,
       contextIsolation: true,
+      // Electron focuses a WebContents on every browser-initiated navigation
+      // (loadURL, reload, history, CDP Page.navigate) by default, so each
+      // preview, agent page change, or viewer reload pulled the keyboard out
+      // of whatever field the person was typing in. The page takes focus only
+      // when the person asks for it (a click, the address bar, a shortcut).
+      focusOnNavigation: false,
       nodeIntegration: false,
       partition: session.profilePartition,
       // Chromium's built-in PDF viewer is plugin-backed in Electron. Keep it
@@ -2772,6 +2802,7 @@ export function createBrowserViewHost(
   const navigate = async ({
     viewId,
     url,
+    focusPage = false,
   }: BrowserNavigateInput): Promise<BrowserNavState> => {
     const session = entries.get(viewId);
     if (!session)
@@ -2783,9 +2814,21 @@ export function createBrowserViewHost(
     return withBrowserOperation(session, async () => {
       if (!session.tabs.size) {
         const entry = await openTab(session, url, true);
+        if (focusPage) entry.view.webContents.focus();
         return pushNavState(options, entry);
       }
-      return navigateEntry(activeEntry(session), url);
+      const entry = activeEntry(session);
+      // Navigating never moves the keyboard (focusOnNavigation is off): only
+      // an address the person typed hands it to the page, as a browser does.
+      // A preview arriving through the same call leaves it where they type.
+      if (!focusPage) return navigateEntry(entry, url);
+      entry.view.webContents.focus();
+      const state = await navigateEntry(entry, url);
+      // A document swap can drop it on the way; give it back unless the
+      // person has since gone back to AO's own window.
+      if (session.activeTabId === entry.tabId && shellWebContents.isFocused?.() !== true)
+        entry.view.webContents.focus();
+      return state;
     });
   };
 
@@ -2969,6 +3012,39 @@ export function createBrowserViewHost(
     pendingTemporaryPartitionClears.add(cleanup);
     void cleanup.finally(() => pendingTemporaryPartitionClears.delete(cleanup));
     return cleanup;
+  };
+
+  // clearTemporaryPartition only runs when a browser session ends cleanly, and
+  // even then Electron leaves the emptied directory behind. No earlier run's
+  // partition is reopened (each worker gets a fresh UUID), so any directory
+  // this process has not opened is garbage.
+  const removeStaleTemporaryPartitions = async (): Promise<number> => {
+    const directory = options.partitionsDirectory;
+    if (!directory || !path.isAbsolute(directory)) return 0;
+    let names: string[];
+    try {
+      names = (await readdir(directory, { withFileTypes: true }))
+        .filter(
+          (entry) =>
+            entry.isDirectory() &&
+            TEMPORARY_BROWSER_PARTITION_DIRECTORY.test(entry.name),
+        )
+        .map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let removed = 0;
+    for (const name of names) {
+      if (temporaryPartitionsOpenedThisProcess.has(`persist:${name}`)) continue;
+      try {
+        await rm(path.join(directory, name), { recursive: true, force: true });
+        removed += 1;
+      } catch (error) {
+        console.warn("stale temporary browser partition cleanup failed:", error);
+      }
+    }
+    return removed;
   };
 
   const destroy = (viewId: string): void => {
@@ -3406,6 +3482,8 @@ export function createBrowserViewHost(
     if (cancelForNavigation || reapplyBounds) {
       applySessionBounds(session, entry);
     }
+    // Every caller is the person (toolbar, shortcut), never the agent.
+    entry.focusAfterLoad = command !== "stop";
     entry.driver().nav(command);
     return pushNavState(options, entry);
   };
@@ -4988,6 +5066,7 @@ export function createBrowserViewHost(
     detachProfile,
     isProfileLive,
     clearProfileData,
+    removeStaleTemporaryPartitions,
     isLastUsedBrowser: () =>
       lastUsedViewId !== null && entries.has(lastUsedViewId),
     // Reordering the transparent shell above a live page can leave either
@@ -5765,7 +5844,13 @@ function wireNavEvents(
       ...(annotationSession ? { session: annotationSession } : {}),
       ...(entry.annotationTheme ? { theme: entry.annotationTheme } : {}),
     });
-    if (entry.annotationEnabled) contents.focus();
+    // Picking resumes with the keyboard after a reload the person started,
+    // but a load the agent or the page started must not take it from the
+    // person typing in AO's own window.
+    const personLoaded = entry.focusAfterLoad === true;
+    entry.focusAfterLoad = false;
+    if (entry.annotationEnabled && (personLoaded || shellContents(options).isFocused?.() !== true))
+      contents.focus();
     pushAnnotationState(options, entry, annotationSession);
     recordHistory(contents.getURL(), contents.getTitle(), false);
     update();

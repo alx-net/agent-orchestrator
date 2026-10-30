@@ -75,6 +75,7 @@ import { getApiBaseUrl } from "../../lib/api-client";
 import { readArtifactRef, readRenderRef } from "../../lib/render-frame";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
 import { ActivityTitle, ChatMarkdown, OriginPreviewMarkdown, SessionLabelLink, SessionLinkedText } from "./ChatMarkdown";
+import { remarkPlainPaths } from "../../lib/session-links";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { ScriptRunPanel } from "../ScriptRunPanel";
@@ -82,7 +83,7 @@ import { HumanMessageEditor } from "./HumanMessageEditor";
 import { RenderFrame } from "./RenderFrame";
 import { ConversationBranchNavigator } from "./ConversationBranchNavigator";
 import { ConversationContentItems } from "./ConversationContentItems";
-import { UsageLimitNotice } from "./UsageLimitNotice";
+import { UsageLimitNotice, usageLimitSwitchCopy } from "./UsageLimitNotice";
 import {
 	ACTIVITY_SUMMARY_BUTTON_CLASS,
 	commandBinaryLabel,
@@ -93,6 +94,7 @@ import {
 import { actionDetailLines, describeConversationActivity } from "./activity-action";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ChatAnnotationSummary } from "./ChatAnnotationSummary";
+import { RunnableCode } from "./RunCommand";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -906,6 +908,9 @@ function AutomationExpandButton({ expanded, onClick }: { expanded: boolean; onCl
 	);
 }
 
+// Bare file paths in the agent's prose open like inline code paths once the chat can find the file.
+const ASSISTANT_REMARK_PLUGINS = [remarkPlainPaths];
+
 /** The agent's prose. Streaming is represented by text arriving in place. */
 export function AssistantMessage({
 	message,
@@ -943,7 +948,7 @@ export function AssistantMessage({
 			data-chat-message-revision={!live && !renderingStreaming ? message.revision : undefined}
 			data-chat-message-role={!live && !renderingStreaming ? message.role : undefined}
 		>
-			<div data-chat-message-body=""><ChatMarkdown text={visibleText} streaming={renderingStreaming} /></div>
+			<div data-chat-message-body=""><RunnableCode><ChatMarkdown text={visibleText} streaming={renderingStreaming} remarkPlugins={ASSISTANT_REMARK_PLUGINS} /></RunnableCode></div>
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and
@@ -1119,6 +1124,7 @@ export function ActivityRow({ activity }: { activity: ConversationActivity }) {
 	else if (activity.detail?.event === "workspace.script.run" && activity.detail.scriptRun) content = <ScriptRunPanel collapsible run={activity.detail.scriptRun} />;
 	else if (activity.detail?.event === "workspace.setup") content = <ProjectSetupRow activity={activity} />;
 	else if (activity.detail?.event === "account.switched") content = <AccountSwitchedRow accountId={activity.detail.accountId} />;
+	else if (activity.detail?.event === "account.limit_switch" && activity.detail.phase) content = <UsageLimitSwitchRow detail={activity.detail} />;
 	else if (renderRef) content = <RenderFrame render={renderRef} />;
 	else if (artifactRef) content = <RenderFrame artifact={artifactRef} />;
 	else content = <GenericActivityRow activity={activity} />;
@@ -2541,6 +2547,25 @@ function AccountSwitchedRow({ accountId }: { accountId?: string }) {
 	const { t } = useTranslation();
 	const label = useAgentAccountLabel();
 	return <TwoRowTimelineMarker message={t("chat.accountSwitched", { email: label(accountId) })} detail={t("chat.accountSwitchedDetail")} wrapDetail />;
+}
+
+/** Where AO moved a turn its account's usage limit refused: switching, then
+ * the account it continued on, and any MCP servers missing there. */
+function UsageLimitSwitchRow({ detail }: { detail: NonNullable<ConversationActivity["detail"]> }) {
+	const { t } = useTranslation();
+	const label = useAgentAccountLabel();
+	const copy = usageLimitSwitchCopy({
+		phase: detail.phase ?? "switching", accountId: detail.accountId, fromAccountId: detail.fromAccountId,
+		error: detail.error, mcpNeedsAuth: detail.mcpNeedsAuth,
+	}, label, t);
+	return (
+		<TwoRowTimelineMarker
+			message={copy.message}
+			detail={copy.detail}
+			tone={detail.phase === "failed" ? "text-destructive" : undefined}
+			wrapDetail
+		/>
+	);
 }
 
 function ReauthRow({ activity }: { activity: ConversationActivity }) {

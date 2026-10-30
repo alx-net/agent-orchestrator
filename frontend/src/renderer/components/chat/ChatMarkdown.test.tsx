@@ -247,6 +247,49 @@ describe("ChatMarkdown", () => {
 		openExternal.mockRestore();
 	});
 
+	it("opens a GitHub link in the system browser without revealing the AO Browser", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const pr = "https://github.com/Kugelaudio/KugelAudio/pull/5449";
+		renderWithLinkHandler(`Opened [#5449](${pr}), see ${pr}/files.`, onLinkOpen);
+
+		await user.click(screen.getByRole("link", { name: "#5449" }));
+		await user.click(screen.getByRole("link", { name: `${pr}/files` }));
+
+		expect(openExternal.mock.calls).toEqual([[pr], [`${pr}/files`]]);
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("links a path the worktree lacks to the open PR's branch on GitHub, opened externally", async () => {
+		const user = userEvent.setup();
+		const onLinkOpen = vi.fn();
+		const onFileOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const base = "https://github.com/Kugelaudio/KugelAudio/blob/ao/kugelaudio-3/cloud-workspace-spec/";
+		render(
+			<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onFileOpen} workspacePaths={["README.md"]} pullRequestFileBase={base}>
+				<ChatMarkdown text={"The plan is `products/platform/docs/22-workspaces.md`; the branch is `ao/kugelaudio-3/cloud-workspace-spec`."} />
+			</ChatLinkProvider>,
+		);
+
+		const plan = screen.getByRole("link", { name: "products/platform/docs/22-workspaces.md" });
+		expect(plan).toHaveAttribute("href", `${base}products/platform/docs/22-workspaces.md`);
+		await user.click(plan);
+
+		expect(openExternal).toHaveBeenCalledExactlyOnceWith(`${base}products/platform/docs/22-workspaces.md`);
+		expect(onLinkOpen).not.toHaveBeenCalled();
+		expect(onFileOpen).not.toHaveBeenCalled();
+		expect(screen.getByText("ao/kugelaudio-3/cloud-workspace-spec").closest("a, button")).toBeNull();
+		openExternal.mockRestore();
+	});
+
+	it("keeps a path the worktree lacks as plain code without an open PR", () => {
+		renderWithLinkHandler("The plan is `products/platform/docs/22-workspaces.md`.", vi.fn(), ["README.md"], vi.fn());
+		expect(screen.getByText("products/platform/docs/22-workspaces.md").closest("a, button")).toBeNull();
+	});
+
 	it.each([
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
@@ -423,6 +466,23 @@ describe("ChatMarkdown", () => {
 		expect(link).toHaveAttribute("href", href);
 		await userEvent.setup().click(link);
 		expect(onSessionLinkOpen).toHaveBeenCalledWith(href);
+	});
+
+	it("opens an artifact named only by its file name, as agents write it", async () => {
+		linkSource.workspaces = [{ id: "project", sessions: [
+			{ id: "worker-1", artifactFiles: [{ path: "verdict.md" }] },
+			{ id: "worker-2", artifactFiles: [{ path: "verdict.md" }] },
+		] }];
+		const onSessionLinkOpen = vi.fn();
+		render(
+			<ChatLinkProvider onSessionLinkOpen={onSessionLinkOpen} sessionId="worker-2">
+				<ChatMarkdown text="The verdict is in `verdict.md`, not in `plain-code`." />
+			</ChatLinkProvider>,
+		);
+		const link = screen.getByRole("link");
+		expect(link).toHaveAttribute("href", "ao://sessions/project/worker-2/artifacts/verdict.md");
+		await userEvent.setup().click(link);
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/worker-2/artifacts/verdict.md");
 	});
 
 	it("leaves inline code naming an unlisted artifact as plain code", () => {

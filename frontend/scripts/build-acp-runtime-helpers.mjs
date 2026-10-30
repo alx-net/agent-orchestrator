@@ -201,6 +201,51 @@ export function patchClaudeFoldedPromptSettlement(adapterPath) {
 }
 
 /**
+ * Merge a session's `settings` option with the model settings instead of
+ * replacing them.
+ *
+ * claude-agent-acp 0.70 turns CLAUDE_MODEL_CONFIG into the Agent SDK's
+ * `settings` option (Claude Code's --settings), unless the session's
+ * `_meta.claudeCode.options.settings` is set, which then replaces it. AO sends
+ * that option per session to decide where Claude Code compacts, because
+ * --settings outranks a repository's .claude/settings.json env and the process
+ * environment does not. Without this patch that choice would drop the
+ * availableModels list AO's model picker relies on.
+ */
+export function patchClaudeSessionSettings(adapterPath) {
+	const source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: merge session settings over the model settings.")) return false;
+	const original = [
+		"const configuredSettings = userProvidedOptions?.settings ??",
+		"            (modelConfig",
+		"                ? {",
+		"                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),",
+		"                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),",
+		"                }",
+		"                : undefined);",
+	].join("\n");
+	const at = source.indexOf(original);
+	if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+		throw new Error("claude-agent-acp settings option no longer matches AO's session settings patch");
+	}
+	const replacement = [
+		"// AO: merge session settings over the model settings.",
+		"        const modelSettings = modelConfig",
+		"            ? {",
+		"                ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),",
+		"                ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),",
+		"            }",
+		"            : undefined;",
+		"        const sessionSettings = userProvidedOptions?.settings;",
+		'        const configuredSettings = modelSettings && sessionSettings !== null && typeof sessionSettings === "object"',
+		"            ? { ...modelSettings, ...sessionSettings }",
+		"            : sessionSettings ?? modelSettings;",
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
  * Drop trailing-idle debt that can no longer be paid.
  *
  * claude-agent-acp 0.70 counts one owed `idle` per result and absorbs that many
@@ -370,7 +415,8 @@ export function patchClaudeSteerSettlement(adapterPath) {
 
 const SUBAGENT_REPORTING_RULE =
 	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
-	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words.";
+	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words. " +
+	"End your final report with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or what you are waiting for in under 20 words.";
 
 /**
  * Stream what a Claude subagent is doing to its Agent/Task tool call.

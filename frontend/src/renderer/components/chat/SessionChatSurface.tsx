@@ -40,7 +40,8 @@ import { useConversationPromptSuggestion } from "../../hooks/useConversationProm
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useLatestCallback } from "../../hooks/useStable";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
-import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
+import { usePullRequestFileBase } from "../../hooks/useSessionScmSummary";
+import { isWebLink, isWorkspaceHtmlLink, opensInSystemBrowser } from "../../lib/external-link-policy";
 import { sessionUiKey } from "../../lib/hosts";
 import { readChatLastModel, rememberChatLastModel } from "../../lib/chat-last-model";
 import { clientForSessionHost } from "../../lib/host-clients";
@@ -50,7 +51,7 @@ import type { Theme } from "../../stores/ui-store";
 import { can } from "../../types/conversation";
 import type { ConversationSnapshot, TurnSettings } from "../../types/conversation";
 import type { TerminalTarget } from "../../types/terminal";
-import type { WorkspaceSession } from "../../types/workspace";
+import { STANDALONE_WORKSPACE_ID, type WorkspaceSession } from "../../types/workspace";
 import { ComposerErrorNotice, switchEffort, type PendingAgentSwitch } from "./AgentSwitchPicker";
 import { AGENT_SWITCH_FAILED } from "./ChatComposer";
 import { useUiStore } from "../../stores/ui-store";
@@ -64,7 +65,8 @@ export interface ConversationWorkState {
 	queuedTurnCount: number;
 }
 
-const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/i;
+const HTTP_LINK_PATTERN = /https?:\/\/[^\s<>()\[\]{}"']+/gi;
+const MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(([^)\s]+)\)/g;
 const autoOpenedLinkSessions = new Set<string>();
 
 interface AssistantLinkState {
@@ -85,11 +87,12 @@ function cleanExtractedLink(value: string): string {
 
 function firstBrowserLink(text: string, workspacePaths: string[]): string | undefined {
 	const candidates: Array<{ index: number; value: string }> = [];
-	const webMatch = HTTP_LINK_PATTERN.exec(text);
-	if (webMatch) candidates.push({ index: webMatch.index, value: cleanExtractedLink(webMatch[0]) });
-	const markdownLink = /\[[^\]]+\]\(([^)\s]+)\)/.exec(text);
-	if (markdownLink?.[1]) candidates.push({ index: markdownLink.index, value: cleanExtractedLink(markdownLink[1]) });
+	for (const match of text.matchAll(HTTP_LINK_PATTERN)) candidates.push({ index: match.index, value: cleanExtractedLink(match[0]) });
+	for (const match of text.matchAll(MARKDOWN_LINK_PATTERN)) candidates.push({ index: match.index, value: cleanExtractedLink(match[1]!) });
 	for (const candidate of candidates.sort((a, b) => a.index - b.index)) {
+		// A click opens GitHub in the system browser; opening it unasked would pull
+		// the user out of AO, so a reply's PR link is left for them to click.
+		if (opensInSystemBrowser(candidate.value)) continue;
 		if (isWebLink(candidate.value) || isWorkspaceHtmlLink(candidate.value, workspacePaths)) return candidate.value;
 	}
 	return undefined;
@@ -223,7 +226,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const plansSetup = Boolean(session.provisionSteps?.some((step) => step.id === "setup"));
 	const projectScripts = useQuery({
 		queryKey: ["project", session.workspaceId],
-		enabled: plansSetup && !hostId && !session.cloud,
+		enabled: plansSetup && !hostId && !session.cloud && session.workspaceId !== STANDALONE_WORKSPACE_ID,
 		staleTime: 30_000,
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: session.workspaceId } } });
@@ -426,7 +429,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		if (session.kind !== "worker" || !skillsHarness || skills.length === 0) return;
 		rememberChatSkills(skillsHarness, hostId, skills);
 	}, [hostId, session.kind, skills, skillsHarness]);
-	const { paths, truncated } = useWorkspaceFilePaths(session.id, Boolean(snapshot), hostId);
+	const { paths, truncated, isLoading: pathsLoading } = useWorkspaceFilePaths(session.id, Boolean(snapshot), hostId);
+	// Waits for the file list, so a path the worktree has never flickers to GitHub.
+	const pullRequestFileBase = usePullRequestFileBase(session, hostId, Boolean(snapshot) && !pathsLoading);
 	const stageAttachments = useStageAttachments(session.id, hostId);
 	const [annotationNavigationRequest, setAnnotationNavigationRequest] = useState<{ id: string; text: string; messageId?: string; revision?: number }>();
 	useChatMessageFocus(uiSessionId, undefined, Boolean(snapshot), setAnnotationNavigationRequest);
@@ -824,6 +829,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				skills={sideCreationEnabled ? [...(["btw", "side"].map((name) => ({ name, displayName: name, description: "Open a new side chat", source: "AO" }))), ...skills.filter((skill) => skill.name !== "btw" && skill.name !== "side")] : skills}
 				filePaths={paths}
 				filePathsTruncated={truncated}
+				pullRequestFileBase={pullRequestFileBase}
 				localEchos={localEchos}
 				onStageAttachments={stageAttachments}
 				nativeImages={can(renderSnapshot, "images")}

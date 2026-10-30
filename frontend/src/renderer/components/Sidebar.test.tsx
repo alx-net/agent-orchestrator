@@ -11,7 +11,7 @@ vi.mock("motion/react", async (importOriginal) => {
 		AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
 	};
 });
-import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../../api/schema";
@@ -32,6 +32,7 @@ import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 import { useUiStore } from "../stores/ui-store";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
+import { useSessionUnreadStore } from "../stores/session-unread-store";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import type { RemoteHost } from "../hooks/useRemoteHosts";
 
@@ -501,6 +502,7 @@ function fireDrag(
 beforeEach(() => {
 	window.localStorage.clear();
 	useSidebarOrderStore.setState({ projectOrder: [], pendingCreatedProjectIds: [], sessionOrders: {} });
+	useSessionUnreadStore.setState({ unread: {}, working: {} });
 	dragEnds.clear();
 	dragOvers.clear();
 	dragStarts.clear();
@@ -710,6 +712,125 @@ describe("Sidebar", () => {
 
 		await user.click(artifacts);
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/artifacts" });
+	});
+
+	it("shows the Agents row after Artifacts with a count of working sessions", async () => {
+		const user = userEvent.setup();
+		const active = { state: "active" as const, lastActivityAt: "2026-06-30T00:00:00Z" };
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, activity: active },
+					{ ...session, id: "proj-1-2", activity: active },
+					{ ...session, id: "proj-1-3", activity: { ...active, state: "idle" } },
+					{ ...session, id: "proj-1-4", activity: active, isTerminated: true, status: "terminated" },
+				],
+			}],
+		});
+
+		const artifacts = screen.getByRole("button", { name: "Artifacts" });
+		const agents = screen.getByRole("button", { name: "Agents" });
+		expect(artifacts.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(agents).toHaveTextContent("2");
+		await user.click(agents);
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/agents" });
+	});
+
+	it("bolds a session whose agent finished until the user opens it", () => {
+		const finished = { ...session, activity: { state: "idle" as const, lastActivityAt: "2026-06-30T00:00:00Z" } };
+		useSessionUnreadStore.setState({ unread: { [finished.id]: true }, working: {} });
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [finished] }] });
+
+		const title = screen.getByRole("button", { name: /Open fix login/ }).querySelector("[data-session-name]");
+		expect(title).toHaveAttribute("data-unread", "true");
+		expect(title).toHaveClass("font-semibold");
+		expect(title).toHaveTextContent("finished, not opened yet");
+		cleanup();
+
+		mockParams.projectId = finished.workspaceId;
+		mockParams.sessionId = finished.id;
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [finished] }] });
+		const opened = screen.getByRole("button", { name: /Open fix login/ }).querySelector("[data-session-name]");
+		expect(opened).not.toHaveAttribute("data-unread");
+		expect(opened).not.toHaveClass("font-semibold");
+		expect(useSessionUnreadStore.getState().unread).toEqual({});
+	});
+
+	it("omits the Agents count when nothing works and marks the row active on its route", () => {
+		mockLocation.pathname = "/agents";
+		renderSidebar();
+
+		const agents = screen.getByRole("button", { name: "Agents" });
+		expect(agents).toHaveAttribute("aria-current", "page");
+		expect(agents.textContent).toBe("Agents");
+	});
+
+	const prFact = (number: number, overrides: Partial<WorkspaceSession["prs"][number]> = {}): WorkspaceSession["prs"][number] => ({
+		url: `https://github.com/acme/app/pull/${number}`,
+		number,
+		state: "open",
+		ci: "passing",
+		review: "none",
+		mergeability: "mergeable",
+		reviewComments: false,
+		updatedAt: "2026-06-30T00:00:00Z",
+		...overrides,
+	});
+
+	it("shows the PRs row after Agents with a count of open and draft PRs, tinted for conflicts", async () => {
+		const user = userEvent.setup();
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, prs: [prFact(1), prFact(2, { state: "draft" }), prFact(3, { state: "merged" })] },
+					{ ...session, id: "proj-1-2", prs: [prFact(4, { mergeability: "conflicting" })] },
+					// An ended session's PR facts are no longer observed.
+					{ ...session, id: "proj-1-3", isTerminated: true, status: "terminated", prs: [prFact(5, { ci: "failing" })] },
+				],
+			}],
+		});
+
+		const agents = screen.getByRole("button", { name: "Agents" });
+		const prs = screen.getByRole("button", { name: "PRs" });
+		expect(agents.compareDocumentPosition(prs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const count = within(prs).getByText("3");
+		expect(count).toHaveAttribute("data-tone", "conflicts");
+		expect(count).toHaveClass("text-status-needs-you");
+		await user.click(prs);
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/prs" });
+	});
+
+	it("tints the PRs count for failing CI before conflicts", () => {
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...session, prs: [prFact(4, { mergeability: "conflicting" })] },
+					{ ...session, id: "proj-1-2", prs: [prFact(6, { ci: "failing" })] },
+				],
+			}],
+		});
+		const count = within(screen.getByRole("button", { name: "PRs" })).getByText("2");
+		expect(count).toHaveAttribute("data-tone", "failing");
+		expect(count).toHaveClass("text-status-exited");
+	});
+
+	it("keeps the PRs count calm while checks only run, and marks the row active on its route", () => {
+		mockLocation.pathname = "/prs";
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [{ ...session, prs: [prFact(7, { ci: "pending", mergeability: "unknown" })] }] }] });
+
+		const prs = screen.getByRole("button", { name: "PRs" });
+		expect(prs).toHaveAttribute("aria-current", "page");
+		const count = within(prs).getByText("1");
+		expect(count).not.toHaveAttribute("data-tone");
+		expect(count).toHaveClass("text-passive");
+	});
+
+	it("omits the PRs count with no open PRs", () => {
+		renderSidebar();
+		expect(screen.getByRole("button", { name: "PRs" }).textContent).toBe("PRs");
 	});
 
 	it("omits the Artifacts count when there are none and marks the row active on its route", () => {
@@ -2673,7 +2794,7 @@ describe("Sidebar", () => {
 		}
 	});
 
-	it("paints the dot from its board section while activity drives the pulse", () => {
+	it("paints the status from its board section while activity drives the spinner", () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -2738,20 +2859,20 @@ describe("Sidebar", () => {
 
 		// No pull request: the dot falls back to runtime status.
 		expect(sessionDot("idle task")).toHaveClass("bg-status-idle");
-		expect(sessionDot("idle task")).not.toHaveClass("animate-status-pulse");
+		expect(sessionDot("idle task")).not.toHaveClass("animate-spin");
 
 		const workingDot = sessionDot("working task");
-		expect(workingDot).toHaveClass("bg-status-working");
-		expect(workingDot).toHaveClass("animate-status-pulse");
+		expect(workingDot).toHaveClass("text-status-working");
+		expect(workingDot).toHaveClass("animate-spin");
 
-		// The board-section tone stays visible while the pulse says the agent is busy.
-		expect(sessionDot("ci failed task")).toHaveClass("bg-status-needs-you", "animate-status-pulse");
-		expect(sessionDot("review task")).toHaveClass("bg-status-in-review", "animate-status-pulse");
-		expect(sessionDot("ready task")).toHaveClass("bg-status-ready", "animate-status-pulse");
-		expect(sessionDot("merged task")).toHaveClass("bg-status-merged", "animate-status-pulse");
+		// The board-section tone stays visible while the spinner says the agent is busy.
+		expect(sessionDot("ci failed task")).toHaveClass("text-status-needs-you", "animate-spin");
+		expect(sessionDot("review task")).toHaveClass("text-status-in-review", "animate-spin");
+		expect(sessionDot("ready task")).toHaveClass("text-status-ready", "animate-spin");
+		expect(sessionDot("merged task")).toHaveClass("text-status-merged", "animate-spin");
 	});
 
-	it("blinks blue when an idle-section session has working activity", () => {
+	it("spins blue when an idle-section session has working activity", () => {
 		renderSidebar({
 			workspaces: [
 				{
@@ -2772,7 +2893,7 @@ describe("Sidebar", () => {
 		const dot = screen
 			.getByLabelText("Open idle task receiving work")
 			.querySelector<HTMLElement>("[data-session-status]");
-		expect(dot).toHaveClass("bg-status-working", "animate-status-pulse");
+		expect(dot).toHaveClass("text-status-working", "animate-spin");
 	});
 
 	it("holds the dot still for idle activity and keeps its PR tone", async () => {
@@ -2812,8 +2933,8 @@ describe("Sidebar", () => {
 		// the in-review tone the board gives it, without any motion.
 		expect(idleActivityDot).toHaveClass("bg-status-idle");
 		expect(idleDraftDot).toHaveClass("bg-status-in-review");
-		expect(idleActivityDot).not.toHaveClass("animate-status-pulse");
-		expect(idleDraftDot).not.toHaveClass("animate-status-pulse");
+		expect(idleActivityDot).not.toHaveClass("animate-spin");
+		expect(idleDraftDot).not.toHaveClass("animate-spin");
 	});
 
 	it("shows sessions on load and hides them once collapsed", async () => {

@@ -89,6 +89,9 @@ const CHAT_PREFLIGHT_CODES = new Set([
 
 const READINESS_RECONCILE_CODES = new Set(["AGENT_BINARY_NOT_FOUND", "AGENT_AUTH_REQUIRED", "CHAT_AUTH_REQUIRED"]);
 
+// Well inside the daemon's five-minute expiry, so a throttled background window keeps its lease.
+const TASK_PREPARATION_RENEW_MS = 60_000;
+
 function cancelTaskPreparation(token: string, hostId?: string): void {
 	if (!token) return;
 	try {
@@ -172,9 +175,11 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 	// The preparation a send in flight will claim. Leaving the page or project does not
 	// cancel it; the send does, once answered.
 	const launchingPreparationRef = useRef("");
-	// The prepared worktree's session id. It becomes the task's session id on send,
+	// The prepared workspace's session id. It becomes the task's session id on send,
 	// so files uploaded into it before then are already where the agent reads them.
 	const [preparedSessionId, setPreparedSessionId] = useState("");
+	// Bumped to prepare again when a held preparation turns out to be gone.
+	const [preparationAttempt, setPreparationAttempt] = useState(0);
 	const requestRef = useRef<{ payload: string; id: string } | undefined>(undefined);
 	const {
 		attachments,
@@ -302,6 +307,7 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 					...(input.mode ? { mode: input.mode } : {}),
 					...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+					...(input.taskPreparation ? { taskPreparation: input.taskPreparation } : {}),
 				},
 			});
 			if (error) {
@@ -338,8 +344,10 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 			return data.project as Project;
 		},
 	});
+	// Scratchpad reads no project: its preparation is an empty folder the daemon owns.
+	const preparationTarget = isStandalone ? STANDALONE_WORKSPACE_ID : projectQuery.data?.id;
 	useEffect(() => {
-		const id = projectQuery.data?.id;
+		const id = preparationTarget;
 		if (!id) return;
 		let client;
 		try {
@@ -350,9 +358,10 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 		let disposed = false;
 		taskPreparationRef.current = "";
 		setPreparedSessionId("");
-		void client.POST("/api/v1/projects/{id}/tasks/prepare", {
-			params: { path: { id } },
-		}).then(
+		void (id === STANDALONE_WORKSPACE_ID
+			? client.POST("/api/v1/standalone/tasks/prepare")
+			: client.POST("/api/v1/projects/{id}/tasks/prepare", { params: { path: { id } } })
+		).then(
 			({ data }) => {
 				const token = data?.taskPreparation ?? "";
 				if (!token) return;
@@ -372,7 +381,31 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 			setPreparedSessionId("");
 			if (token !== launchingPreparationRef.current) cancelTaskPreparation(token, hostId);
 		};
-	}, [hostId, projectQuery.data?.id]);
+	}, [hostId, preparationAttempt, preparationTarget]);
+	// A scratch folder has no base to go stale, and this page can stay open far past the
+	// daemon's expiry with files staged in it, so it holds the folder while it is open.
+	// A project's worktree keeps expiring: its base ages, and a send then starts fresh.
+	useEffect(() => {
+		if (!isStandalone || !preparedSessionId) return;
+		const timer = setInterval(() => {
+			const token = taskPreparationRef.current;
+			if (!token || token === launchingPreparationRef.current) return;
+			let client;
+			try {
+				client = hostId ? clientForHost(hostId) : apiClient;
+			} catch {
+				return;
+			}
+			void client.POST("/api/v1/task-preparations/{token}/renew", { params: { path: { token } } }).then(
+				({ response }) => {
+					// A restarted daemon has reclaimed it; a lost connection proves nothing.
+					if (response?.status === 404 && taskPreparationRef.current === token) setPreparationAttempt((attempt) => attempt + 1);
+				},
+				() => undefined,
+			);
+		}, TASK_PREPARATION_RENEW_MS);
+		return () => clearInterval(timer);
+	}, [hostId, isStandalone, preparedSessionId]);
 	const agentsQuery = useAgentReadinessQuery(true, hostId);
 	const { settings, error: settingsError } = useSettings(hostId);
 	// The composer preselects the agent and model a spawn would actually use
@@ -634,8 +667,10 @@ export function useTaskLaunch({ projectId, hostId }: { projectId?: string; hostI
 	const standaloneAgentError = isStandalone && !isCloudProject && selectedAgent === ""
 		? agentsQuery.error instanceof Error ? agentsQuery.error.message : agentsQuery.isSuccess ? t("newTask.noReadyAgent") : undefined
 		: undefined;
-	const remoteLoadError = !hostId ? (!isCloudProject && projectQuery.error instanceof Error ? projectQuery.error.message : standaloneAgentError) : !hostConnected ? t("remote.hostOffline") :
-		[projectQuery.error, agentsQuery.error].find((cause): cause is Error => cause instanceof Error)?.message ?? settingsError ??
+	// Scratchpad reads no project, so a failure cached under its id says nothing about it.
+	const projectLoadError = isStandalone ? undefined : projectQuery.error;
+	const remoteLoadError = !hostId ? (!isCloudProject && projectLoadError instanceof Error ? projectLoadError.message : standaloneAgentError) : !hostConnected ? t("remote.hostOffline") :
+		[projectLoadError, agentsQuery.error].find((cause): cause is Error => cause instanceof Error)?.message ?? settingsError ??
 			(agentsQuery.isSuccess && !agentCatalog?.agents.some(isLaunchableAgent) ? t("remote.noReadyAgent") : undefined);
 	const refreshSelectedModels = useCallback(async () => {
 		const refreshed = await refreshAgentModels(selectedAgent, modelScope, hostId);

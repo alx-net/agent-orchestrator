@@ -22,7 +22,7 @@
 
 import { memo, useCallback, useEffect, useState, type MouseEvent } from "react";
 import { cn } from "../../lib/utils";
-import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
+import { isWebLink, openLinkInSystemBrowser, opensInSystemBrowser } from "../../lib/external-link-policy";
 import { isRenderableDiagram, renderMermaidDiagram, type DiagramTheme } from "../../lib/mermaid-diagram";
 import { CopyButton } from "./CopyButton";
 
@@ -114,7 +114,7 @@ export const MermaidBlock = memo(function MermaidBlock({
 			if (!href) return;
 			event.preventDefault();
 			const toSystemBrowser =
-				event.metaKey || event.ctrlKey || event.altKey || !onLinkOpen || !isWebLink(href);
+				event.metaKey || event.ctrlKey || event.altKey || !onLinkOpen || !isWebLink(href) || opensInSystemBrowser(href);
 			if (toSystemBrowser) {
 				void openLinkInSystemBrowser(href);
 				return;

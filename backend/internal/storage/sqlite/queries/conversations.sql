@@ -1366,6 +1366,22 @@ UPDATE conversation_activities
 SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
 WHERE conversation_id = ? AND provider_item_id = ? AND status <> 'cancelled';
 
+-- A persistent provider host replays every request still awaiting an answer to
+-- the controller that reattaches to it. The previous controller already wrote
+-- that request's row, and request ids are unique, so the replay updates it.
+-- name: ConversationActivityExistsForRequest :one
+SELECT EXISTS(
+    SELECT 1
+    FROM conversation_activities
+    WHERE conversation_id = sqlc.arg(conversation_id)
+      AND request_id = sqlc.arg(request_id)
+);
+
+-- name: SettleConversationActivityByRequest :exec
+UPDATE conversation_activities
+SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
+WHERE conversation_id = ? AND request_id = ? AND status <> 'cancelled';
+
 -- Resolving an approval matches on the provider's request id, so a card the user
 -- left on screen cannot answer a request that replaced it.
 -- Merge the resolution into the provider payload so the offered decision kinds
@@ -1609,10 +1625,15 @@ LIMIT sqlc.arg(page_limit);
 -- part of the conversation title lifecycle; sessions is only the table the value
 -- lands in.
 -- name: ApplyConversationTitleToSession :execrows
+-- A session with a title area also admits the witness carrying that area's prefix,
+-- and the area itself is part of the guard: the caller composed the new label with
+-- the area it read, so a different area must not slip in between.
 UPDATE sessions
-SET display_name = ?, updated_at = ?
-WHERE id = ?
-  AND (display_name = '' OR display_name = ?);
+SET display_name = sqlc.arg(display_name), auto_title = sqlc.arg(auto_title), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+  AND title_area IS sqlc.narg(title_area)
+  AND (display_name = '' OR display_name = sqlc.arg(applied_title)
+    OR display_name = sqlc.arg(prefixed_applied_title));
 
 -- The raw provider event archive. Append-only, and the only way to answer "what
 -- did the provider actually say" once a projection turns out to be wrong.

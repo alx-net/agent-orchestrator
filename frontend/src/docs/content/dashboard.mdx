@@ -75,7 +75,7 @@ In **Files**, choose workspace changes or pull-request changes. You can inspect 
 
 ## Browser preview
 
-The Browser tab displays the preview target explicitly selected for the session with `ao preview`, `ao preview <url>`, or `ao preview start`. The default temporary browser profile is isolated per session. Named browser profiles persist cookies and storage and can be reused across sessions; sessions using the same named profile deliberately share that browser state.
+The Browser tab displays the preview target explicitly selected for the session with `ao preview`, `ao preview <url>`, or `ao preview start`. Sessions start in a shared Default browser profile that Orchestrator creates on first run, so signing in to a site once carries over to every session. Choose Temporary for a session to give it an isolated browser that is discarded when the session ends. Named browser profiles persist cookies and storage and can be reused across sessions; sessions using the same named profile share that browser state.
 
 Orchestrator's browser bridge can support agent-driven navigation, snapshots, clicks, typing, screenshots, console inspection, and temporary network-metadata capture. Network capture is off by default, bounded, omits bodies and sensitive values, and expires automatically.
 

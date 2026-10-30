@@ -170,7 +170,7 @@ surface (`npm run sqlc`, `npm run api`).
   including load/disappearance/DOM-stability conditions, screenshots, console
   messages, page errors, and explicit temporary network-metadata capture while
   the Browser panel is hidden. Network capture is off by default, tab-scoped,
-  bounded, automatically expires, and omits bodies and sensitive values. Temporary profiles isolate workers by default. Named persistent profiles can
+  bounded, automatically expires, and omits bodies and sensitive values. Workers share a Default profile created on first run, so sign-ins carry across sessions; Temporary isolates a worker that opts in. Named persistent profiles can
   be selected and reused across sessions, deliberately sharing cookies/storage.
   Supported browser imports copy data into AO storage without modifying the source.
   Annotations can be delivered to Chat, and profiles/downloads have settings controls. The browser tab menu is only a tab

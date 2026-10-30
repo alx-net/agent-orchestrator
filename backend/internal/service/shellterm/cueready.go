@@ -16,10 +16,14 @@ import (
 // cueShellReadiness installs a one-shot startup signal. It never sends input
 // before the shell itself has reached its first prompt.
 type cueShellReadiness struct {
-	argv    []string
-	env     map[string]string
-	file    string
-	cleanup func()
+	argv []string
+	env  map[string]string
+	file string
+	// doneFile receives "done <status>" once the first command run after the
+	// ready prompt finishes. Empty unless completion was requested and the
+	// shell supports it; cleanup leaves it for the caller that waits on it.
+	doneFile string
+	cleanup  func()
 }
 
 func shellSingleQuote(value string) string {
@@ -31,6 +35,16 @@ func powershellSingleQuote(value string) string {
 }
 
 func prepareCueShellReadiness(dataDir string, argv []string, env map[string]string) (cueShellReadiness, error) {
+	return prepareShellReadiness(dataDir, argv, env, false)
+}
+
+// prepareCommandShellReadiness also reports when the first command finishes,
+// with its exit status, for zsh and bash. Other shells get readiness only.
+func prepareCommandShellReadiness(dataDir string, argv []string, env map[string]string) (cueShellReadiness, error) {
+	return prepareShellReadiness(dataDir, argv, env, true)
+}
+
+func prepareShellReadiness(dataDir string, argv []string, env map[string]string, trackDone bool) (cueShellReadiness, error) {
 	getenv := func(key string) string {
 		if value, ok := env[key]; ok {
 			return value
@@ -67,6 +81,9 @@ func prepareCueShellReadiness(dataDir string, argv []string, env map[string]stri
 	result.env["AO_CUE_READY_FILE"] = result.file
 	_ = f.Close()
 	result.cleanup = func() { _ = os.Remove(result.file) }
+	if trackDone && (name == "zsh" || name == "bash") {
+		result.doneFile = result.file + ".done"
+	}
 	switch name {
 	case "fish":
 		// Fish evaluates init commands after the user's configuration. Register
@@ -78,8 +95,18 @@ func prepareCueShellReadiness(dataDir string, argv []string, env map[string]stri
 		// Bash runs PROMPT_COMMAND immediately before rendering the first prompt.
 		// A profile that replaces it will cause a safe timeout.
 		hook := "if [ -z \"$AO_CUE_READY_SENT\" ]; then printf ready > " + shellSingleQuote(result.file) + "; AO_CUE_READY_SENT=1; fi"
+		if result.doneFile != "" {
+			// Runs before the ready hook, so it skips the first prompt and fires
+			// on the prompt after the command AO sends.
+			hook = "if [ -n \"$AO_CUE_READY_SENT\" ] && [ -z \"$AO_CUE_DONE_SENT\" ]; then printf 'done %s' \"$__ao_cue_status\" > " +
+				shellSingleQuote(result.doneFile) + "; AO_CUE_DONE_SENT=1; fi; " + hook
+		}
 		if previous := getenv("PROMPT_COMMAND"); previous != "" {
 			hook = previous + "; " + hook
+		}
+		if result.doneFile != "" {
+			// Captured first, before any other prompt command changes $?.
+			hook = "__ao_cue_status=$?; " + hook
 		}
 		result.env["PROMPT_COMMAND"] = hook
 	case "sh", "sh.exe":
@@ -116,6 +143,13 @@ func prepareCueShellReadiness(dataDir string, argv []string, env map[string]stri
 			if file == ".zshrc" {
 				content += "function _ao_cue_ready { print -rn -- ready > " + shellSingleQuote(result.file) + "; precmd_functions=(${precmd_functions:#_ao_cue_ready}); }\n"
 				content += "precmd_functions+=(_ao_cue_ready)\n"
+				if result.doneFile != "" {
+					// Armed by the command's preexec and placed first in precmd, so it
+					// records that command's status before other hooks run.
+					content += "function _ao_cue_done { local s=$?; print -rn -- \"done $s\" > " + shellSingleQuote(result.doneFile) + "; precmd_functions=(${precmd_functions:#_ao_cue_done}); }\n"
+					content += "function _ao_cue_arm { preexec_functions=(${preexec_functions:#_ao_cue_arm}); precmd_functions=(_ao_cue_done $precmd_functions); }\n"
+					content += "preexec_functions+=(_ao_cue_arm)\n"
+				}
 				if getenv("ZDOTDIR") == "" {
 					content += "unset ZDOTDIR\n"
 				} else {

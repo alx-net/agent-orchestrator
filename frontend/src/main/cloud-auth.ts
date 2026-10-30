@@ -175,12 +175,22 @@ function decodeStore(value: Buffer): AuthStore {
 export async function readAuthStore(dataDir: string): Promise<AuthStore> {
   const memoryStore = memoryStores.get(dataDir);
   if (memoryStore) return memoryStore;
+  // Checked before safeStorage: on macOS its first use reads the keychain on the
+  // main thread, and an unanswered keychain prompt then freezes the whole app,
+  // daemon start included. With nothing stored there is nothing to decrypt.
+  let stored: Buffer;
+  try {
+    stored = await readFile(storePath(dataDir));
+  } catch {
+    await rm(storePath(dataDir), { force: true });
+    return emptyStore();
+  }
   if (!protectedStorageAvailable()) {
     await rm(storePath(dataDir), { force: true });
     return emptyStore();
   }
   try {
-    return decodeStore(await readFile(storePath(dataDir)));
+    return decodeStore(stored);
   } catch {
     await rm(storePath(dataDir), { force: true });
     return emptyStore();

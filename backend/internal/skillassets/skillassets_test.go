@@ -252,6 +252,95 @@ func TestEmbeddedReportGuidanceDistinguishesDeliverablesFromDiagnostics(t *testi
 	}
 }
 
+func TestEmbeddedSendGuidanceKeepsCoordinationTrafficLean(t *testing.T) {
+	for file, wants := range map[string][]string{
+		"using-ao/commands/send.md": {
+			"| `--fyi` | Hold the message for the session's next turn instead of starting one |",
+			"`--fyi` stores the message durably and never starts a turn",
+			"labeled `[fyi]` with its sender and the time it was sent, and is delivered once",
+			"needs no reply",
+			"Never send a message that only acknowledges, thanks, or confirms receipt",
+			"do not relay CI or PR news",
+			"include everything it needs",
+		},
+		"using-ao/commands/report.md": {
+			"Do not report routine CI or PR state",
+			"use `ao send --fyi` instead; it never wakes the orchestrator",
+			"Report blockers and decisions with `--needs-input` or `--stuck` as soon as they arise",
+		},
+		"using-ao/commands/spawn.md": {
+			"Give each new, unrelated task to a fresh worker",
+			"only for follow-ups on its own task or PR",
+		},
+	} {
+		body, err := files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guidance := strings.Join(strings.Fields(string(body)), " ")
+		for _, want := range wants {
+			if !strings.Contains(guidance, want) {
+				t.Fatalf("%s missing %q", file, want)
+			}
+		}
+	}
+}
+
+func TestEmbeddedWaitGuidanceReplacesPolling(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/wait.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"ao wait pr <number|url> [--for checks|merge|review|any]",
+		"ao wait time <duration>",
+		"ao wait cancel <wait-id>",
+		"End your turn. Do not sleep, poll, or re-check the PR yourself.",
+		"Every PR wait also wakes when the PR is merged or closed.",
+		"[AO wait w-1a2b3c4d]",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("wait guidance missing %q", want)
+		}
+	}
+	skill, err := files.ReadFile("using-ao/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[commands/wait.md](commands/wait.md)") {
+		t.Fatal("skill catalog does not route to the wait guidance")
+	}
+}
+
+func TestEmbeddedCheckoutGuidanceReplacesDiskSearches(t *testing.T) {
+	body, err := files.ReadFile("using-ao/commands/checkout.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"ao checkout <project> [--ref <branch|tag|sha>] [--refresh] [--json]",
+		"instead of searching the disk, package caches, or the network",
+		"at `repos/<project-id>` in this session's workspace",
+		"Work in the printed path. Do not edit the user's own checkout of the project.",
+		"A copy with uncommitted changes, a branch, or commits no branch contains is left untouched",
+		"AO removes the session's checkouts",
+		"`--setup` is not supported",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("checkout guidance missing %q", want)
+		}
+	}
+	skill, err := files.ReadFile("using-ao/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[commands/checkout.md](commands/checkout.md)") {
+		t.Fatal("skill catalog does not route to the checkout guidance")
+	}
+}
+
 func TestEmbeddedRenderGuidanceSeparatesRendersFromArtifacts(t *testing.T) {
 	body, err := files.ReadFile("using-ao/commands/render.md")
 	if err != nil {

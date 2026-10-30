@@ -684,6 +684,29 @@ function broadcastCompletedCheck(status: UpdateStatus): void {
 // yaml dependency, and a parse miss just means "no info", never an error state
 // (see issue #2270 for why this path must not broadcast errors).
 
+// A build made from a checkout by `scripts/dev.sh install` (`ao-app-update`)
+// carries `localBuild: true` in its app-update.yml. It has no release feed to
+// update from, so the updater stays quiet and names the command that does.
+let localBuild: boolean | undefined;
+function isLocalBuild(): boolean {
+  if (localBuild !== undefined) return localBuild;
+  localBuild = false;
+  if (!app.isPackaged) return false;
+  try {
+    const yml = readFileSync(path.join(process.resourcesPath, "app-update.yml"), "utf8");
+    localBuild = /^localBuild:\s*true\s*$/m.test(yml);
+  } catch {
+    // No manifest: treat as a release build.
+  }
+  return localBuild;
+}
+
+function updatesUnsupportedMessage(): string {
+  return isLocalBuild()
+    ? "This is a local build. Update it by running ao-app-update in a terminal."
+    : "Updates are only available in the installed app.";
+}
+
 /** Owner/repo from the bundled app-update.yml; undefined in dev or on any failure. */
 async function readAppUpdateYml(): Promise<
   { owner: string; repo: string } | undefined
@@ -2333,6 +2356,10 @@ async function requestAutomaticUpdateCheck(
 // Caller guards on app.isPackaged.
 export async function startAutoUpdates(stateDir: string): Promise<void> {
   escalationStateDir = stateDir;
+  if (isLocalBuild()) {
+    broadcast({ state: "unsupported", message: updatesUnsupportedMessage() });
+    return;
+  }
   restoreStagedBuild(stateDir);
   startRetirementPollTimer(stateDir);
   const intervalMs = await requestAutomaticUpdateCheck(stateDir);
@@ -2390,7 +2417,7 @@ export async function checkForUpdatesNow(
   wireUpdaterEvents();
   // Asking again IS the explicit retry the exhausted message points at.
   forgetInstallRejections();
-	if (!app.isPackaged) {
+	if (!app.isPackaged || isLocalBuild()) {
     emitUpdateOutcome({
       event: "ao.renderer.update_unsupported",
       phase: activeUpdaterPhase,
@@ -2399,7 +2426,7 @@ export async function checkForUpdatesNow(
     });
     broadcast({
       state: "unsupported",
-      message: "Updates are only available in the installed app.",
+      message: updatesUnsupportedMessage(),
       requestId: options.requestId,
     });
     return;
@@ -2497,7 +2524,7 @@ export async function returnToHome(
 ): Promise<void> {
   escalationStateDir = stateDir;
   wireUpdaterEvents();
-  if (!app.isPackaged) {
+  if (!app.isPackaged || isLocalBuild()) {
     emitUpdateOutcome({
       event: "ao.renderer.update_unsupported",
       phase: activeUpdaterPhase,
@@ -2506,7 +2533,7 @@ export async function returnToHome(
     });
     broadcast({
       state: "unsupported",
-      message: "Updates are only available in the installed app.",
+      message: updatesUnsupportedMessage(),
       requestId,
     });
     return;
@@ -2562,7 +2589,7 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
   const version = lastStatus.version;
   wireUpdaterEvents();
   forgetInstallRejections();
-	if (!app.isPackaged) {
+	if (!app.isPackaged || isLocalBuild()) {
     emitUpdateOutcome({
       event: "ao.renderer.update_unsupported",
       phase: activeUpdaterPhase,
@@ -2571,7 +2598,7 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
     });
     broadcast({
       state: "unsupported",
-      message: "Updates are only available in the installed app.",
+      message: updatesUnsupportedMessage(),
       requestId,
     });
     return;
@@ -2730,7 +2757,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
   if (confirmedVersion !== undefined && (typeof confirmedVersion !== "string" || !confirmedVersion.trim())) {
     throw new Error("A valid confirmed update version is required.");
   }
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || isLocalBuild()) return;
   if (awaitingStagedReplacement) {
     throw new Error("Check for updates and download an update before restarting to install.");
   }

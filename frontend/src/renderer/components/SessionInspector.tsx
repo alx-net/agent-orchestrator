@@ -402,7 +402,7 @@ const SummaryView = memo(function SummaryView({
 	const linkedPRs = query.data?.linkedPrs ?? [];
 	const projectQuery = useQuery({
 		queryKey: hostId ? ["project", hostId, session.workspaceId] : ["project", session.workspaceId],
-		enabled: linkedPRs.length > 0 && !session.cloud,
+		enabled: linkedPRs.length > 0 && !session.cloud && session.workspaceId !== STANDALONE_WORKSPACE_ID,
 		queryFn: async () => {
 			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/projects/{id}", {
 				params: { path: { id: session.workspaceId } },

@@ -16,6 +16,35 @@ type ConversationUsageLimit struct {
 	ResumeError string     `json:"resumeError,omitempty"`
 }
 
+// UsageLimitSwitchPhase is how far AO got moving a session whose turn hit its
+// account's usage limit to an account with usage left.
+type UsageLimitSwitchPhase string
+
+// Phases of a move after a usage limit.
+const (
+	// UsageLimitSwitchSwitching: the move to the new account is under way.
+	UsageLimitSwitchSwitching UsageLimitSwitchPhase = "switching"
+	// UsageLimitSwitchContinued: the session moved and the turn runs again there.
+	UsageLimitSwitchContinued UsageLimitSwitchPhase = "continued"
+	// UsageLimitSwitchSwitched: the session moved, but its turn could not run
+	// again on its own; the next message continues there.
+	UsageLimitSwitchSwitched UsageLimitSwitchPhase = "switched"
+	// UsageLimitSwitchFailed: the move failed; the session waits for the reset.
+	UsageLimitSwitchFailed UsageLimitSwitchPhase = "failed"
+)
+
+// UsageLimitSwitch is one move after a usage limit, as the turn's notice shows
+// it. FromAccountID equals ToAccountID when the agent restarted on its own
+// account to pick up the login the account's folder now holds.
+type UsageLimitSwitch struct {
+	Phase         UsageLimitSwitchPhase
+	FromAccountID string
+	ToAccountID   string
+	Error         string
+	// MCPNeedsAuth names the MCP servers not signed in on the new account.
+	MCPNeedsAuth []string
+}
+
 var usageLimitMessage = regexp.MustCompile(`(?i)^(?:you(?:'ve| have) (?:hit|reached) your (?:session |weekly |daily |usage |individual spend )?limit\b|usage limit (?:reached|exceeded)\b|(?:session|weekly|daily) usage limit (?:reached|exceeded)\b|the Claude account has no available quota\b)`)
 var usageLimitResetClock = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:(tomorrow)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)`)
 var usageLimitResetISO = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))`)

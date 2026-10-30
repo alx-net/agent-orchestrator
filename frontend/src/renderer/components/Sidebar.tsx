@@ -18,6 +18,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
 	AlertTriangle,
 	Archive,
+	Bot,
 	CalendarClock,
 	ChevronRight,
 	Download,
@@ -40,6 +41,7 @@ import {
 	User,
 	X,
 	ArrowLeft,
+	GitPullRequest,
 } from "lucide-react";
 import {
 	useCallback,
@@ -58,7 +60,10 @@ import {
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { UpdateStatus } from "../../main/update-settings";
+import { workingSessionCount } from "../lib/agents-overview";
 import { artifactCount, groupArtifactsByProject } from "../lib/artifacts";
+import type { PullRequestsTabTone } from "../lib/pr-merge-box";
+import { openPRsBadge } from "../lib/prs-overview";
 import { parseNightlyVersion } from "../lib/build-channel";
 import {
 	hasConfiguredOrchestratorAgent,
@@ -73,7 +78,6 @@ import {
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
-import { getSessionStatusDotView } from "../lib/session-presentation";
 import { aoBridge } from "../lib/bridge";
 import { hasTrustedApiBaseUrl } from "../lib/api-client";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
@@ -131,11 +135,13 @@ import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { AwakeControl } from "./AwakeControl";
 import { SettingsSaveStatus, useSettingsPage } from "./SettingsDialog";
 import { useUiStore } from "../stores/ui-store";
+import { useSessionUnreadStore, useSessionUnreadTracking } from "../stores/session-unread-store";
 import { useSidebarOrderStore } from "../stores/sidebar-order-store";
 import { applyOrder } from "../lib/sidebar-order";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SessionArchiveDialog, type SessionArchiveChoice } from "./SessionArchiveDialog";
+import { SessionStatusDot } from "./SessionStatusDot";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
 import { ResizeHandle } from "./ResizeHandle";
 import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
@@ -519,6 +525,8 @@ function useSelection() {
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
 	const goAutomations = useCallback(() => void navigate({ to: "/automations" }), [navigate]);
 	const goArtifacts = useCallback(() => void navigate({ to: "/artifacts" }), [navigate]);
+	const goAgents = useCallback(() => void navigate({ to: "/agents" }), [navigate]);
+	const goPullRequests = useCallback(() => void navigate({ to: "/prs" }), [navigate]);
 	const goStandaloneBoard = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
@@ -544,6 +552,8 @@ function useSelection() {
 		isHome: pathname === "/",
 		isAutomations: pathname === "/automations",
 		isArtifacts: pathname === "/artifacts",
+		isAgents: pathname === "/agents",
+		isPullRequests: pathname === "/prs",
 		activeRemoteHostId: params.hostId,
 		activeRemoteProjectId: params.hostId ? params.projectId : undefined,
 		activeRemoteSessionId: params.hostId ? params.sessionId : undefined,
@@ -552,6 +562,8 @@ function useSelection() {
 		goHome,
 		goAutomations,
 		goArtifacts,
+		goAgents,
+		goPullRequests,
 		goStandaloneBoard,
 		// Settings is a modal — open it in place so the current page (session
 		// terminal, board, etc.) stays underneath.
@@ -560,29 +572,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goArtifacts, goAutomations, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
-}
-
-// Colour tracks the session's board section, preserving SCM state while the
-// agent runs; motion stays on raw agent activity. A no-PR idle session turns
-// blue when it starts working. See getSessionStatusDotView for the lane mapping.
-function SessionStatusDot({ session }: { session: WorkspaceSession }) {
-	const dot = getSessionStatusDotView(session);
-	return (
-		<span
-			aria-hidden="true"
-			className="relative z-[1] inline-flex shrink-0 items-center justify-center px-1.5"
-		>
-			<span
-				className={cn(
-					"size-2 rounded-full",
-					dot.className,
-					dot.breathe && "animate-status-pulse",
-				)}
-				data-session-status={session.status}
-			/>
-		</span>
-	);
+	}), [goAgents, goArtifacts, goAutomations, goConnectMobile, goGlobalSettings, goHome, goProject, goPullRequests, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
 }
 
 export {
@@ -639,6 +629,9 @@ export function Sidebar({
 		() => artifactCount(groupArtifactsByProject(cloudArtifacts ? workspaces : workspaces.filter((workspace) => workspace.kind !== "cloud"))),
 		[cloudArtifacts, workspaces],
 	);
+	const workingAgents = useMemo(() => workingSessionCount(workspaces), [workspaces]);
+	useSessionUnreadTracking(workspaces, selection.activeSessionId);
+	const prBadge = useMemo(() => openPRsBadge(workspaces), [workspaces]);
 	const existingProjectPaths = useMemo(
 		() => workspaces
 			.filter((workspace) => workspace.kind !== STANDALONE_PROJECT_KIND)
@@ -1023,6 +1016,27 @@ export function Sidebar({
 							onClick={selection.goArtifacts}
 							tooltip={isCollapsed ? t("artifacts.title") : undefined}
 							trailing={artifactTotal > 0 ? String(artifactTotal) : undefined}
+						/>
+					</SidebarMenuItem>
+					<SidebarMenuItem>
+						<SidebarTopNavRow
+							active={selection.isAgents}
+							icon={<Bot aria-hidden="true" />}
+							label={t("agentsOverview.title")}
+							onClick={selection.goAgents}
+							tooltip={isCollapsed ? t("agentsOverview.title") : undefined}
+							trailing={workingAgents > 0 ? String(workingAgents) : undefined}
+						/>
+					</SidebarMenuItem>
+					<SidebarMenuItem>
+						<SidebarTopNavRow
+							active={selection.isPullRequests}
+							icon={<GitPullRequest aria-hidden="true" />}
+							label={t("prsOverview.title")}
+							onClick={selection.goPullRequests}
+							tooltip={isCollapsed ? t("prsOverview.title") : undefined}
+							trailing={prBadge.count > 0 ? String(prBadge.count) : undefined}
+							trailingTone={prBadge.count > 0 ? PR_COUNT_TONES[prBadge.tone] : undefined}
 						/>
 					</SidebarMenuItem>
 				</SidebarMenu>
@@ -2379,6 +2393,8 @@ const SessionRow = memo(function SessionRow({
 		[queryClient, session.hostId],
 	);
 	const rename = useSessionRename(session, refreshWorkspaces);
+	// Bold until opened: the agent finished while the user was elsewhere.
+	const unread = useSessionUnreadStore((state) => Boolean(state.unread[session.id])) && !active;
 	const lastTouchAtRef = useRef(0);
 	const suppressTouchOpenRef = useRef(false);
 	const hoverTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -2522,9 +2538,11 @@ const SessionRow = memo(function SessionRow({
 								<span
 									className={cn(
 										"min-w-0 flex-1 truncate",
-										active ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
+										active || unread ? "text-foreground" : "text-muted-foreground group-hover/session-row:text-foreground",
+										unread && "font-semibold",
 									)}
 									data-session-name=""
+									data-unread={unread ? "true" : undefined}
 									onPointerUp={(event) => {
 										if (event.pointerType !== "touch") return;
 										const now = Date.now();
@@ -2536,6 +2554,7 @@ const SessionRow = memo(function SessionRow({
 									}}
 								>
 									{session.title}
+									{unread ? <span className="sr-only">{`, ${t("shell.sessionFinishedUnread")}`}</span> : null}
 								</span>
 								{hostLabel ? <Badge variant="outline" className="h-4 shrink-0 px-1.5 text-2xs">{hostLabel}</Badge> : null}
 							</span>
@@ -3330,6 +3349,7 @@ function SidebarTopNavRow({
 	onClick,
 	tooltip,
 	trailing,
+	trailingTone,
 }: {
 	active?: boolean;
 	disabled?: boolean;
@@ -3338,6 +3358,8 @@ function SidebarTopNavRow({
 	onClick: () => void;
 	tooltip?: string;
 	trailing?: string;
+	/** Tints the count with a status color when what it counts needs attention. */
+	trailingTone?: SidebarCountTone;
 }) {
 	return (
 		<SidebarMenuButton
@@ -3361,13 +3383,35 @@ function SidebarTopNavRow({
 				{label}
 			</span>
 			{trailing ? (
-				<span className="sidebar-expanded-chrome relative z-[1] ml-auto shrink-0 font-sans text-caption text-passive group-data-[collapsible=icon]:hidden">
+				<span
+					className={cn(
+						"sidebar-expanded-chrome relative z-[1] ml-auto shrink-0 font-sans text-caption group-data-[collapsible=icon]:hidden",
+						trailingTone ? SIDEBAR_COUNT_TONE_CLASS[trailingTone] : "text-passive",
+					)}
+					data-tone={trailingTone}
+				>
 					{trailing}
 				</span>
 			) : null}
 		</SidebarMenuButton>
 	);
 }
+
+type SidebarCountTone = "failing" | "conflicts";
+
+// The same tints as the session's Pull requests tab count.
+const SIDEBAR_COUNT_TONE_CLASS: Record<SidebarCountTone, string> = {
+	failing: "text-status-exited",
+	conflicts: "text-status-needs-you",
+};
+
+/** Only failing CI and conflicts tint the PRs count; running checks stay calm. */
+const PR_COUNT_TONES: Record<PullRequestsTabTone, SidebarCountTone | undefined> = {
+	failing: "failing",
+	conflicts: "conflicts",
+	running: undefined,
+	idle: undefined,
+};
 
 /** Settings sections in place of the project tree while the settings page is open. */
 export function SettingsSidebarNav({ layer }: { layer: NonNullable<ReturnType<typeof useSettingsPage>> }) {

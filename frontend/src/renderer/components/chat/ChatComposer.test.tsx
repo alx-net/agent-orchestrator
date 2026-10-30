@@ -95,6 +95,15 @@ const textFile = (name = "notes.txt") => new File(["hello"], name, { type: "text
 /* ---- the keyboard contract the composer already had ---------------------- */
 
 describe("send keys", () => {
+	it("explains a pasted file it cannot take yet instead of dropping it silently", async () => {
+		const { field } = renderComposer({ attachLater: true });
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		fireEvent.paste(field, { clipboardData: clipboardData([]) });
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		fireEvent.paste(field, { clipboardData: clipboardData([png()]) });
+		expect(await screen.findByRole("status")).toHaveTextContent("Files can be attached once the task has started");
+	});
+
 	it("lays attachments beside annotations and clears only annotation references", async () => {
 		const sessionId = "composer-shared-attachment-row";
 		writeChatExcerptReferences(sessionId, EXCERPTS);
@@ -182,6 +191,34 @@ describe("send keys", () => {
 		});
 
 		expect(document.activeElement).toBe(field);
+	});
+
+	it("keeps the caret in another field while the composer becomes usable again and the window comes back", async () => {
+		const user = userEvent.setup();
+		// An Agents-tab steer field sits above the composer, which stays mounted under the board.
+		const ui = (disabled: boolean) => (
+			<>
+				<input aria-label="Steer main agent" />
+				<ChatComposer onSend={vi.fn()} autoFocusKey="session-1" disabled={disabled} />
+			</>
+		);
+		const { rerender } = render(ui(true));
+		const steer = screen.getByLabelText("Steer main agent");
+		await user.click(steer);
+		await user.keyboard("keep ");
+
+		// Live updates flip the composer between usable and not (reconnecting, a
+		// controller transition); the window loses and regains focus meanwhile.
+		for (const disabled of [false, true, false, false]) {
+			rerender(ui(disabled));
+			act(() => {
+				window.dispatchEvent(new Event("focus"));
+				document.dispatchEvent(new Event("visibilitychange"));
+			});
+			expect(document.activeElement).toBe(steer);
+		}
+		await user.keyboard("typing");
+		expect(steer).toHaveValue("keep typing");
 	});
 
 	it("does not focus the hidden or inactive chat composer", () => {

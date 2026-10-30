@@ -135,12 +135,26 @@ func (s *Service) postponeUsageLimit(ctx context.Context, store usageLimitStore,
 }
 
 func validateUsageLimitSource(ctx context.Context, turns Store, store usageLimitStore, source domain.ConversationTurn, sessionID domain.SessionID) error {
-	if source.State != domain.TurnStateFailed || source.RolledBackAt != nil || source.UsageLimit == nil || source.HandledBySessionID != sessionID {
-		return fmt.Errorf("%w: this turn is not an actionable usage-limit failure", ErrUsageLimitAutoResumeInvalid)
+	if err := usageLimitTurnActionable(source, sessionID); err != nil {
+		return err
 	}
 	if source.UsageLimit.ResetsAt == nil {
 		return ErrUsageLimitResetUnknown
 	}
+	return validateUsageLimitRetry(ctx, turns, store, source)
+}
+
+func usageLimitTurnActionable(source domain.ConversationTurn, sessionID domain.SessionID) error {
+	if source.State != domain.TurnStateFailed || source.RolledBackAt != nil || source.UsageLimit == nil || source.HandledBySessionID != sessionID {
+		return fmt.Errorf("%w: this turn is not an actionable usage-limit failure", ErrUsageLimitAutoResumeInvalid)
+	}
+	return nil
+}
+
+// validateUsageLimitRetry is everything a retry of a usage-limited turn needs
+// besides its reset time: its human prompt is on the active lineage, was
+// delivered, has no retry yet, and no newer turn superseded it.
+func validateUsageLimitRetry(ctx context.Context, turns Store, store usageLimitStore, source domain.ConversationTurn) error {
 	prompt, err := turns.RetryPrompt(ctx, source.ConversationID, source.ID)
 	if err != nil {
 		return err

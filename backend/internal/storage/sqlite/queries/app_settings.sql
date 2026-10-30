@@ -13,6 +13,12 @@ UPDATE app_settings SET cloud_offering = ?, updated_at = ? WHERE id = 1;
 -- name: SetVersionRefresh :exec
 UPDATE app_settings SET version_refresh = ?, updated_at = ? WHERE id = 1;
 
+-- name: SetAccountAutoSwitch :exec
+UPDATE app_settings SET account_auto_switch = ?, updated_at = ? WHERE id = 1;
+
+-- name: SetCompactAt :exec
+UPDATE app_settings SET compact_at = ?, updated_at = ? WHERE id = 1;
+
 -- name: SetHarnessDefault :exec
 UPDATE app_settings
 SET harness_defaults = json_set(harness_defaults, sqlc.arg(harness_path), json(sqlc.arg(config))),

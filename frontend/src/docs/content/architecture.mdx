@@ -86,7 +86,7 @@ Direct connections use plain HTTP and are intended for trusted networks. A manag
 
 Browser automation uses a local connection between the daemon and Electron. The daemon authorizes and matches commands to results. Electron displays each session's browser in an isolated `WebContentsView`. The mobile listener cannot control the browser.
 
-The temporary browser profile is isolated per session. Named profiles save cookies and storage and can be reused across sessions. Sessions using the same named profile share its browser state. Orchestrator copies imported browser data into Orchestrator-owned storage and does not change the source profile.
+Sessions start in the default browser profile, a shared Default profile Orchestrator creates on first run. The temporary browser profile is isolated per session and discarded when the session ends. Named profiles save cookies and storage and can be reused across sessions. Sessions using the same named profile share its browser state. Orchestrator copies imported browser data into Orchestrator-owned storage and does not change the source profile.
 
 The architecture above describes local sessions. Cloud execution is a separate gated integration requiring build enablement, account access, and a reachable control plane. Standalone local workers are projectless; they are not Cloud sessions.
 

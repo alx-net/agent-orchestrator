@@ -688,6 +688,102 @@ func TestPersistentACPReplayAppliesAcceptedPermissionCommand(t *testing.T) {
 	}
 }
 
+// A turn paused on a question (Claude Code's AskUserQuestion) survives a daemon
+// restart: the host replays the unanswered elicitation, and the answer given to
+// the reattached daemon goes back on the provider's original request id.
+func TestPersistentACPReplayedQuestionAnswersTheWaitingRequest(t *testing.T) {
+	initialize, err := json.Marshal(acpsdk.InitializeResponse{
+		ProtocolVersion: acpsdk.ProtocolVersionNumber,
+		AgentCapabilities: acpsdk.AgentCapabilities{
+			SessionCapabilities: acpsdk.SessionCapabilities{Resume: &acpsdk.SessionResumeCapabilities{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := json.Marshal(acpsdk.NewSessionResponse{SessionId: "provider-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, host := net.Pipe()
+	t.Cleanup(func() { _ = host.Close() })
+	driver := New(Config{
+		Harness: domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{
+			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true,
+		},
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return &persistenthost.Transport{
+			Stdin: daemon, Stdout: daemon, Reconnected: true,
+			ACPState: &persistenthost.ACPState{
+				InitializeResult: initialize, SessionResult: session,
+				SessionID: "provider-session", ActivePrompt: true,
+			},
+		}, nil
+	}
+	opened, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-session", DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
+		ProviderConversationID: "provider-session", ProviderScopeID: "scope",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	conv := opened.(*conversation)
+	t.Cleanup(func() { _ = conv.Close() })
+	if err := conv.ActivateLiveReconnect(context.Background(), "durable-turn"); err != nil {
+		t.Fatalf("ActivateLiveReconnect: %v", err)
+	}
+	go func() {
+		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","id":"question-1","method":"elicitation/create","params":{"_meta":{"ao.persistentRequestId":"acp-request:host:2"},"mode":"form","message":"Please answer the following questions.","requestedSchema":{"type":"object","properties":{"question_0":{"type":"string"}}}}}`)
+	}()
+
+	_ = nextEvent(t, conv.Events()) // controller.ready
+	requested := nextEvent(t, conv.Events())
+	if requested.Kind != ports.ChatEventInputRequested || requested.RequestID != "acp-request:host:2" ||
+		requested.ProviderTurnID != "durable-turn" {
+		t.Fatalf("replayed question = %#v", requested)
+	}
+
+	providerResponse := make(chan []byte, 1)
+	go func() {
+		reader := bufio.NewReader(host)
+		command, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var call struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(command, &call) != nil || call.Method != persistenthost.ACPInteractionCommandMethod {
+			providerResponse <- command
+			return
+		}
+		_, _ = fmt.Fprintf(host, `{"jsonrpc":"2.0","id":%s,"result":{"eventId":"acp-host:9"}}`+"\n", call.ID)
+		response, _ := reader.ReadBytes('\n')
+		providerResponse <- response
+	}()
+	if err := conv.ResolveInput(context.Background(), requested.RequestID, ports.ChatInputResponse{
+		Action: ports.ChatInputActionAccept, Content: map[string]any{"question_0": "ENG-1837"},
+	}); err != nil {
+		t.Fatalf("ResolveInput: %v", err)
+	}
+	select {
+	case response := <-providerResponse:
+		if !bytes.Contains(response, []byte(`"id":"question-1"`)) ||
+			!bytes.Contains(response, []byte(`"action":"accept"`)) ||
+			!bytes.Contains(response, []byte(`"question_0":"ENG-1837"`)) {
+			t.Fatalf("provider question response = %s", response)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the answer never reached the waiting provider request")
+	}
+}
+
 func TestPersistentACPReconnectAcknowledgesAlreadyCommittedPrompt(t *testing.T) {
 	initialize, err := json.Marshal(acpsdk.InitializeResponse{
 		ProtocolVersion: acpsdk.ProtocolVersionNumber,

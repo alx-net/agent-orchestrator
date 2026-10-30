@@ -3,7 +3,7 @@ import { createContext, useContext, useState, type ComponentProps, type ReactNod
 import { Copy, ExternalLink, FileText, } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { aoBridge } from "../lib/bridge";
-import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { isWebLink, openLinkInSystemBrowser, opensInSystemBrowser } from "../lib/external-link-policy";
 import { useLinkPreview } from "../hooks/useLinkPreview";
 import { LinkPreviewCard, LinkPreviewCardLoading } from "./LinkPreviewCard";
 import {
@@ -41,7 +41,7 @@ export function AppLink({ href, onClick, onBrowserOpen, inAppLink, filePath, onF
 				onClick?.(event);
 				if (event.defaultPrevented || !href || !browserLink) return;
 				event.preventDefault();
-				if (openBrowser && (!webLink || (!event.ctrlKey && !event.metaKey && !event.altKey))) openBrowser(href);
+				if (openBrowser && !opensInSystemBrowser(href) && (!webLink || (!event.ctrlKey && !event.metaKey && !event.altKey))) openBrowser(href);
 				else void openLinkInSystemBrowser(href);
 			}}
 		/>

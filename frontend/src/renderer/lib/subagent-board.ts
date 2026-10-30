@@ -27,14 +27,42 @@ import {
 } from "../types/conversation";
 
 export type SubagentLane = "working" | "needs_you" | "done";
-export type SubagentOutcome = "working" | "needs_you" | "completed" | "failed" | "stopped";
+/** `blocked`: it finished, and its report says it is blocked or needs an answer. */
+export type SubagentOutcome = "working" | "needs_you" | "completed" | "blocked" | "failed" | "stopped";
 
-/** A `Status:` or `Decision:` line the subagent wrote in its narration. */
+/** How an agent's turn, or a subagent's call, ended. */
+export type AgentOutcomeKind = "done" | "blocked" | "needs_input" | "failed" | "stopped";
+
+/**
+ * How an agent finished, read in this order: an `Outcome:` line it wrote, a
+ * line that starts with `BLOCKED`, then how its turn or call ended.
+ */
+export interface AgentOutcome {
+	kind: AgentOutcomeKind;
+	/** What it finished with, is blocked on, or failed with. */
+	text?: string;
+	at: string;
+	source: "outcome_line" | "blocked_line" | "settled";
+}
+
+/**
+ * A `Status:` or `Decision:` line the agent wrote, or how it finished. An
+ * outcome is always the newest entry of its turn. The main agent's log also
+ * opens each turn with a `turn` entry: the start of the message that began it.
+ */
 export interface SubagentNote {
-	kind: "status" | "decision";
+	kind: "status" | "decision" | "outcome" | "turn";
 	text: string;
 	/** When the narration block carrying the line started. Lines in one block share it. */
 	at: string;
+	/** Set on an outcome entry. */
+	outcome?: AgentOutcomeKind;
+	/** A `turn` entry whose message the person sent. */
+	fromYou?: boolean;
+	/** The id the person's message was sent with: a send still waiting on its echo matches it. */
+	clientMessageId?: string;
+	/** Who sent a `turn` entry's message when it was not the person, when it is named. */
+	sender?: string;
 }
 
 export interface SubagentCard {
@@ -57,7 +85,9 @@ export interface SubagentCard {
 	nowSource?: "status" | "progress" | "tool" | "report";
 	/** What a subagent that needs you is waiting on. */
 	blockedOn?: string;
-	/** Status and decision lines, in the order they were written. */
+	/** How a settled subagent finished; absent while it runs. */
+	result?: AgentOutcome;
+	/** Status and decision lines, in the order they were written, then its outcome. */
 	notes: SubagentNote[];
 	decisions: SubagentNote[];
 	toolCount: number;
@@ -97,7 +127,12 @@ export interface SubagentLanes {
 	done: SubagentCard[];
 }
 
-export type MainAgentState = "working" | "needs_you" | "idle";
+/**
+ * `working` while a turn runs; once it settles, its outcome: `needs_you` when it
+ * is blocked or asks a question, else `completed`, `failed` or `stopped`. `idle`
+ * before any turn ran.
+ */
+export type MainAgentState = "working" | "needs_you" | "idle" | "completed" | "failed" | "stopped";
 
 /** The main agent's own card: a now line and timeline read from its assistant messages. */
 export interface MainAgentSummary {
@@ -107,14 +142,20 @@ export interface MainAgentSummary {
 	/** When the running turn started; absent while no turn runs. */
 	startedAt?: string;
 	nowLine?: string;
-	nowSource?: "status" | "plan" | "tool";
-	/** What the main agent is waiting on when it needs you. */
+	/** `outcome`: the now line is the settled turn's outcome text. */
+	nowSource?: "status" | "plan" | "tool" | "outcome";
+	/** What the main agent is waiting on when a pending request needs you. */
 	blockedOn?: string;
+	/** How the latest turn ended; absent while one runs or before any ran. */
+	result?: AgentOutcome;
 	/**
-	 * Status and decision lines from the turn's assistant messages, in order. A turn
-	 * that wrote none shows the newest earlier turn's lines.
+	 * The session's running log, oldest first: for every loaded turn that ran, a
+	 * `turn` entry with the message that started it, the status and decision
+	 * lines of its assistant messages, then its outcome once it settled. Only the
+	 * newest {@link MAIN_LOG_LIMIT} lines are kept, each with its turn's entry.
 	 */
 	notes: SubagentNote[];
+	/** Every decision line across the loaded turns, oldest first. */
 	decisions: SubagentNote[];
 	/** What the person steered the running turn with. */
 	sent: SentMessage[];
@@ -157,7 +198,7 @@ function narrationText(activity: ConversationActivity): string {
 	return "";
 }
 
-type ParsedLine = { kind: SubagentNote["kind"]; text: string };
+type ParsedLine = { kind: "status" | "decision"; text: string };
 
 // Line-start label, case-insensitive. Tolerates the markdown the model tends to
 // wrap it in ("- **Status:** …", "**Decision**: …").
@@ -170,6 +211,131 @@ export function parseSubagentNoteLine(line: string): ParsedLine | undefined {
 	const text = match[2]?.trim();
 	if (!text) return undefined;
 	return { kind: match[1]!.toLowerCase() === "decision" ? "decision" : "status", text };
+}
+
+// `Outcome: done — <summary>`, `Outcome: blocked - <on what>`, `Outcome: failed: <why>`,
+// `Outcome: needs input — <question>`: case-insensitive, with the same markdown tolerance.
+const OUTCOME_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?outcome(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(needs[\s_-]*input|done|blocked|failed)\b(?:\*\*|__)?\s*(?:[—–:-]+\s*)?(.*?)\s*(?:\*\*|__)?\s*$/i;
+// The person's own convention: "BLOCKED on <what>; recommendation: …; default if no answer: …".
+// Upper case only, so prose that starts with "Blocked" is not read as one.
+const BLOCKED_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?BLOCKED\b(?:\*\*|__)?\s*[:—–-]?\s*(.*)$/;
+const OUTCOME_TEXT_MAX = 140;
+/** How much of the message that started a turn its log entry shows. */
+const PROMPT_TEXT_MAX = 80;
+/** The main agent's log keeps this many of its newest lines. */
+export const MAIN_LOG_LIMIT = 80;
+
+/** An `Outcome:` line as its kind and text, or nothing. */
+export function parseOutcomeLine(line: string): { kind: Exclude<AgentOutcomeKind, "stopped">; text?: string } | undefined {
+	const match = OUTCOME_LINE.exec(line.trim());
+	if (!match) return undefined;
+	const word = match[1]!.toLowerCase();
+	return { kind: word.startsWith("needs") ? "needs_input" : (word as "done" | "blocked" | "failed"), text: clip(match[2]) };
+}
+
+/** What a `BLOCKED` line is blocked on, up to its first `;`: empty when it names nothing, absent when it is no such line. */
+function parseBlockedLine(line: string): string | undefined {
+	const match = BLOCKED_LINE.exec(line.trim());
+	if (!match) return undefined;
+	return clip(match[1]!.split(";")[0]!.replace(/\*\*|__/g, "")) ?? "";
+}
+
+function clip(value: string | undefined, max = OUTCOME_TEXT_MAX): string | undefined {
+	const trimmed = value?.replace(/\s+/g, " ").trim();
+	if (!trimmed) return undefined;
+	return trimmed.length > max ? `${trimmed.slice(0, max - 1).trimEnd()}…` : trimmed;
+}
+
+/** The newest `Outcome:` line in the texts, read from the last line of the last text back. */
+function explicitOutcome(texts: readonly string[]): ReturnType<typeof parseOutcomeLine> {
+	for (let index = texts.length - 1; index >= 0; index -= 1) {
+		const lines = texts[index]!.split("\n");
+		for (let line = lines.length - 1; line >= 0; line -= 1) {
+			const parsed = parseOutcomeLine(lines[line]!);
+			if (parsed) return parsed;
+		}
+	}
+	return undefined;
+}
+
+/** The last `BLOCKED` line of a text. */
+function blockedOutcome(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const lines = value.split("\n");
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		const blocked = parseBlockedLine(lines[index]!);
+		if (blocked !== undefined) return blocked;
+	}
+	return undefined;
+}
+
+function plainMarkdown(line: string): string {
+	return line
+		.replace(/^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)]\s+|>\s*)/, "")
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/\*\*|__|`/g, "")
+		.trim();
+}
+
+/** The first sentence of a message's prose, past code fences, tables, rules and note lines; a heading only when nothing follows it. */
+export function firstSentence(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	let heading: string | undefined;
+	let fenced = false;
+	for (const raw of value.split("\n")) {
+		const line = raw.trim();
+		if (line.startsWith("```")) {
+			fenced = !fenced;
+			continue;
+		}
+		if (fenced || !line || line.startsWith("|") || /^(?:-{3,}|\*{3,}|_{3,})$/.test(line) || parseSubagentNoteLine(line)) continue;
+		const plain = plainMarkdown(line);
+		if (!plain) continue;
+		if (/^#{1,6}\s/.test(line)) {
+			heading ??= plain;
+			continue;
+		}
+		return clip(/^(.+?[.!?])(?=\s|$)/.exec(plain)?.[1] ?? plain);
+	}
+	return clip(heading);
+}
+
+/**
+ * How a settled turn ended: an `Outcome:` line in its messages, else a `BLOCKED`
+ * line in its final message, else its state, with the final message's first
+ * sentence when it completed.
+ */
+function turnOutcome(turn: ConversationTurn, said: readonly ConversationMessage[]): AgentOutcome {
+	const final = said.at(-1);
+	const at = turn.completedAt ?? final?.createdAt ?? turn.startedAt ?? turn.requestedAt;
+	const explicit = explicitOutcome(said.map((message) => message.text));
+	if (explicit) return { ...explicit, at, source: "outcome_line" };
+	const blocked = blockedOutcome(final?.text);
+	if (blocked !== undefined) return { kind: "blocked", text: blocked || undefined, at, source: "blocked_line" };
+	if (turn.state === "failed") return { kind: "failed", text: clip(firstLine(turn.errorMessage)), at, source: "settled" };
+	if (turn.state === "interrupted" || turn.state === "cancelled") return { kind: "stopped", at, source: "settled" };
+	return { kind: "done", text: firstSentence(final?.text), at, source: "settled" };
+}
+
+/** A finished subagent's report, read for an `Outcome:` line, then a `BLOCKED` line. */
+function reportOutcome(report: string | undefined): Pick<AgentOutcome, "kind" | "text" | "source"> | undefined {
+	if (!report) return undefined;
+	const explicit = explicitOutcome([report]);
+	if (explicit) return { ...explicit, source: "outcome_line" };
+	const blocked = blockedOutcome(report);
+	return blocked === undefined ? undefined : { kind: "blocked", text: blocked || undefined, source: "blocked_line" };
+}
+
+const MAIN_STATE_BY_OUTCOME = {
+	done: "completed",
+	blocked: "needs_you",
+	needs_input: "needs_you",
+	failed: "failed",
+	stopped: "stopped",
+} as const satisfies Record<AgentOutcomeKind, MainAgentState>;
+
+function outcomeNote(outcome: AgentOutcome): SubagentNote {
+	return { kind: "outcome", outcome: outcome.kind, text: outcome.text ?? "", at: outcome.at };
 }
 
 interface NarrationParse {
@@ -345,17 +511,19 @@ export interface SubagentBoardDeriver {
 	derive(items: readonly ConversationItem[], turns: readonly ConversationTurn[]): SubagentBoardModel;
 }
 
-/**
- * The turn the main agent's card describes: the running one, else the latest
- * that ran. A queued turn has not started and a rolled-back one left history.
- */
+/** A turn that ran: a queued one has not started, and a rolled-back one left history. */
+function ran(turn: ConversationTurn): boolean {
+	return turn.state !== "queued" && !turn.rolledBack && !(turn.state === "cancelled" && !turn.startedAt);
+}
+
+/** The turn the main agent's card describes: the running one, else the latest that ran. */
 function mainTurn(turns: readonly ConversationTurn[]): ConversationTurn | undefined {
 	const running = turns.find((turn) => turn.state === "running");
 	if (running) return running;
 	let latest: ConversationTurn | undefined;
 	let latestMs = Number.NEGATIVE_INFINITY;
 	for (const turn of turns) {
-		if (turn.state === "queued" || turn.rolledBack || (turn.state === "cancelled" && !turn.startedAt)) continue;
+		if (!ran(turn)) continue;
 		const ms = timeOf(turn.startedAt ?? turn.requestedAt);
 		if (ms >= latestMs) {
 			latest = turn;
@@ -368,8 +536,13 @@ function mainTurn(turns: readonly ConversationTurn[]): ConversationTurn | undefi
 /** What one pass collects for the main agent's card. */
 interface MainInputs {
 	turn?: ConversationTurn;
-	/** Assistant messages by turn; turns in the order they first spoke. */
+	turns: readonly ConversationTurn[];
+	/** Turns in the order their first message arrived. */
+	order: readonly string[];
+	/** Assistant messages by turn. */
 	said: ReadonlyMap<string, ConversationMessage[]>;
+	/** The message that started each turn. */
+	prompts: ReadonlyMap<string, ConversationMessage>;
 	/** Top-level pending approvals and questions. */
 	pending: readonly ConversationActivity[];
 	/** Signatures of the pending requests a subagent raised. */
@@ -391,6 +564,52 @@ interface MessageParse {
 	parse: NarrationParse;
 }
 
+/** One turn's part of the main agent's log. */
+interface TurnLog {
+	key: string;
+	/** The message that started the turn. */
+	divider?: SubagentNote;
+	/** Its status and decision lines, then its outcome once it settled. */
+	body: SubagentNote[];
+	/** Its status and decision lines alone. */
+	lines: SubagentNote[];
+	decisions: SubagentNote[];
+}
+
+function messageKey(message: ConversationMessage): string {
+	return `${message.id}:${message.revision}:${message.text.length}`;
+}
+
+function turnEntry(prompt: ConversationMessage): SubagentNote {
+	const fromYou = prompt.origin === "human";
+	const sender = fromYou ? undefined : prompt.senderDisplayName?.trim() || prompt.senderLabel?.trim() || undefined;
+	const clientMessageId = fromYou ? prompt.clientMessageId : undefined;
+	return {
+		kind: "turn",
+		text: clip(prompt.text, PROMPT_TEXT_MAX) ?? "",
+		at: prompt.createdAt,
+		...(fromYou ? { fromYou } : {}),
+		...(clientMessageId ? { clientMessageId } : {}),
+		...(sender ? { sender } : {}),
+	};
+}
+
+/**
+ * The newest `limit` lines of the turns' logs, oldest first, each turn opened by
+ * its entry. A turn cut short keeps its entry above the lines that remain.
+ */
+function cappedLog(logs: readonly TurnLog[], limit: number): SubagentNote[] {
+	const parts: SubagentNote[][] = [];
+	let room = limit;
+	for (let index = logs.length - 1; index >= 0 && room > 0; index -= 1) {
+		const log = logs[index]!;
+		const body = log.body.length > room ? log.body.slice(log.body.length - room) : log.body;
+		room -= body.length;
+		parts.push(log.divider ? [log.divider, ...body] : body);
+	}
+	return parts.reverse().flat();
+}
+
 /**
  * A deriver keeps the parse and card caches for one surface. Entries for rows
  * that left the snapshot are dropped on the next pass.
@@ -399,35 +618,89 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 	let narrations = new Map<string, NarrationParse>();
 	let cards = new Map<string, { key: string; card: SubagentCard; claims: readonly string[] }>();
 	let messages = new Map<string, MessageParse>();
-	let main: { key: string; summary: MainAgentSummary } | undefined;
+	let main: { key: string; logs: readonly TurnLog[]; summary: MainAgentSummary } | undefined;
 	// When the in-progress plan step was first seen. A plan update adds no row of
 	// its own, so a step that changes while its turn is watched takes the time of
 	// the turn's newest row; one already set when the turn arrives is as old as the plan.
 	let planStep: { turnId: string; text: string; ms: number } | undefined;
 	let watchedTurnId: string | undefined;
+	// Settled turns' outcomes, read again only when a turn or what it said changes.
+	let outcomes = new Map<string, { key: string; outcome: AgentOutcome }>();
+	// Each turn's part of the log, rebuilt only when what it said changes.
+	let logs = new Map<string, TurnLog>();
 
-	// Status and decision lines of one turn's messages, parsed once per streamed chunk.
-	function notesOf(said: readonly ConversationMessage[] | undefined, nextMessages: Map<string, MessageParse>) {
-		const notes: SubagentNote[] = [];
-		for (const message of said ?? []) {
-			const cached = messages.get(message.id);
-			const entry = cached?.revision === message.revision && cached.length === message.text.length
-				? cached
-				: { revision: message.revision, length: message.text.length, parse: parseNarration(cached?.parse, message.text) };
+	function outcomeOf(turn: ConversationTurn, said: readonly ConversationMessage[], next: Map<string, { key: string; outcome: AgentOutcome }>): AgentOutcome {
+		const key = [turn.state, turn.completedAt, turn.errorMessage, ...said.map(messageKey)].join("\u0000");
+		const cached = outcomes.get(turn.id);
+		const entry = cached?.key === key ? cached : { key, outcome: turnOutcome(turn, said) };
+		next.set(turn.id, entry);
+		return entry.outcome;
+	}
+
+	/** One turn's entry, lines and outcome, its messages parsed once per streamed chunk. */
+	function turnLog(
+		turnId: string,
+		prompt: ConversationMessage | undefined,
+		said: readonly ConversationMessage[],
+		outcome: AgentOutcome | undefined,
+		nextMessages: Map<string, MessageParse>,
+	): TurnLog {
+		const outcomeKey = outcome ? [outcome.kind, outcome.text, outcome.at, outcome.source].join(":") : "";
+		const key = [prompt ? messageKey(prompt) : "", outcomeKey, ...said.map(messageKey)].join("\u0000");
+		const cached = logs.get(turnId);
+		if (cached?.key === key) {
+			for (const message of said) {
+				const parse = messages.get(message.id);
+				if (parse) nextMessages.set(message.id, parse);
+			}
+			return cached;
+		}
+		const lines: SubagentNote[] = [];
+		for (const message of said) {
+			const previous = messages.get(message.id);
+			const entry = previous?.revision === message.revision && previous.length === message.text.length
+				? previous
+				: { revision: message.revision, length: message.text.length, parse: parseNarration(previous?.parse, message.text) };
 			nextMessages.set(message.id, entry);
 			const { complete, tail } = entry.parse;
-			for (const line of tail ? [...complete, tail] : complete) notes.push({ kind: line.kind, text: line.text, at: message.createdAt });
+			for (const line of tail ? [...complete, tail] : complete) lines.push({ kind: line.kind, text: line.text, at: message.createdAt });
 		}
-		// Equal keys mean equal notes, and every turn without notes has the same ones.
-		const key = notes.length === 0
-			? ""
-			: (said ?? []).map((message) => `${message.id}:${message.revision}:${message.text.length}`).join(",");
-		return { notes, key };
+		return {
+			key,
+			divider: prompt ? turnEntry(prompt) : undefined,
+			body: outcome ? [...lines, outcomeNote(outcome)] : lines,
+			lines,
+			decisions: lines.filter((note) => note.kind === "decision"),
+		};
 	}
 
 	function summarize(inputs: MainInputs): MainAgentSummary {
 		const { turn } = inputs;
 		const running = turn?.state === "running";
+		const nextOutcomes = new Map<string, { key: string; outcome: AgentOutcome }>();
+		const nextMessages = new Map<string, MessageParse>();
+		const nextLogs = new Map<string, TurnLog>();
+		const byId = new Map(inputs.turns.map((entry) => [entry.id, entry]));
+		// Every turn that ran, oldest first. One that has said nothing yet still
+		// opens its part, and the card's own turn is there even before it speaks.
+		const order = turn && !inputs.order.includes(turn.id) ? [...inputs.order, turn.id] : inputs.order;
+		const turnLogs: TurnLog[] = [];
+		let current: TurnLog | undefined;
+		for (const turnId of order) {
+			const entry = byId.get(turnId);
+			if (entry && !ran(entry)) continue;
+			const said = inputs.said.get(turnId) ?? [];
+			// Only a settled turn has an outcome; a new running turn is working again.
+			const outcome = entry && entry.state !== "running" ? outcomeOf(entry, said, nextOutcomes) : undefined;
+			const log = turnLog(turnId, inputs.prompts.get(turnId), said, outcome, nextMessages);
+			nextLogs.set(turnId, log);
+			if (turnId === turn?.id) current = log;
+			if (log.divider || log.body.length > 0) turnLogs.push(log);
+		}
+		outcomes = nextOutcomes;
+		messages = nextMessages;
+		logs = nextLogs;
+		const result = turn && !running ? nextOutcomes.get(turn.id)?.outcome : undefined;
 		// A request that matches no subagent's call is the main agent's own.
 		let blocked = false;
 		let blockedOn: string | undefined;
@@ -441,21 +714,6 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			blocked = true;
 			blockedOn ??= text(inputs.asking.summary);
 		}
-
-		const nextMessages = new Map<string, MessageParse>();
-		const current = notesOf(turn ? inputs.said.get(turn.id) : undefined, nextMessages);
-		let shown = current;
-		if (shown.notes.length === 0) {
-			const earlier = [...inputs.said.keys()];
-			for (let index = earlier.length - 1; index >= 0; index -= 1) {
-				if (earlier[index] === turn?.id) continue;
-				const candidate = notesOf(inputs.said.get(earlier[index]!), nextMessages);
-				if (candidate.notes.length === 0) continue;
-				shown = candidate;
-				break;
-			}
-		}
-		messages = nextMessages;
 
 		let nowLine: string | undefined;
 		let nowSource: MainAgentSummary["nowSource"];
@@ -479,26 +737,33 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 				nowSource = source;
 			};
 			if (planStep) consider(planStep.text, planStep.ms, "plan");
-			const status = current.notes.findLast((note) => note.kind === "status");
+			const status = current?.lines.findLast((note) => note.kind === "status");
 			if (status) consider(status.text, timeOf(status.at), "status");
 			if (inputs.runningTool) consider(text(inputs.runningTool.summary), timeOf(inputs.runningTool.createdAt), "tool");
 		} else {
 			planStep = undefined;
-			const status = shown.notes.findLast((note) => note.kind === "status");
-			if (status) {
+			// The newest turn that wrote any lines: a turn that wrote none speaks through the one before.
+			const spoke = turnLogs.findLast((log) => log.lines.length > 0);
+			const status = spoke?.lines.findLast((note) => note.kind === "status");
+			// A pending request outranks how the turn ended: the card says what it waits for.
+			if (result && !blocked) {
+				nowLine = result.text;
+				nowSource = "outcome";
+			} else if (status) {
 				nowLine = status.text;
 				nowSource = "status";
 			}
 		}
 		watchedTurnId = turn?.id;
 
-		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : "idle";
+		const state: MainAgentState = blocked ? "needs_you" : running ? "working" : result ? MAIN_STATE_BY_OUTCOME[result.kind] : "idle";
 		const startedAt = running ? turn.startedAt ?? turn.requestedAt : undefined;
 		if (!blocked) blockedOn = undefined;
 		const steersKey = inputs.steers.map((steer) => `${steer.id}:${steer.revision}`).join(",");
 		// Unchanged inputs keep the summary's identity, so the memoized card skips the render.
-		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, shown.key, steersKey].join("\u0000");
-		if (main?.key === key) return main.summary;
+		// A turn's part is kept while it is unchanged, its outcome included.
+		const key = [state, turn?.id, startedAt, nowLine, nowSource, blockedOn, steersKey].join("\u0000");
+		if (main?.key === key && main.logs.length === turnLogs.length && main.logs.every((log, index) => log === turnLogs[index])) return main.summary;
 		const summary: MainAgentSummary = {
 			state,
 			turnId: turn?.id,
@@ -506,11 +771,12 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			nowLine,
 			nowSource,
 			blockedOn,
-			notes: shown.notes,
-			decisions: shown.notes.filter((note) => note.kind === "decision"),
+			result,
+			notes: cappedLog(turnLogs, MAIN_LOG_LIMIT),
+			decisions: turnLogs.flatMap((log) => log.decisions),
 			sent: inputs.steers.map(steerMessage),
 		};
-		main = { key, summary };
+		main = { key, logs: turnLogs, summary };
 		return summary;
 	}
 
@@ -521,6 +787,8 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			const children = new Map<string, ConversationActivity[]>();
 			const pending: ConversationActivity[] = [];
 			const said = new Map<string, ConversationMessage[]>();
+			const prompts = new Map<string, ConversationMessage>();
+			const order: string[] = [];
 			let runningTool: ConversationActivity | undefined;
 			let asking: ConversationActivity | undefined;
 			let planRow: ConversationActivity | undefined;
@@ -530,10 +798,20 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 				const inTurn = turn !== undefined && item.turnId === turn.id;
 				if (inTurn) newestMs = Math.max(newestMs, timeOf(item.createdAt));
 				if (item.kind === "message") {
-					if (item.role !== "assistant" || !item.turnId) continue;
+					if (!item.turnId) continue;
+					if (item.role !== "assistant") {
+						if (!prompts.has(item.turnId)) {
+							prompts.set(item.turnId, item);
+							if (!said.has(item.turnId)) order.push(item.turnId);
+						}
+						continue;
+					}
 					const list = said.get(item.turnId);
 					if (list) list.push(item);
-					else said.set(item.turnId, [item]);
+					else {
+						said.set(item.turnId, [item]);
+						if (!prompts.has(item.turnId)) order.push(item.turnId);
+					}
 					continue;
 				}
 				// Annotated so a false result does not narrow `item` away below.
@@ -558,7 +836,7 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 
 			// Signatures of the pending requests a subagent raised; the rest are the main agent's.
 			const claims = new Set<string>();
-			const mainAgent = () => summarize({ turn, said, pending, claims, runningTool, asking, planRow, newestMs, steers });
+			const mainAgent = () => summarize({ turn, turns, order, said, prompts, pending, claims, runningTool, asking, planRow, newestMs, steers });
 			if (parents.length === 0) {
 				narrations = new Map();
 				cards = new Map();
@@ -701,10 +979,27 @@ function buildCard(
 	if (parent.status === "recovered" && outcome === "stopped" && report) outcome = "completed";
 	const lane: SubagentLane = outcome === "working" ? "working" : outcome === "needs_you" ? "needs_you" : "done";
 
+	// A settled subagent's outcome: its report's Outcome: or BLOCKED line, else how
+	// its call ended. It stays in Done either way; only its glyph and line change.
+	let result: AgentOutcome | undefined;
+	if (lane === "done") {
+		const at = new Date(latestMs || Date.now()).toISOString();
+		const read = outcome === "stopped" ? undefined : reportOutcome(report);
+		if (read) {
+			if (read.kind === "blocked" || read.kind === "needs_input") outcome = "blocked";
+			else if (read.kind === "failed") outcome = "failed";
+			result = { ...read, at };
+		} else {
+			const kind: AgentOutcomeKind = outcome === "completed" ? "done" : outcome === "failed" ? "failed" : "stopped";
+			result = { kind, text: kind === "stopped" ? undefined : clip(firstLine(report)), at, source: "settled" };
+		}
+		notes.push(outcomeNote(result));
+	}
+
 	let nowLine: string | undefined;
 	let nowSource: SubagentCard["nowSource"];
 	if (lane === "done") {
-		const reportLine = firstLine(report);
+		const reportLine = result?.source === "settled" ? firstLine(report) : result?.text;
 		if (reportLine) {
 			nowLine = reportLine;
 			nowSource = "report";
@@ -742,6 +1037,7 @@ function buildCard(
 		nowLine,
 		nowSource,
 		blockedOn: lane === "needs_you" ? blockedOn : undefined,
+		result,
 		notes,
 		decisions: notes.filter((note) => note.kind === "decision"),
 		toolCount: Math.max(toolCount, typeof detail.progressToolUses === "number" ? detail.progressToolUses : 0),
@@ -817,7 +1113,13 @@ export function withStopRequests(cards: readonly SubagentCard[], stopped: Readon
 	const result = cards.map((card) => {
 		if (card.lane !== "done" || card.outcome === "stopped" || !stopped.has(card.providerItemId)) return card;
 		changed = true;
-		return { ...card, outcome: "stopped" as const };
+		const result: AgentOutcome = { kind: "stopped", at: card.result?.at ?? card.updatedAt, source: "settled" };
+		return {
+			...card,
+			outcome: "stopped" as const,
+			result,
+			notes: [...card.notes.filter((note) => note.kind !== "outcome"), outcomeNote(result)],
+		};
 	});
 	return changed ? result : cards;
 }

@@ -57,10 +57,13 @@ type fakeSessionService struct {
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
 	sentDeliveryOptions        ports.MessageDeliveryOptions
+	queuedFYIs                 []string
+	queuedFYIOptions           ports.MessageDeliveryOptions
 	delegationInput            sessionsvc.DelegateTaskInput
 	delegationErr              error
 	preparedProject            domain.ProjectID
 	canceledPreparation        string
+	renewedPreparation         string
 	cleanupProjects            []domain.ProjectID
 	cleanupResult              []domain.SessionID
 	cleanupSkipped             []sessionsvc.CleanupSkipped
@@ -489,6 +492,12 @@ func (f *fakeSessionService) SendWithOptions(_ context.Context, _ domain.Session
 	return nil
 }
 
+func (f *fakeSessionService) QueueFYI(_ context.Context, _ domain.SessionID, message string, options ports.MessageDeliveryOptions) (int, error) {
+	f.queuedFYIs = append(f.queuedFYIs, message)
+	f.queuedFYIOptions = options
+	return len(f.queuedFYIs), nil
+}
+
 func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error) {
 	f.delegationInput = in
 	if f.delegationErr != nil {
@@ -500,6 +509,19 @@ func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.Deleg
 func (f *fakeSessionService) PrepareTask(_ context.Context, projectID domain.ProjectID) (string, error) {
 	f.preparedProject = projectID
 	return "prep-token", nil
+}
+
+func (f *fakeSessionService) PrepareStandaloneTask(context.Context) (string, error) {
+	f.preparedProject = "standalone"
+	return "standalone-1", nil
+}
+
+func (f *fakeSessionService) RenewTaskPreparation(_ context.Context, token string) error {
+	if token != "standalone-1" {
+		return apierr.NotFound("TASK_PREPARATION_NOT_FOUND", "Unknown task preparation")
+	}
+	f.renewedPreparation = token
+	return nil
 }
 
 func (f *fakeSessionService) CancelTaskPreparation(_ context.Context, token string) error {
@@ -2007,6 +2029,44 @@ func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
 	}
 	if svc.lastSpawn.ParentSessionID != "ao-1" {
 		t.Fatalf("service ParentSessionID = %q, want ao-1", svc.lastSpawn.ParentSessionID)
+	}
+}
+
+func TestSessionsAPI_ListAndGetExposeParentSession(t *testing.T) {
+	svc := newFakeSessionService()
+	child := svc.sessions["ao-1"]
+	child.ID, child.ParentSessionID = "ao-2", "ao-1"
+	svc.sessions[child.ID] = child
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions?project=ao", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET sessions = %d, want 200; body=%s", status, body)
+	}
+	var list struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	mustJSON(t, body, &list)
+	parents := map[any]any{}
+	for _, session := range list.Sessions {
+		parents[session["id"]] = session["parentSessionId"] // nil when omitted
+	}
+	if len(parents) != 2 || parents["ao-2"] != "ao-1" || parents["ao-1"] != nil {
+		t.Fatalf("list parents = %v, want ao-2 -> ao-1 and ao-1 without the field; body=%s", parents, body)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-2", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET session = %d, want 200; body=%s", status, body)
+	}
+	var got struct {
+		Session struct {
+			ParentSessionID string `json:"parentSessionId"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &got)
+	if got.Session.ParentSessionID != "ao-1" {
+		t.Fatalf("session parentSessionId = %q, want ao-1; body=%s", got.Session.ParentSessionID, body)
 	}
 }
 
@@ -4684,6 +4744,69 @@ func TestSessionsAPI_PreparesAndCancelsTaskWorkspace(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_PreparesRenewsAndClaimsStandaloneTask(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/standalone/tasks/prepare", "")
+	if status != http.StatusAccepted || svc.preparedProject != "standalone" || !strings.Contains(string(body), `"taskPreparation":"standalone-1"`) {
+		t.Fatalf("prepare = %d %s, project %q", status, body, svc.preparedProject)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/task-preparations/standalone-1/renew", "")
+	if status != http.StatusNoContent || svc.renewedPreparation != "standalone-1" {
+		t.Fatalf("renew = %d, token %q", status, svc.renewedPreparation)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/task-preparations/gone/renew", "")
+	if status != http.StatusNotFound || !strings.Contains(string(body), "TASK_PREPARATION_NOT_FOUND") {
+		t.Fatalf("renew gone = %d %s", status, body)
+	}
+
+	_, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/sessions", `{"kind":"worker","harness":"codex","prompt":"Read the screenshot","taskPreparation":" standalone-1 "}`)
+	if status != http.StatusCreated || svc.lastSpawn.TaskPreparation != "standalone-1" {
+		t.Fatalf("spawn = %d, token %q", status, svc.lastSpawn.TaskPreparation)
+	}
+}
+
+func TestSessionsAPI_SpawnClientRequestHashIgnoresPreparationButBindsTask(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	hashes := make([]string, 0, 3)
+	for _, request := range []string{
+		`{"kind":"worker","harness":"codex","prompt":"Fix it","taskPreparation":"prep-a","clientRequestId":"draft-1"}`,
+		`{"kind":"worker","harness":"codex","prompt":"Fix it","taskPreparation":"prep-b","clientRequestId":"draft-1"}`,
+		`{"kind":"worker","harness":"codex","prompt":"Fix something else","taskPreparation":"prep-b","clientRequestId":"draft-1"}`,
+	} {
+		_, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions", request)
+		if status != http.StatusCreated {
+			t.Fatalf("spawn = %d", status)
+		}
+		hashes = append(hashes, svc.lastSpawn.ClientRequestHash)
+	}
+	if hashes[0] == "" || hashes[0] != hashes[1] || hashes[1] == hashes[2] {
+		t.Fatalf("hashes = %q, want the token ignored and the task bound", hashes)
+	}
+}
+
+func TestSessionsAPI_PreviewServesAttachmentStagedIntoHiddenPreparation(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := attachmentstore.New(dataDir).PutCanonical(context.Background(), "standalone-1", "attachment-cafe.png", []byte("png-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	// A preparation's row is hidden: Get answers exactly as for an unknown session.
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{DataDir: dataDir}, log, nil, httpd.APIDeps{Sessions: newFakeSessionService()}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/standalone-1/preview/files/.ao/attachments/attachment-cafe.png", "")
+	if status != http.StatusOK || string(body) != "png-bytes" {
+		t.Fatalf("staged preview = %d %q", status, body)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/standalone-1/preview/files/.ao/attachments/attachment-other.png", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown attachment = %d, want 404", status)
+	}
+}
+
 func TestSessionsAPI_DelegateTaskAcceptsLongBrief(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -4708,7 +4831,7 @@ func TestSessionsAPI_DelegateTaskAcceptsLongBrief(t *testing.T) {
 func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
-	brief := strings.Repeat("a", (16<<10)+1)
+	brief := strings.Repeat("a", (512<<10)+1)
 	payload, err := json.Marshal(map[string]string{
 		"projectId": "ao",
 		"brief":     brief,
@@ -4723,7 +4846,7 @@ func TestSessionsAPI_DelegateTaskRejectsBriefPastLaunchSafeLimit(t *testing.T) {
 		Message string `json:"message"`
 	}
 	mustJSON(t, body, &got)
-	if got.Message != "Task must be 16 KiB or fewer" {
+	if got.Message != "Task must be 512 KiB or fewer" {
 		t.Fatalf("error message = %q, want actionable size limit", got.Message)
 	}
 	if svc.delegationInput.ProjectID != "" {
@@ -4866,6 +4989,36 @@ func TestSessionsAPI_SendWithAttachment(t *testing.T) {
 	}
 	if svc.sentDeliveryOptions.AuthoredByUser {
 		t.Fatal("ordinary automation send was marked user-authored")
+	}
+}
+
+func TestSessionsAPI_SendFYIHoldsMessageWithoutDelivering(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"PR #7 merged.","fyi":true,"senderSessionId":"ao-2"}`)
+	if status != http.StatusOK {
+		t.Fatalf("fyi send = %d, want 200; body=%s", status, body)
+	}
+	var got controllers.SendSessionMessageResponse
+	mustJSON(t, body, &got)
+	if !got.OK || got.PendingFYIs != 1 || got.Message != "PR #7 merged." {
+		t.Fatalf("response = %#v", got)
+	}
+	if svc.sent != "" {
+		t.Fatalf("fyi was delivered as a turn: %q", svc.sent)
+	}
+	if len(svc.queuedFYIs) != 1 || svc.queuedFYIs[0] != "PR #7 merged." || svc.queuedFYIOptions.SenderSessionID != "ao-2" {
+		t.Fatalf("queued = %q options = %+v", svc.queuedFYIs, svc.queuedFYIOptions)
+	}
+
+	attachment := `{"message":"see this","fyi":true,"attachment":{"mimeType":"image/png","data":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}}`
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", attachment)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "FYI_ATTACHMENT_UNSUPPORTED")
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"   ","fyi":true}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "MESSAGE_REQUIRED")
+	if len(svc.queuedFYIs) != 1 {
+		t.Fatalf("rejected fyi requests were queued: %q", svc.queuedFYIs)
 	}
 }
 

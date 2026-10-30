@@ -76,7 +76,7 @@ export type DeliveryState = "queued" | "sending" | "accepted" | "uncertain" | "f
  */
 export type ChatSteerOutcome =
 	| { status: "accepted" }
-	| { status: "not-accepted"; reason: string };
+	| { status: "not-accepted"; reason: string; /** The daemon's refusal code, when it gave one. */ code?: string };
 
 /** Durable inline-edit acceptance; uncertainty remains a rejected promise. */
 export type ChatEditOutcome = ChatSteerOutcome;
@@ -487,6 +487,18 @@ export interface AOActionDetail {
  * the renderer to infer a compaction from the presence of token counts or a steer
  * from the presence of text. Read the discriminator, never the kind.
  */
+/** How far AO got moving a usage-limited turn to an account with usage left. */
+export type UsageLimitSwitchPhase = "switching" | "continued" | "switched" | "failed";
+
+/** The move AO made after a usage limit, as the composer notice shows it. */
+export interface UsageLimitSwitch {
+	phase: UsageLimitSwitchPhase;
+	accountId?: string;
+	fromAccountId?: string;
+	error?: string;
+	mcpNeedsAuth?: string[];
+}
+
 export interface SystemEventDetail {
 	event?:
 		| "compaction"
@@ -503,12 +515,22 @@ export interface SystemEventDetail {
 		| "workspace.setup"
 		| "workspace.script.run"
 		| "account.switched"
+		/** AO moving a turn its account's usage limit refused to an account with usage left. */
+		| "account.limit_switch"
 		/** A Cloud turn ran a weaker approval mode than it asked for, which its model does not offer; the summary says which. */
 		| "approval_mode.substituted";
 	/** workspace.script.run: one Setup or Cleanup run, grouped from its workspace.script.step events. */
 	scriptRun?: ScriptRun;
-	/** account.switched: the account a stopped turn's conversation continues on. */
+	/** account.switched: the account a stopped turn's conversation continues on.
+	 * account.limit_switch: the account AO moves the session to. */
 	accountId?: string;
+	/** account.limit_switch: the account whose usage limit refused the turn; equal to
+	 * accountId when the agent restarted on its own account's current sign-in. */
+	fromAccountId?: string;
+	/** account.limit_switch: how far the move got. */
+	phase?: UsageLimitSwitchPhase;
+	/** account.limit_switch: MCP servers not signed in on the new account. */
+	mcpNeedsAuth?: string[];
 	/** workspace.setup: how the project's Setup commands ended (exitCode, durationMs and output carry the rest). */
 	setupStatus?: "succeeded" | "failed" | "timed_out";
 	/** workspace.setup: the 1-based Setup step that failed or timed out. */

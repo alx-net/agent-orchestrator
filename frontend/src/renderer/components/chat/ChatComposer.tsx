@@ -107,6 +107,7 @@ import {
 import { attachmentURL, IMAGE_ATTACHMENT_PATH, isInlineImagePath, proseBesideImages, removeInlineImagePath } from "./messageAttachments";
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { subscribeChatComposerReferences } from "../../lib/chat-context-bus";
+import { isTypingInEditableElement } from "../../lib/editable-focus";
 
 // These responses precede AppendUserMessage. Provider/transport errors can
 // follow durable acceptance and must keep the original delivery ID for recovery.
@@ -560,6 +561,8 @@ export const ChatComposer = memo(function ChatComposer({
 		onAttachmentsChange: persistAttachments,
 	});
 	const canAttach = Boolean(onStageAttachments) && !queuedEditRecovery;
+	// A paste the composer cannot take yet says why, instead of doing nothing.
+	const [attachLaterNotice, setAttachLaterNotice] = useState(false);
 
 	const slashCommands = useMemo<ChatSkill[]>(() => {
 		if (!onCompact || compactUnavailable === "This agent cannot compact its history") return skills;
@@ -763,10 +766,16 @@ export const ChatComposer = memo(function ChatComposer({
 		if (!autoFocus || disabled) return;
 		editor.current?.focus();
 	}, [autoFocus, disabled]);
+	// Focus that comes on its own (the session opening, the composer becoming
+	// usable again, the window coming back) never takes the caret from a field
+	// the person is typing in: an Agents-tab steer field, a rename, a dialog.
+	const autoFocusEditor = useCallback(() => {
+		if (!isTypingInEditableElement()) focusEditor();
+	}, [focusEditor]);
 
 	useEffect(() => {
-		focusEditor();
-	}, [autoFocusKey, focusEditor]);
+		autoFocusEditor();
+	}, [autoFocusKey, autoFocusEditor]);
 
 	const hasQueuedDock = Boolean(queuedDock);
 	const restoreFocusAfterQueueAppears =
@@ -782,9 +791,9 @@ export const ChatComposer = memo(function ChatComposer({
 	useEffect(() => {
 		if (!autoFocus) return;
 
-		const onWindowFocus = () => focusEditor();
+		const onWindowFocus = () => autoFocusEditor();
 		const onVisibilityChange = () => {
-			if (document.visibilityState === "visible") focusEditor();
+			if (document.visibilityState === "visible") autoFocusEditor();
 		};
 
 		window.addEventListener("focus", onWindowFocus);
@@ -793,7 +802,7 @@ export const ChatComposer = memo(function ChatComposer({
 			window.removeEventListener("focus", onWindowFocus);
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
-	}, [autoFocus, focusEditor]);
+	}, [autoFocus, autoFocusEditor]);
 
 	const clearEditorView = useCallback(() => {
 		historyBrowse.current = null;
@@ -1697,6 +1706,7 @@ export const ChatComposer = memo(function ChatComposer({
 	}
 
 	function onPaste(event: ClipboardEvent<HTMLDivElement>) {
+		if (!canAttach && attachLater && (event.clipboardData?.files.length ?? 0) > 0) setAttachLaterNotice(true);
 		if (!canAttach || fileAttachments.preparing || draftMutationPending || submitInFlight.current) return;
 		const clipboard = event.clipboardData;
 		const files = Array.from(clipboard?.files ?? []);
@@ -1960,6 +1970,11 @@ export const ChatComposer = memo(function ChatComposer({
 				{fileAttachments.preparing ? (
 					<p role="status" className="px-1.5 text-xs leading-snug text-muted-foreground">
 						Saving attachments… Wait before leaving this chat.
+					</p>
+				) : null}
+				{attachLaterNotice && !canAttach ? (
+					<p role="status" className="px-1.5 text-xs leading-snug text-muted-foreground">
+						{t("chat.composer.attachLater")}
 					</p>
 				) : null}
 

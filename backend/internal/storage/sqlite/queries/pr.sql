@@ -120,6 +120,15 @@ ORDER BY
     updated_at DESC
 LIMIT 1;
 
+-- name: ListPRsByNumber :many
+-- Every tracked row carrying a provider number, active first. Callers scope
+-- the candidates to one project's repositories.
+SELECT * FROM pr
+WHERE number = ?
+ORDER BY
+    CASE WHEN pr_state NOT IN ('merged', 'closed') THEN 0 ELSE 1 END,
+    updated_at DESC;
+
 -- name: CountActivePRsByNumber :one
 SELECT COUNT(*)
 FROM pr

@@ -3,7 +3,7 @@ import { useCallback } from "react";
 import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 import type { ApprovalMode } from "../types/conversation";
-import type { SessionKind } from "../types/workspace";
+import { STANDALONE_WORKSPACE_ID, type SessionKind } from "../types/workspace";
 import { remoteWorkspaceQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
 
 type ProjectPermissionsConfig = {
@@ -23,7 +23,7 @@ export function useRememberProjectPermissions(projectId: string, sourceHarness?:
 	const projectKey = hostId ? ["project", projectId, hostId] : ["project", projectId];
 	const project = useQuery({
 		queryKey: projectKey,
-		enabled: Boolean(projectId),
+		enabled: Boolean(projectId) && projectId !== STANDALONE_WORKSPACE_ID,
 		queryFn: async () => {
 			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },

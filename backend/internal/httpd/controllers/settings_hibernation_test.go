@@ -80,3 +80,32 @@ func TestSettingsVersionRefreshRequiresBoolean(t *testing.T) {
 		t.Fatalf("status=%d response=%+v err=%v", w.Code, got, err)
 	}
 }
+
+type accountAutoSwitchSettingsService struct {
+	hibernationSettingsService
+	on bool
+}
+
+func (s *accountAutoSwitchSettingsService) SetAccountAutoSwitch(_ context.Context, enabled bool) (settingssvc.Snapshot, error) {
+	s.on = enabled
+	s.calls++
+	return settingssvc.Snapshot{AccountAutoSwitch: enabled}, nil
+}
+
+func TestSettingsAccountAutoSwitchRequiresBoolean(t *testing.T) {
+	svc := &accountAutoSwitchSettingsService{on: true}
+	c := &SettingsController{Svc: svc}
+	for _, body := range []string{`{}`, `{"enabled":null}`, `{"enabled":"false"}`} {
+		w := httptest.NewRecorder()
+		c.setAccountAutoSwitch(w, httptest.NewRequest(http.MethodPatch, "/api/v1/settings/account-auto-switch", strings.NewReader(body)))
+		if w.Code != http.StatusBadRequest || svc.calls != 0 {
+			t.Fatalf("body=%s status=%d calls=%d", body, w.Code, svc.calls)
+		}
+	}
+	w := httptest.NewRecorder()
+	c.setAccountAutoSwitch(w, httptest.NewRequest(http.MethodPatch, "/api/v1/settings/account-auto-switch", strings.NewReader(`{"enabled":false}`)))
+	var got SettingsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != http.StatusOK || got.AccountAutoSwitch || svc.on {
+		t.Fatalf("status=%d response=%+v err=%v", w.Code, got, err)
+	}
+}

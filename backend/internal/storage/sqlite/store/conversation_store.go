@@ -2946,6 +2946,32 @@ func (s *Store) UpsertActivity(
 			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
 		}
 	}
+	if activity.RequestID != "" {
+		// A reattached controller receives the host's replay of a request that
+		// is still pending, such as a question with no provider item id.
+		exists, err := q.ConversationActivityExistsForRequest(ctx,
+			gen.ConversationActivityExistsForRequestParams{
+				ConversationID: conversationID,
+				RequestID:      activity.RequestID,
+			})
+		if err != nil {
+			return fmt.Errorf("lookup activity request %s: %w", activity.RequestID, err)
+		}
+		if exists {
+			if err := q.SettleConversationActivityByRequest(ctx,
+				gen.SettleConversationActivityByRequestParams{
+					Status:         activity.Status,
+					Summary:        activity.Summary,
+					DetailJson:     detail,
+					UpdatedAt:      now,
+					ConversationID: conversationID,
+					RequestID:      activity.RequestID,
+				}); err != nil {
+				return fmt.Errorf("settle activity request %s: %w", activity.RequestID, err)
+			}
+			return nil
+		}
+	}
 
 	turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
 	return s.inTx(ctx, "insert activity", func(q *gen.Queries) error {
@@ -3493,13 +3519,27 @@ func (s *Store) ApplyProviderTitle(
 
 	var applied bool
 	err = s.inTx(ctx, "apply provider title", func(q *gen.Queries) error {
+		state, readErr := q.GetSessionTitleState(ctx, session)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("read session %s title: %w", session, readErr)
+		}
+		// A session with a title area carries its prefix on every automatic title.
+		area := state.TitleArea.String
+		label := domain.PrefixSessionTitle(area, title)
 		rows, updateErr := q.ApplyConversationTitleToSession(ctx,
 			gen.ApplyConversationTitleToSessionParams{
-				DisplayName: title,
+				DisplayName: label,
+				AutoTitle:   label,
 				UpdatedAt:   now,
 				ID:          session,
-				// The witness: only a label AO itself last wrote may be replaced.
-				DisplayName_2: conversation.AppliedTitle,
+				TitleArea:   state.TitleArea,
+				// The witness: only a label AO itself last wrote may be replaced,
+				// including one that an area chosen later has since prefixed.
+				AppliedTitle:         conversation.AppliedTitle,
+				PrefixedAppliedTitle: domain.PrefixSessionTitle(area, conversation.AppliedTitle),
 			})
 		if updateErr != nil {
 			return fmt.Errorf("apply title to session %s: %w", session, updateErr)
@@ -3509,7 +3549,7 @@ func (s *Store) ApplyProviderTitle(
 		}
 		applied = true
 		return q.UpdateConversationAppliedTitle(ctx, gen.UpdateConversationAppliedTitleParams{
-			AppliedTitle: title,
+			AppliedTitle: label,
 			UpdatedAt:    now,
 			ID:           conversationID,
 		})

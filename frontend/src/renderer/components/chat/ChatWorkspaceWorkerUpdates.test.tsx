@@ -163,28 +163,90 @@ describe("agent messages in a worker chat", () => {
 		...automation("t1", 1, `[from ${sender}] ${text}`), senderSessionId: sender, senderProjectId: "proj",
 	});
 
-	it("draws the orchestrator's message under its name, linked to its session", () => {
-		renderOrchestrator([sent("Keep the draft local until Dhruv approves.", "proj-1"), reply("t1", 2, "Kept it local.")], vi.fn(), workspaces, "worker");
+	const toggle = (message: HTMLElement) => within(message).getByRole("button", { expanded: false });
+
+	it("folds the orchestrator's message into one row: its name linked to its session, the gist unsigned, and time", () => {
+		const body = "Orchestrator: keep the draft local until Dhruv approves. Then open the PR as a draft and report back with its number.";
+		renderOrchestrator([sent(body, "proj-1"), reply("t1", 2, "Kept it local.")], vi.fn(), workspaces, "worker");
 
 		const message = screen.getByTestId("agent-message");
-		expect(message).toHaveTextContent("Keep the draft local until Dhruv approves.");
-		expect(message).not.toHaveTextContent("[from");
 		expect(within(message).getByRole("link", { name: "Orchestrator" })).toHaveAttribute("href", "ao://sessions/proj/proj-1");
+		const row = toggle(message);
+		expect(row).toHaveAttribute("aria-expanded", "false");
+		expect(row).toHaveTextContent("keep the draft local until Dhruv approves");
+		expect(message).not.toHaveTextContent("Orchestrator: keep");
+		expect(message).not.toHaveTextContent("Then open the PR");
+		expect(message).not.toHaveTextContent("[from");
+		expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
 	});
 
-	it("marks the paths in its plain prose as code and links the sessions it names", () => {
+	it("opens to the full message on click, Enter or Space, and closes again", async () => {
+		const user = userEvent.setup();
+		const body = "Orchestrator: keep the draft local until Dhruv approves. Then open the PR as a draft and report back with its number.";
+		renderOrchestrator([sent(body, "proj-1"), reply("t1", 2, "Kept it local.")], vi.fn(), workspaces, "worker");
+
+		const message = screen.getByTestId("agent-message");
+		const row = toggle(message);
+		await user.click(row);
+		expect(row).toHaveAttribute("aria-expanded", "true");
+		expect(message).toHaveTextContent(body);
+		await user.click(row);
+		expect(row).toHaveAttribute("aria-expanded", "false");
+		expect(message).not.toHaveTextContent("Then open the PR");
+
+		row.focus();
+		await user.keyboard("{Enter}");
+		expect(row).toHaveAttribute("aria-expanded", "true");
+		await user.keyboard(" ");
+		expect(row).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("keeps several agent messages one row each", () => {
+		const second = { ...sent("proj-7: rebased on main. All checks green.", "proj-7"), id: "t2-report", turnId: "t2", sequence: 30, createdAt: at(3) };
+		renderOrchestrator([
+			sent("Orchestrator, two things: (1) rebase, (2) report.", "proj-1"),
+			reply("t1", 2, "On it."),
+			second,
+			reply("t2", 4, "Noted."),
+		], vi.fn(), workspaces, "worker");
+
+		const messages = screen.getAllByTestId("agent-message");
+		expect(messages).toHaveLength(2);
+		expect(toggle(messages[0]!)).toHaveTextContent("two things: (1) rebase, (2) report");
+		expect(toggle(messages[1]!)).toHaveTextContent("rebased on main");
+		expect(messages[1]).not.toHaveTextContent("All checks green");
+	});
+
+	it("folds an agent's mid-turn steer into the same row", () => {
+		const steer: ConversationActivity = {
+			kind: "activity", id: "t1-steer", turnId: "t1", sequence: 15, revision: 0, activityKind: "system", status: "completed",
+			summary: "Steer", createdAt: at(1),
+			detail: { event: "steer", text: "[from proj-1] Orchestrator: stop pushing. #5480 is merged.", senderSessionId: "proj-1", senderProjectId: "proj" },
+		};
+		renderOrchestrator([sent("Rebase #5480.", "proj-1"), steer, reply("t1", 2, "Stopped.")], vi.fn(), workspaces, "worker");
+
+		const messages = screen.getAllByTestId("agent-message");
+		expect(messages).toHaveLength(2);
+		expect(toggle(messages[1]!)).toHaveTextContent("stop pushing");
+		expect(messages[1]).not.toHaveTextContent("#5480 is merged");
+	});
+
+	it("marks the paths in its plain prose as code and links the sessions it names", async () => {
 		renderOrchestrator([sent("Compare /tmp/proj/.ao/shot.png with proj-7, then report.", "proj-1"), reply("t1", 2, "On it.")], vi.fn(), workspaces, "worker");
 
 		const message = screen.getByTestId("agent-message");
+		await userEvent.click(toggle(message));
 		expect(within(message).getByText("/tmp/proj/.ao/shot.png").tagName).toBe("CODE");
 		expect(within(message).getByRole("link", { name: "proj-7" })).toHaveAttribute("href", "ao://sessions/proj/proj-7");
 		expect(message).toHaveTextContent("Compare /tmp/proj/.ao/shot.png with proj-7, then report.");
 	});
 
-	it("keeps an authored reference link to its own target", () => {
+	it("keeps an authored reference link to its own target", async () => {
 		renderOrchestrator([sent("See [proj-7][target].\n\n[target]: ao://sessions/proj/proj-1", "proj-1"), reply("t1", 2, "Ok.")], vi.fn(), workspaces, "worker");
 
-		const links = within(screen.getByTestId("agent-message")).getAllByRole("link", { name: "proj-7" });
+		const message = screen.getByTestId("agent-message");
+		await userEvent.click(toggle(message));
+		const links = within(message).getAllByRole("link", { name: "proj-7" });
 		expect(links).toHaveLength(1);
 		expect(links[0]).toHaveAttribute("href", "ao://sessions/proj/proj-1");
 	});
@@ -204,18 +266,21 @@ describe("agent messages in a worker chat", () => {
 		await waitFor(() => expect(result.current.plugins).not.toBe(first));
 	});
 
-	it("names a sibling worker by its task", () => {
+	it("names a sibling worker by its session id, as agents name each other", () => {
 		renderOrchestrator([sent("Rebased on main.", "proj-7"), reply("t1", 2, "Noted.")], vi.fn(), workspaces, "worker");
 
 		const message = screen.getByTestId("agent-message");
-		expect(message).toHaveTextContent("Rebased on main.");
-		expect(within(message).getByRole("link", { name: "Sibling worker" })).toHaveAttribute("href", "ao://sessions/proj/proj-7");
+		expect(toggle(message)).toHaveTextContent("Rebased on main");
+		expect(within(message).getByRole("link", { name: "proj-7" })).toHaveAttribute("href", "ao://sessions/proj/proj-7");
+		expect(message).not.toHaveTextContent("Sibling worker");
 	});
 
-	it("leaves a message whose sender this chat cannot find as it was", () => {
-		renderOrchestrator([sent("Rebased on main.", "proj-404"), reply("t1", 2, "Noted.")], vi.fn(), workspaces, "worker");
+	it("folds a message whose sender this chat cannot find into a row named by its session id", () => {
+		renderOrchestrator([sent("proj-404: rebased on main. Pushed.", "proj-404"), reply("t1", 2, "Noted.")], vi.fn(), workspaces, "worker");
 
-		expect(screen.queryByTestId("agent-message")).not.toBeInTheDocument();
-		expect(screen.getByText("Rebased on main.")).toBeInTheDocument();
+		const message = screen.getByTestId("agent-message");
+		expect(within(message).getByRole("link", { name: "proj-404" })).toHaveAttribute("href", "ao://sessions/proj/proj-404");
+		expect(toggle(message)).toHaveTextContent("rebased on main");
+		expect(message).not.toHaveTextContent("Pushed");
 	});
 });

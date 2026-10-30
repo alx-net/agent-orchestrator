@@ -77,6 +77,83 @@ type ListReportsQuery struct {
 	ProjectID string `query:"projectId" required:"true" description:"Stable project identifier."`
 }
 
+// CreateWaitRequest registers one zero-token wait (`ao wait`) for the session
+// in the path. A pr wait names the PR by number (resolved in the session's
+// project) and/or URL; a time wait sets durationSeconds.
+type CreateWaitRequest struct {
+	Kind            string `json:"kind" enum:"pr,time"`
+	PRNumber        int    `json:"prNumber,omitempty" minimum:"1"`
+	PRURL           string `json:"prUrl,omitempty" description:"Complete GitHub PR or GitLab MR URL."`
+	For             string `json:"for,omitempty" enum:"checks,merge,review,any" description:"PR event to wait for; defaults to checks. Every PR wait also resolves when the PR merges or closes."`
+	DurationSeconds int64  `json:"durationSeconds,omitempty" minimum:"0" description:"Timer length for a time wait."`
+	TimeoutSeconds  int64  `json:"timeoutSeconds,omitempty" minimum:"0" description:"How long a PR wait may stay pending; defaults to 24 hours."`
+	Note            string `json:"note,omitempty" maxLength:"500" description:"Why the agent is waiting; echoed back in the wake message."`
+}
+
+// WaitResponse is one registered wait.
+type WaitResponse struct {
+	ID         string     `json:"id"`
+	SessionID  string     `json:"sessionId"`
+	Kind       string     `json:"kind" enum:"pr,time"`
+	For        string     `json:"for,omitempty" enum:"checks,merge,review,any"`
+	PRNumber   int        `json:"prNumber,omitempty"`
+	PRURL      string     `json:"prUrl,omitempty"`
+	Note       string     `json:"note,omitempty"`
+	State      string     `json:"state" enum:"pending,fired,expired,cancelled"`
+	Outcome    string     `json:"outcome,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	FireAt     *time.Time `json:"fireAt,omitempty"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+}
+
+// CreateWaitResponse returns the wait; existing marks an identical pending
+// wait returned instead of registering a second.
+type CreateWaitResponse struct {
+	Wait     WaitResponse `json:"wait"`
+	Existing bool         `json:"existing,omitempty"`
+}
+
+// ListWaitsResponse lists a session's pending waits, oldest first.
+type ListWaitsResponse struct {
+	Waits []WaitResponse `json:"waits"`
+}
+
+// WaitEnvelope wraps one wait.
+type WaitEnvelope struct {
+	Wait WaitResponse `json:"wait"`
+}
+
+// WaitIDParam is the {waitId} path parameter.
+type WaitIDParam struct {
+	WaitID string `path:"waitId" description:"Wait identifier, e.g. w-1a2b3c4d."`
+}
+
+// CreateCheckoutRequest asks for the session's own up-to-date copy of one of
+// the user's projects (`ao checkout`).
+type CreateCheckoutRequest struct {
+	Project string `json:"project" minLength:"1" description:"Project id or name, case-insensitive."`
+	Ref     string `json:"ref,omitempty" description:"Remote branch, tag, or commit SHA. Defaults to the project's default branch."`
+	Refresh bool   `json:"refresh,omitempty" description:"Fail with 409 instead of keeping an existing checkout that has local work."`
+}
+
+// CheckoutResponse is the session's checkout of a project: a detached Git
+// worktree at path inside the session workspace.
+type CheckoutResponse struct {
+	ProjectID    string    `json:"projectId"`
+	ProjectName  string    `json:"projectName"`
+	Path         string    `json:"path"`
+	Ref          string    `json:"ref" description:"What the checkout was resolved from, e.g. origin/master."`
+	Commit       string    `json:"commit"`
+	ShortCommit  string    `json:"shortCommit"`
+	CommitDate   time.Time `json:"commitDate"`
+	Subject      string    `json:"subject"`
+	Action       string    `json:"action" enum:"created,updated,unchanged,kept" description:"kept: an existing checkout had local work and was left untouched."`
+	Note         string    `json:"note,omitempty" description:"Why a kept checkout was not moved."`
+	FetchWarning string    `json:"fetchWarning,omitempty" description:"Set when fetching the remote failed and the last fetched refs were used."`
+	Submodules   bool      `json:"submodules,omitempty" description:"The repository declares submodules; they are not initialized."`
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served
@@ -551,7 +628,7 @@ type SpawnSessionRequest struct {
 	Mode domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
 	// ApprovalMode overrides the project/default policy for this spawn.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
-	Prompt       string                `json:"prompt,omitempty" maxLength:"16384"`
+	Prompt       string                `json:"prompt,omitempty" maxLength:"524288"`
 	// Model is an optional agent model override scoped to this single spawn. Empty
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
@@ -572,6 +649,10 @@ type SpawnSessionRequest struct {
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
 	Attachments []AttachmentInput `json:"attachments,omitempty"`
+	// TaskPreparation is the opaque workspace token returned while the composer
+	// is open. A worker claims it and keeps the files staged there. Missing or
+	// expired tokens fall back to normal creation.
+	TaskPreparation string `json:"taskPreparation,omitempty"`
 }
 
 // AttachmentInput is one file attached to a spawn, delegate, stage, or send
@@ -1259,6 +1340,10 @@ type SendSessionMessageRequest struct {
 	// snapshot) delivered alongside the message. The daemon writes it into the
 	// session worktree and appends a path reference to the message.
 	Attachment *AttachmentInput `json:"attachment,omitempty"`
+	// FYI holds an informational message instead of delivering it: it never
+	// starts a turn. AO appends it, labeled with sender and time, to the next
+	// turn the session starts. Not combinable with an attachment.
+	FYI bool `json:"fyi,omitempty"`
 }
 
 // SendSessionMessageResponse is the body of POST /api/v1/sessions/{sessionId}/send.
@@ -1266,6 +1351,9 @@ type SendSessionMessageResponse struct {
 	OK        bool             `json:"ok"`
 	SessionID domain.SessionID `json:"sessionId"`
 	Message   string           `json:"message"`
+	// PendingFYIs counts the FYI messages now waiting for the session's next
+	// turn; set only for an FYI send.
+	PendingFYIs int `json:"pendingFyis,omitempty"`
 }
 
 // DelegateTaskRequest is the body of POST /api/v1/orchestrators/delegate.
@@ -1273,7 +1361,7 @@ type SendSessionMessageResponse struct {
 type DelegateTaskRequest struct {
 	ClientRequestID string              `json:"clientRequestId,omitempty" maxLength:"128"`
 	ProjectID       domain.ProjectID    `json:"projectId"`
-	Brief           string              `json:"brief" maxLength:"16384"`
+	Brief           string              `json:"brief" maxLength:"524288"`
 	Agent           domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,opencode-v2,grok,droid,amp,agy,crush,cursor,qwen,gemini,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,fx,prime-agent,autohand,unreal-agent,codewhale,mimo-code,deepseek-harness,openhands,command-code,memcode,hermes,fake"`
 	Model           string              `json:"model,omitempty" maxLength:"256"`
 	// Effort is an explicit, provider-advertised model tuning override. Nil
@@ -2383,6 +2471,13 @@ type OpenShellTerminalRequest struct {
 	Shell         string `json:"shell,omitempty" description:"Windows shell selector: auto, git-bash, pwsh, powershell, cmd, or a custom executable path. Ignored on macOS and Linux."`
 	StartOnAttach bool   `json:"startOnAttach,omitempty" description:"Start the shell when the requesting client attaches with its terminal grid instead of immediately, so the shell starts at the size that client shows. Only for clients that attach as a sized viewer; omitted starts the shell immediately at the default grid."`
 	Title         string `json:"title,omitempty" description:"Tab title for the new shell, for a client that already shows its tab. Trimmed; omitted or empty numbers it after the existing shells (Terminal N)."`
+}
+
+// RunSessionCommandRequest is the body of POST
+// /api/v1/sessions/{sessionId}/terminal-commands.
+type RunSessionCommandRequest struct {
+	Command string `json:"command" maxLength:"65536" description:"Shell command the user chose to run, typed into a new shell tab in the session's worktree. Several lines run as one command list."`
+	Shell   string `json:"shell,omitempty" description:"Windows shell selector, as for shell terminals. Ignored on macOS and Linux."`
 }
 
 // UpdateShellTerminalRequest is the body of PATCH /api/v1/shell-terminals/{handleId}.
@@ -3623,6 +3718,10 @@ type SettingsResponse struct {
 	ChatHibernationEnabled bool `json:"chatHibernationEnabled"`
 	// VersionRefresh moves idle open sessions to a harness release installed while they ran.
 	VersionRefresh bool `json:"versionRefresh" description:"After a harness update, idle open sessions restart on the new release instead of running the old one until they happen to restart."`
+	// AccountAutoSwitch moves a chat whose turn hit its account's usage limit to another account.
+	AccountAutoSwitch bool `json:"accountAutoSwitch" description:"When a chat's turn reaches its account's usage limit, AO moves the session to another signed-in account of the same provider with usage left and runs the turn again there, instead of waiting for the reset."`
+	// CompactAt is the token count at which AO-launched Claude Code agents compact.
+	CompactAt int `json:"compactAt" description:"Token count at which the Claude Code chat agents AO starts or resumes compact their conversation, overriding the repository's and the user's Claude Code settings. 0 leaves it to those settings. A conversation's own compaction choice, or a compaction variable in the project's AO environment, still wins."`
 	// CloudEnabled reports whether the cloud offering is effectively available:
 	// the user's toggle (or the env override) plus a configured control plane.
 	CloudEnabled bool `json:"cloudEnabled"`
@@ -3660,6 +3759,16 @@ type UpdateCloudOfferingRequest struct {
 // UpdateVersionRefreshRequest flips whether open sessions move to new harness releases.
 type UpdateVersionRefreshRequest struct {
 	Enabled *bool `json:"enabled"`
+}
+
+// UpdateAccountAutoSwitchRequest flips whether a usage-limited chat moves to another account.
+type UpdateAccountAutoSwitchRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// UpdateCompactAtRequest sets where AO-launched Claude Code agents compact.
+type UpdateCompactAtRequest struct {
+	Tokens *int `json:"tokens" description:"0 for the repository default, or a token count from 100000 to 900000."`
 }
 
 // UpdateChatHibernationRequest flips the daemon-owned idle Chat gate.
@@ -3874,6 +3983,9 @@ type AgentAccountResponse struct {
 	// Problem says why identity or limits could not be read.
 	Problem string                     `json:"problem,omitempty"`
 	Limits  *domain.AgentAccountLimits `json:"limits,omitempty"`
+	// McpNeedsAuth names the MCP servers not signed in on this account, so a
+	// session on it runs without them.
+	McpNeedsAuth []string `json:"mcpNeedsAuth,omitempty" description:"MCP servers the provider's CLI found not signed in for this account's folder. A session on the account runs without them."`
 }
 
 // AgentAccountsResponse is the body of GET /agents/accounts.

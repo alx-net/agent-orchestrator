@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
@@ -25,10 +28,24 @@ type ShellTerminalService interface {
 	CloseShellTerminal(ctx context.Context, handleID string) error
 }
 
+// SessionCommandRunner runs a command the user picked from an agent's reply.
+type SessionCommandRunner interface {
+	RunSessionCommand(ctx context.Context, in shelltermsvc.RunSessionCommandInput) (shelltermsvc.ShellTerminal, error)
+}
+
+// SessionCommandMessenger hands a finished command's result to the agent.
+type SessionCommandMessenger interface {
+	Send(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, error)
+}
+
 // ShellTerminalsController owns the /shell-terminals routes: standalone shells
 // the user opens by hand, independent of any agent session.
 type ShellTerminalsController struct {
 	Svc ShellTerminalService
+	// Commands and Messages back the Run button on agents' code blocks.
+	Commands SessionCommandRunner
+	Messages SessionCommandMessenger
+	Log      *slog.Logger
 }
 
 // Register mounts the bounded shell terminal REST routes.
@@ -37,6 +54,63 @@ func (c *ShellTerminalsController) Register(r chi.Router) {
 	r.Post("/shell-terminals", c.open)
 	r.Patch("/shell-terminals/{handleId}", c.rename)
 	r.Delete("/shell-terminals/{handleId}", c.close)
+	r.Post("/sessions/{sessionId}/terminal-commands", c.runSessionCommand)
+}
+
+// runSessionCommand serves the Run button. It runs whatever command it is
+// given as the user, so it only accepts browser requests from an allowed
+// renderer origin (the CORS middleware rejects other origins): agents and
+// other native clients send no Origin and cannot use it to get around the
+// guards on their own shell.
+func (c *ShellTerminalsController) runSessionCommand(w http.ResponseWriter, r *http.Request) {
+	if c.Commands == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/terminal-commands")
+		return
+	}
+	if r.Header.Get("Origin") == "" {
+		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "SESSION_COMMAND_DESKTOP_ONLY",
+			"Only the desktop app can run a command for you", nil)
+		return
+	}
+	var req RunSessionCommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "SESSION_COMMAND_REQUIRED", "A command is required", nil)
+		return
+	}
+	sessionID := domain.SessionID(chi.URLParam(r, "sessionId"))
+	terminal, err := c.Commands.RunSessionCommand(r.Context(), shelltermsvc.RunSessionCommandInput{
+		SessionID: sessionID,
+		Shell:     req.Shell,
+		Command:   req.Command,
+		OnDone:    c.deliverSessionCommandResult,
+	})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, ShellTerminalEnvelope{
+		ShellTerminal: shellTerminalResponse(terminal),
+	})
+}
+
+// deliverSessionCommandResult queues the result like a message the user sent,
+// since the user chose to run the command.
+func (c *ShellTerminalsController) deliverSessionCommandResult(result shelltermsvc.SessionCommandResult) {
+	if c.Messages == nil {
+		return
+	}
+	_, err := c.Messages.Send(context.Background(), result.SessionID, ports.ChatUserMessage{
+		Text:            result.AgentMessage(),
+		ClientMessageID: "terminal-command:" + result.Terminal.HandleID,
+		Origin:          domain.MessageOriginHuman,
+	})
+	if err != nil && c.Log != nil {
+		c.Log.Warn("deliver terminal command result", "sessionId", result.SessionID, "handleId", result.Terminal.HandleID, "error", err)
+	}
 }
 
 func (c *ShellTerminalsController) list(w http.ResponseWriter, r *http.Request) {

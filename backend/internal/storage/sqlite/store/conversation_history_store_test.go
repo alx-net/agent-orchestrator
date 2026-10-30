@@ -1716,6 +1716,45 @@ func TestConversationSnapshotRetainsProviderCost(t *testing.T) {
 	}
 }
 
+// A persistent host replays a still-pending question to the controller that
+// reattaches. The row the previous controller wrote must absorb the replay:
+// request ids are unique, and a failed insert stopped the new controller.
+func TestUpsertActivityReplayedRequestUpdatesItsRow(t *testing.T) {
+	s, _, conversation := conversationFixture(t)
+	ctx := context.Background()
+	question := domain.ConversationActivity{
+		ID: "question", Kind: domain.ActivityKindUserInput, Status: domain.ActivityStatusPending,
+		Summary: "Please answer the following questions.", Detail: []byte(`{"inputMode":"form"}`),
+		RequestID: "acp-request:host:2",
+	}
+	if err := s.UpsertActivity(ctx, conversation, "", question, histClock); err != nil {
+		t.Fatalf("UpsertActivity: %v", err)
+	}
+	if err := s.FailPendingInputs(ctx, conversation, histClock.Add(time.Minute)); err != nil {
+		t.Fatalf("FailPendingInputs: %v", err)
+	}
+	replay := question
+	replay.ID = "replayed-question"
+	if err := s.UpsertActivity(ctx, conversation, "", replay, histClock.Add(2*time.Minute)); err != nil {
+		t.Fatalf("replayed UpsertActivity: %v", err)
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil {
+		t.Fatalf("LoadConversationSnapshot: %v", err)
+	}
+	if len(snapshot.Activities) != 1 || snapshot.Activities[0].ID != "question" ||
+		snapshot.Activities[0].Status != domain.ActivityStatusPending {
+		t.Fatalf("activities = %+v, want the original row pending again", snapshot.Activities)
+	}
+	if err := s.ResolveApproval(ctx, conversation, question.RequestID, `{"action":"accept"}`, histClock.Add(3*time.Minute)); err != nil {
+		t.Fatalf("ResolveApproval: %v", err)
+	}
+	snapshot, err = s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil || len(snapshot.Activities) != 1 || snapshot.Activities[0].Status != domain.ActivityStatusResolved {
+		t.Fatalf("answered activities = %+v, err=%v", snapshot.Activities, err)
+	}
+}
+
 func TestFailPendingInputsDoesNotTouchApprovals(t *testing.T) {
 	s, _, conversation := conversationFixture(t)
 	ctx := context.Background()

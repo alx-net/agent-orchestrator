@@ -212,6 +212,9 @@ type Controller struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// onUsageLimit hears of a primary turn the provider refused for the
+	// account's usage limit, by its provider turn id. It must not block.
+	onUsageLimit func(domain.SessionID, string)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -285,6 +288,12 @@ type Controller struct {
 	preserveProviderOnStop bool
 	transportInterrupted   bool
 	explicitClose          bool
+	// reattached is set before start for a controller adopted from a provider
+	// host that was already running. replayFailed records that such a
+	// controller could not project the host's output: adopting that host again
+	// replays the same output and fails the same way.
+	reattached   bool
+	replayFailed bool
 
 	// account, threadState and mcpServers are merged here before being written,
 	// because the provider reports each of them in pieces: account/updated carries
@@ -379,6 +388,7 @@ func newController(
 	now Clock,
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
+	onUsageLimit func(domain.SessionID, string),
 	reader SnapshotReader,
 ) *Controller {
 	c := &Controller{
@@ -396,6 +406,7 @@ func newController(
 		now:                    now,
 		onAccountChanged:       onAccountChanged,
 		onCodexCapacityChanged: onCodexCapacityChanged,
+		onUsageLimit:           onUsageLimit,
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
@@ -2893,6 +2904,7 @@ func (c *Controller) projectUnit(
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 		c.mu.Lock()
 		c.preserveProviderOnStop = true
+		c.replayFailed = c.reattached
 		c.state = ports.ChatControllerStopped
 		c.mu.Unlock()
 		if lifecycle {
@@ -3481,6 +3493,10 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
 		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
+		if c.onUsageLimit != nil && c.reviewID == "" && event.Err != nil && event.ProviderTurnID != "" &&
+			settledTurnState(event) == domain.TurnStateFailed && domain.ParseConversationUsageLimit(event.Err.Error(), &now) != nil {
+			c.onUsageLimit(c.sessionID, event.ProviderTurnID)
+		}
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:

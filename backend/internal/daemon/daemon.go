@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -76,6 +77,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessioncheckout"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
@@ -201,6 +203,9 @@ func Run(buildVersion string) error {
 	defer func() { _ = store.Close() }()
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
+	}
+	if _, err := store.RequeueClaimedFYIMessages(context.Background()); err != nil {
+		return fmt.Errorf("recover fyi delivery claims: %w", err)
 	}
 	// Refresh the embedded using-ao skill into the data dir so worker sessions
 	// in any project can read the ao CLI catalog from a stable absolute path.
@@ -340,6 +345,12 @@ func Run(buildVersion string) error {
 		settingssvc.OfferingFromConfig(cfg),
 		func() time.Time { return time.Now().UTC() },
 	)
+	// Claude Code chats read "Compact agent conversations at" when they start.
+	if claude, err := chatDrivers.Driver(domain.HarnessClaudeCode); err == nil {
+		if compaction, ok := claude.(interface{ SetCompactAt(func() int) }); ok {
+			compaction.SetCompactAt(func() int { return settingsSvc.CompactAt(ctx) })
+		}
+	}
 
 	// Chat service. The driver registry is the capability gate: a harness with no
 	// registered driver cannot start in chat mode, so an unsupported request fails
@@ -567,6 +578,14 @@ func Run(buildVersion string) error {
 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
 		chatSvc.SetTerminalProviderSwitcher(switcher)
 	}
+	// A turn refused for its account's usage limit moves its session to an
+	// account with usage left and runs again there.
+	if switcher, ok := wiredSessMgr.(chatsvc.UsageLimitSwitcher); ok {
+		chatSvc.SetUsageLimitSwitcher(switcher)
+	}
+	if setting, ok := wiredSessMgr.(interface{ SetUsageLimitSwitch(func() bool) }); ok {
+		setting.SetUsageLimitSwitch(func() bool { return settingsSvc.AccountAutoSwitchEnabled(ctx) })
+	}
 	agentAccountSvc = newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
 	if wired, ok := sessMgr.(interface {
@@ -578,6 +597,11 @@ func Run(buildVersion string) error {
 		ExitAgentsOnAccount(context.Context, string) error
 	}); ok {
 		agentAccountSvc.SetAgentStopper(stopper.ExitAgentsOnAccount)
+	}
+	if activity, ok := sessMgr.(interface {
+		AgentsRunningOnAccount(context.Context, string, domain.SessionID) bool
+	}); ok {
+		agentAccountSvc.SetAgentActivity(activity.AgentsRunningOnAccount)
 	}
 	sessionSvc.SetComputerLoginCheck(agentAccountSvc.RunsOnComputerLogin)
 	if agentSvc != nil {
@@ -649,9 +673,15 @@ func Run(buildVersion string) error {
 	}})
 	reportCoordinator = reportsvc.NewCoordinator(reportsvc.CoordinatorDeps{
 		Store:    store,
+		FYIs:     store,
 		Delivery: reportSemanticDelivery{chat: chatSvc, sessions: reportSessions, store: store},
 	})
 	chatSvc.SetReportCoordinator(reportCoordinator)
+	if fyiSessions, ok := sessMgr.(interface {
+		SetFYIDelivery(sessionmanager.FYIDelivery)
+	}); ok {
+		fyiSessions.SetFYIDelivery(reportCoordinator)
+	}
 	reportDeliveryDone := reportCoordinator.Start(ctx)
 	defer func() {
 		stop()
@@ -867,6 +897,11 @@ func Run(buildVersion string) error {
 	lcStack.automationDone = automationDone
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})
 	lcStack.autoReviewDone = autoReview.Start(ctx)
+	waitSvc, waitDone := startWaits(ctx, store, lcStack.LCM, prReader, log)
+	defer func() {
+		stop()
+		<-waitDone
+	}()
 	// Push-device registry: persisted phones that receive OS push notifications.
 	// A load failure must not block boot — degrade to no push rather than refusing
 	// to start the daemon. pushRegistry (interface) is assigned only when load
@@ -977,6 +1012,11 @@ func Run(buildVersion string) error {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	// `ao checkout` puts worktrees inside session workspaces, which all live
+	// under the managed root the workspace adapters use.
+	checkoutSvc := sessioncheckout.New(sessioncheckout.Deps{
+		Sessions: store, Projects: store, ManagedRoot: filepath.Join(cfg.DataDir, "worktrees"),
+	})
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
 		Awake:              awakeSvc,
 		Projects:           projectSvc,
@@ -995,6 +1035,8 @@ func Run(buildVersion string) error {
 		Reviews:            reviewSvc,
 		Notifications:      notifier,
 		Reports:            reportSvc,
+		Waits:              waitSvc,
+		Checkouts:          checkoutSvc,
 		NotificationStream: notificationHub,
 		Push:               pushRegistry,
 		Presence:           presenceTracker,
@@ -1448,6 +1490,10 @@ func stabilizeWorkingDirectory(dataDir string) error {
 	return nil
 }
 
+// Session Manager finds the account side of the move after a usage limit by
+// assertion too.
+var _ sessionmanager.UsageLimitAccounts = (*agentaccounts.Service)(nil)
+
 // newAgentAccounts builds the Claude Code and Codex account catalog. Each
 // account is a config folder under the state dir; "This computer" is the CLI's
 // own folder, which AO never changes the login of.
@@ -1458,8 +1504,15 @@ func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, 
 	} else if home, err := os.UserHomeDir(); err == nil {
 		claudeHome, claudeConfig = filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
 	}
+	claude := &agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig}
+	if runtime.GOOS == "darwin" {
+		// The user asked for every account to have the computer's MCP sign-ins;
+		// Claude Code keeps them in the login keychain on macOS.
+		claude.Keychain = agentaccount.SecurityKeychain{}
+		claude.DeviceCredentials = agentaccount.ClaudeCredentialsService(strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")))
+	}
 	providers := []ports.AgentAccountProviderCLI{
-		&agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig},
+		claude,
 		&agentaccount.Codex{Binary: codexagent.New().ResolveBinary, Accounts: codexAccounts, DeviceHome: codexHome},
 	}
 	return agentaccounts.New(store, providers, filepath.Join(cfg.StateDir, "agent-accounts"), nil, log)

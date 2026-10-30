@@ -20,10 +20,13 @@ Natural-language-to-command mappings for common AO tasks.
 | Capture the page | `ao browser screenshot [path]` |
 | Spawn a worker on issue N | `ao spawn --project <p> --issue N --name "<=100 chars>" --prompt "..."` |
 | Message a running agent | `ao send --session <id> --message "..."` |
+| Tell an agent something it need not act on now, without waking it | `ao send --session <id> --fyi --message "..."` |
+| See every worker's PR, CI, review, and activity state | `ao session ls -p <project>` |
 | Kill a session | `ao session kill <id>` |
 | List sessions | `ao session ls` |
 | Register a repo as a project | `ao project add --path <abs-path> --name <name>` |
 | List projects | `ao project ls` |
+| Work on code from one of the user's repositories | `ao checkout <project-id>`, then work in the printed path |
 | Check installed agent harnesses and readiness | `ao agent ls --refresh` |
 | Save a repetitive agent task or exact command as a Cue | `ao cue list --json`, then `ao cue create --name "..." --prompt "..."` or `--command "..."` |
 | Rename a worker session (not the orchestrator) | `ao session rename <id> "<name>"` |
