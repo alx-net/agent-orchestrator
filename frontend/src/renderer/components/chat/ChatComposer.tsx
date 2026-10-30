@@ -561,6 +561,8 @@ export const ChatComposer = memo(function ChatComposer({
 		onAttachmentsChange: persistAttachments,
 	});
 	const canAttach = Boolean(onStageAttachments) && !queuedEditRecovery;
+	// A paste the composer cannot take yet says why, instead of doing nothing.
+	const [attachLaterNotice, setAttachLaterNotice] = useState(false);
 
 	const slashCommands = useMemo<ChatSkill[]>(() => {
 		if (!onCompact || compactUnavailable === "This agent cannot compact its history") return skills;
@@ -1704,6 +1706,7 @@ export const ChatComposer = memo(function ChatComposer({
 	}
 
 	function onPaste(event: ClipboardEvent<HTMLDivElement>) {
+		if (!canAttach && attachLater && (event.clipboardData?.files.length ?? 0) > 0) setAttachLaterNotice(true);
 		if (!canAttach || fileAttachments.preparing || draftMutationPending || submitInFlight.current) return;
 		const clipboard = event.clipboardData;
 		const files = Array.from(clipboard?.files ?? []);
@@ -1967,6 +1970,11 @@ export const ChatComposer = memo(function ChatComposer({
 				{fileAttachments.preparing ? (
 					<p role="status" className="px-1.5 text-xs leading-snug text-muted-foreground">
 						Saving attachments… Wait before leaving this chat.
+					</p>
+				) : null}
+				{attachLaterNotice && !canAttach ? (
+					<p role="status" className="px-1.5 text-xs leading-snug text-muted-foreground">
+						{t("chat.composer.attachLater")}
 					</p>
 				) : null}
 

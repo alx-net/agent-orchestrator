@@ -95,6 +95,15 @@ const textFile = (name = "notes.txt") => new File(["hello"], name, { type: "text
 /* ---- the keyboard contract the composer already had ---------------------- */
 
 describe("send keys", () => {
+	it("explains a pasted file it cannot take yet instead of dropping it silently", async () => {
+		const { field } = renderComposer({ attachLater: true });
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		fireEvent.paste(field, { clipboardData: clipboardData([]) });
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		fireEvent.paste(field, { clipboardData: clipboardData([png()]) });
+		expect(await screen.findByRole("status")).toHaveTextContent("Files can be attached once the task has started");
+	});
+
 	it("lays attachments beside annotations and clears only annotation references", async () => {
 		const sessionId = "composer-shared-attachment-row";
 		writeChatExcerptReferences(sessionId, EXCERPTS);

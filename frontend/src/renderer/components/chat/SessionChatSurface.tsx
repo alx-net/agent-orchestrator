@@ -51,7 +51,7 @@ import type { Theme } from "../../stores/ui-store";
 import { can } from "../../types/conversation";
 import type { ConversationSnapshot, TurnSettings } from "../../types/conversation";
 import type { TerminalTarget } from "../../types/terminal";
-import type { WorkspaceSession } from "../../types/workspace";
+import { STANDALONE_WORKSPACE_ID, type WorkspaceSession } from "../../types/workspace";
 import { ComposerErrorNotice, switchEffort, type PendingAgentSwitch } from "./AgentSwitchPicker";
 import { AGENT_SWITCH_FAILED } from "./ChatComposer";
 import { useUiStore } from "../../stores/ui-store";
@@ -226,7 +226,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	const plansSetup = Boolean(session.provisionSteps?.some((step) => step.id === "setup"));
 	const projectScripts = useQuery({
 		queryKey: ["project", session.workspaceId],
-		enabled: plansSetup && !hostId && !session.cloud,
+		enabled: plansSetup && !hostId && !session.cloud && session.workspaceId !== STANDALONE_WORKSPACE_ID,
 		staleTime: 30_000,
 		queryFn: async () => {
 			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", { params: { path: { id: session.workspaceId } } });
