@@ -44,6 +44,14 @@ const claudePlanGuidance = "When you make a to-do list or plan, or do work with 
 	"the TaskCreate and TaskUpdate tools (load them with ToolSearch if needed) and keep the tasks updated as " +
 	"you go. Do not write the list only as text."
 
+// claudeStatusGuidance asks the main Claude agent to narrate its progress the
+// same way AO's bridge hook asks its subagents to, so the chat's agents board
+// can show what the main agent is doing now and the choices it made. It does
+// not depend on the to-do tools, which the user can turn off.
+const claudeStatusGuidance = "While you work, before each major step write one short line that starts with " +
+	"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
+	"starts with \"Decision:\" stating the choice and the reason in under 20 words."
+
 // claudeTodoToolsChoice returns the value the user chose for the to-do tools in
 // the project env or the daemon's own environment. A blank value is no choice.
 func claudeTodoToolsChoice(input map[string]string) (string, bool) {
@@ -377,11 +385,18 @@ func validateClaudeACPExecutable(binary, goos string) error {
 func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 	meta := map[string]any{}
 	standing := strings.TrimSpace(cfg.SystemPrompt)
-	if !cfg.DisableTools && claudeTodoToolsEnabled(cfg.Env) {
+	appendGuidance := func(guidance string) {
 		if standing != "" {
 			standing += "\n\n"
 		}
-		standing += claudePlanGuidance
+		standing += guidance
+	}
+	// Text-only background tasks must return just their requested output.
+	if !cfg.DisableTools {
+		if claudeTodoToolsEnabled(cfg.Env) {
+			appendGuidance(claudePlanGuidance)
+		}
+		appendGuidance(claudeStatusGuidance)
 	}
 	if standing != "" {
 		// Append AO's standing instructions to Claude Code's own prompt. Replacing

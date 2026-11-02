@@ -696,14 +696,20 @@ func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 		}
 		id := c.providerItemID(messageID(update.AgentThoughtChunk.MessageId, "thought", turnID))
 		if delta := contentText(update.AgentThoughtChunk.Content); delta != "" {
+			parentID := c.providerItemID(parentToolUseID(update.AgentThoughtChunk.Meta))
 			c.mu.Lock()
-			_, existed := c.thoughts[id]
-			c.thoughts[id] += delta
+			item, existed := c.thoughts[id]
+			item.text += delta
+			if parentID != "" {
+				item.parentID = parentID
+			}
+			c.thoughts[id] = item
 			c.mu.Unlock()
 			if !existed {
 				emit(ports.ChatEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID,
 					ProviderItemID: id, ActivityKind: domain.ActivityKindReasoning,
-					ActivityStatus: domain.ActivityStatusRunning, Summary: "Reasoning"})
+					ActivityStatus: domain.ActivityStatusRunning, Summary: "Reasoning",
+					Detail: nestedThoughtDetail(item.parentID)})
 			}
 			emit(ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderTurnID: turnID, ProviderItemID: id, Delta: delta})
 		}
@@ -721,6 +727,12 @@ func (c *conversation) processUpdate(params acpsdk.SessionNotification) error {
 		emit(c.toolEvent(turnID, tool, toolTerminal(tool.status)))
 		c.emitDiffs(turnID, tool.id, tool.content, emit)
 	case update.ToolCallUpdate != nil:
+		if (subagentProgress(update.ToolCallUpdate.Meta) != nil || subagentInbox(update.ToolCallUpdate.Meta) != nil) &&
+			!c.tracksTool(string(update.ToolCallUpdate.ToolCallId)) {
+			// A progress beat or inbox report carries nothing but meta. For a call
+			// this turn never saw, the row it would write holds only that.
+			break
+		}
 		tool := c.mergeToolUpdate(update.ToolCallUpdate)
 		if delta := terminalOutput(update.ToolCallUpdate.Meta); delta != "" {
 			emit(ports.ChatEvent{Kind: ports.ChatEventCommandOutputDelta, ProviderTurnID: turnID,
@@ -832,6 +844,12 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 		output = tool.terminalOutput
 	}
 	activityKind := activityKindFromTool(tool.kind)
+	if activityKind == domain.ActivityKindReasoning && nestedMap(tool.meta, "claudeCode")["subagent"] == true {
+		// claude-agent-acp files an Agent/Task call under ACP's think kind. The call
+		// is the row its subagent's work nests under, and the timeline renders that
+		// nesting for tool rows; it hides reasoning rows.
+		activityKind = domain.ActivityKindMCPTool
+	}
 	// The detail is rewritten on every tool update and carried by every snapshot,
 	// so a page an agent hands html_render and the screenshot html_preview hands
 	// back are not stored whole, and neither is output or a diff that a provider
@@ -889,9 +907,39 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 		}
 		copyDetail(detailMap, claude, "subagent", "nestedAgent")
 		copyDetail(detailMap, claude, "subagentType", "subagentType")
+		if claude["subagent"] == true {
+			// The Agent/Task input names the subagent; claude-agent-acp repeats it only
+			// on progress heartbeats, under toolResponse.
+			input, _ := tool.rawInput.(map[string]any)
+			for _, value := range []any{input["subagent_type"], nestedMap(claude, "toolResponse")["subagentType"]} {
+				if subagentType, ok := value.(string); ok && strings.TrimSpace(subagentType) != "" {
+					detailMap["subagentType"] = subagentType
+					break
+				}
+			}
+		}
 		copyDetail(detailMap, claude, "subagentRetry", "subagentRetry")
 		if title, ok := claude["title"].(string); ok && strings.TrimSpace(title) != "" {
 			detailMap["providerTitle"] = title
+		}
+		// Merged across updates, so a beat without a summary keeps the last one.
+		if progress := nestedMap(claude, "subagentProgress"); progress != nil {
+			if summary, ok := progress["summary"].(string); ok && strings.TrimSpace(summary) != "" {
+				detailMap["progressSummary"] = strings.TrimSpace(summary)
+			}
+			if at, ok := number(progress["at"]); ok && at > 0 {
+				detailMap["progressAt"] = int64(at)
+			}
+			if name, ok := progress["lastToolName"].(string); ok && name != "" {
+				detailMap["lastToolName"] = name
+			}
+			if uses, ok := number(progress["toolUses"]); ok && uses >= 0 {
+				detailMap["progressToolUses"] = int64(uses)
+			}
+		}
+		// Each report is the full current list, so it replaces the last one.
+		if inbox, ok := claude["subagentInbox"].([]any); ok {
+			detailMap["subagentInbox"] = subagentInboxDetail(inbox)
 		}
 	}
 	if terminal := nestedMap(tool.meta, "terminal_info"); terminal != nil {
@@ -1149,6 +1197,29 @@ func parentToolUseID(meta map[string]any) string {
 	}
 	value, _ := claude["parentToolUseId"].(string)
 	return value
+}
+
+// subagentProgress is the progress AO's claude-agent-acp patch forwards from a
+// running subagent onto its Agent/Task call.
+func subagentProgress(meta map[string]any) map[string]any {
+	return nestedMap(nestedMap(meta, "claudeCode"), "subagentProgress")
+}
+
+func (c *conversation) tracksTool(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.tools[id]
+	return ok
+}
+
+// nestedThoughtDetail links a subagent's reasoning to the Agent/Task call that
+// spawned it, as a subagent's messages are.
+func nestedThoughtDetail(parentID string) []byte {
+	if parentID == "" {
+		return nil
+	}
+	detail, _ := json.Marshal(map[string]any{"parentProviderItemId": parentID, "nestedAgent": true})
+	return detail
 }
 
 func terminalOutput(meta map[string]any) string {

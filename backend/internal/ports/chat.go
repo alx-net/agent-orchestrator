@@ -230,6 +230,9 @@ const (
 	// id, allowing clients to preserve the hierarchy instead of flattening it into
 	// the top-level command stream.
 	ChatCapabilityNestedAgents ChatCapability = "nested_agents"
+	// ChatCapabilitySubagents means one running subagent can be sent a message
+	// or stopped directly, without going through the main agent's turn.
+	ChatCapabilitySubagents ChatCapability = "subagents"
 	// ChatCapabilityTerminalOutput means command results include the provider's
 	// terminal identity/output metadata. It is read-only transcript richness, not
 	// permission for the provider to execute through AO's terminal runtime.

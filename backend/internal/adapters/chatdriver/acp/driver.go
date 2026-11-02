@@ -918,6 +918,9 @@ func conversationCapabilities(
 	if extensionSupported(init.Meta, "steering") {
 		caps[ports.ChatCapabilitySteer] = true
 	}
+	if extensionSupported(init.Meta, subagentControlExtension) {
+		caps[ports.ChatCapabilitySubagents] = true
+	}
 	caps[ports.ChatCapabilityImages] = init.AgentCapabilities.PromptCapabilities.Image
 	caps[ports.ChatCapabilityEmbeddedContext] = init.AgentCapabilities.PromptCapabilities.EmbeddedContext
 	// ResourceLink is a baseline ACP content block rather than an optional prompt

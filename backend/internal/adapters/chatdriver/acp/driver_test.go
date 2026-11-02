@@ -830,6 +830,15 @@ type fakeAgent struct {
 	steerOut            string
 	steerMethodNotFound bool // HandleExtensionMethod returns -32601 for steering
 	steerExtensionErr   error
+	// subagentControl advertises AO's claude-agent-acp subagent extension.
+	subagentControl bool
+	subagentCalls   []fakeExtensionCall
+	subagentErr     error
+}
+
+type fakeExtensionCall struct {
+	method string
+	params map[string]any
 }
 
 type legacyKimiAgent struct {
@@ -977,9 +986,17 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 	if initErr != nil {
 		return acpsdk.InitializeResponse{}, initErr
 	}
-	meta := map[string]any(nil)
+	meta := map[string]any{}
 	if a.steering {
-		meta = map[string]any{"steering": map[string]any{"supported": true}}
+		meta["steering"] = map[string]any{"supported": true}
+	}
+	if a.subagentControl {
+		meta[subagentControlExtension] = map[string]any{
+			"supported": true, "messageMethod": subagentMessageMethod, "stopMethod": subagentStopMethod,
+		}
+	}
+	if len(meta) == 0 {
+		meta = nil
 	}
 	defaultCaps := acpsdk.AgentCapabilities{
 		SessionCapabilities: acpsdk.SessionCapabilities{Resume: &acpsdk.SessionResumeCapabilities{}},
@@ -995,6 +1012,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 }
 
 func (a *fakeAgent) HandleExtensionMethod(_ context.Context, method string, raw json.RawMessage) (any, error) {
+	if method == subagentMessageMethod || method == subagentStopMethod {
+		return a.handleSubagentExtension(method, raw)
+	}
 	if method != steeringMethod {
 		return nil, acpsdk.NewMethodNotFound(method)
 	}
@@ -2824,6 +2844,125 @@ func TestACPDriverPreservesNestedToolAndTerminalMetadata(t *testing.T) {
 	}
 	if detail["parentProviderItemId"] != "agent-tool" || detail["terminalId"] != "child-tool" || detail["output"] != "ok\n" {
 		t.Fatalf("tool detail = %#v", detail)
+	}
+}
+
+// claude-agent-acp files an Agent call under ACP's think kind; AO's bridge patch
+// adds meta-only progress beats for it. The call must stay a tool row its
+// subagent's work nests under, and a beat must update the row without touching
+// what the call itself reported.
+func TestACPDriverStreamsClaudeSubagentProgressOntoAgentCall(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+	opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer opened.Close()
+	_ = nextEvent(t, opened.Events())
+	conv := opened.(*conversation)
+	conv.mu.Lock()
+	conv.activeTurn = "turn-1"
+	conv.mu.Unlock()
+	send := func(update acpsdk.SessionUpdate) {
+		t.Helper()
+		if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
+			SessionId: acpsdk.SessionId(opened.ProviderConversationID()), Update: update,
+		}); err != nil {
+			t.Fatalf("session update: %v", err)
+		}
+	}
+	detailOf := func(event ports.ChatEvent) map[string]any {
+		t.Helper()
+		var detail map[string]any
+		if err := json.Unmarshal(event.Detail, &detail); err != nil {
+			t.Fatalf("detail: %v", err)
+		}
+		return detail
+	}
+	progress := func(toolCallID string, beat map[string]any) acpsdk.SessionUpdate {
+		return acpsdk.SessionUpdate{ToolCallUpdate: &acpsdk.SessionToolCallUpdate{
+			SessionUpdate: "tool_call_update", ToolCallId: acpsdk.ToolCallId(toolCallID),
+			Meta: map[string]any{"claudeCode": map[string]any{"subagentProgress": beat}},
+		}}
+	}
+
+	send(acpsdk.SessionUpdate{ToolCall: &acpsdk.SessionUpdateToolCall{
+		SessionUpdate: "tool_call", ToolCallId: "agent-tool", Title: "Scan the parser",
+		Kind: acpsdk.ToolKindThink, Status: acpsdk.ToolCallStatusInProgress,
+		RawInput: map[string]any{"description": "Scan the parser", "prompt": "Find the retry loop.", "subagent_type": "Explore"},
+		Content:  []acpsdk.ToolCallContent{acpsdk.ToolContent(acpsdk.TextBlock("Find the retry loop."))},
+		Meta:     map[string]any{"claudeCode": map[string]any{"toolName": "Agent", "subagent": true}},
+	}})
+	started := nextEvent(t, opened.Events())
+	if started.Kind != ports.ChatEventActivityStarted || started.ActivityKind != domain.ActivityKindMCPTool {
+		t.Fatalf("agent call = %#v, want a running mcp_tool row", started)
+	}
+	if detail := detailOf(started); detail["nestedAgent"] != true || detail["providerToolName"] != "Agent" ||
+		detail["subagentType"] != "Explore" {
+		t.Fatalf("agent detail = %#v", detail)
+	}
+
+	send(progress("agent-tool", map[string]any{
+		"summary": "Searching the parser for retry handling", "lastToolName": "Grep",
+		"toolUses": float64(3), "at": float64(1767225600000),
+	}))
+	// Between summaries the bridge still reports the latest tool and count.
+	send(progress("agent-tool", map[string]any{"lastToolName": "Read", "toolUses": float64(4), "at": float64(1767225605000)}))
+	for _, want := range []struct {
+		tool  string
+		uses  float64
+		at    float64
+		label string
+	}{
+		{"Grep", 3, 1767225600000, "first beat"},
+		{"Read", 4, 1767225605000, "beat without a summary"},
+	} {
+		event := nextEvent(t, opened.Events())
+		if event.Kind != ports.ChatEventActivityStarted || event.ActivityKind != domain.ActivityKindMCPTool ||
+			event.ActivityStatus != domain.ActivityStatusRunning || event.Summary != "Scan the parser" {
+			t.Fatalf("%s event = %#v, want the running agent row unchanged", want.label, event)
+		}
+		detail := detailOf(event)
+		if detail["progressSummary"] != "Searching the parser for retry handling" || detail["lastToolName"] != want.tool ||
+			detail["progressToolUses"] != want.uses || detail["progressAt"] != want.at {
+			t.Fatalf("%s detail = %#v", want.label, detail)
+		}
+		content, _ := json.Marshal(detail["content"])
+		if !strings.Contains(string(content), "Find the retry loop.") || detail["subagentType"] != "Explore" {
+			t.Fatalf("%s lost the call's own detail: %#v", want.label, detail)
+		}
+	}
+
+	// A beat for a call this turn never saw writes nothing; the thought after it is
+	// the next event.
+	send(progress("unknown-tool", map[string]any{"summary": "Working", "at": float64(1767225610000)}))
+	thought := acpsdk.UpdateAgentThoughtText("Checking the retry loop")
+	thought.AgentThoughtChunk.Meta = map[string]any{"claudeCode": map[string]any{"parentToolUseId": "agent-tool"}}
+	send(thought)
+	reasoning := nextEvent(t, opened.Events())
+	if reasoning.Kind != ports.ChatEventActivityStarted || reasoning.ActivityKind != domain.ActivityKindReasoning {
+		t.Fatalf("subagent thought = %#v", reasoning)
+	}
+	if detail := detailOf(reasoning); detail["parentProviderItemId"] != "agent-tool" {
+		t.Fatalf("subagent thought detail = %#v", detail)
+	}
+	_ = nextEvent(t, opened.Events()) // reasoning delta
+
+	// Settling the turn rewrites the thought's row; it keeps its parent.
+	conv.settleOpenItems("turn-1")
+	settled := nextEvent(t, opened.Events())
+	if settled.ProviderItemID != reasoning.ProviderItemID || settled.Kind != ports.ChatEventActivityCompleted {
+		t.Fatalf("settled thought = %#v", settled)
+	}
+	if detail := detailOf(settled); detail["parentProviderItemId"] != "agent-tool" {
+		t.Fatalf("settled thought detail = %#v", detail)
 	}
 }
 

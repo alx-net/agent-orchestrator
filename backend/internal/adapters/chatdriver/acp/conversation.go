@@ -109,7 +109,7 @@ type conversation struct {
 	pendingInputs     map[string]*parkedInput
 	accepted          map[string]persistentInteractionCommand
 	messages          map[string]string
-	thoughts          map[string]string
+	thoughts          map[string]nestedMessageState
 	nestedMessages    map[string]nestedMessageState
 	tools             map[string]*toolState
 	turnDiffs         *turnDiffAccumulator
@@ -222,7 +222,7 @@ func newConversation(
 		accepted:         make(map[string]persistentInteractionCommand),
 		capabilities:     make(ports.ChatCapabilities),
 		messages:         make(map[string]string),
-		thoughts:         make(map[string]string),
+		thoughts:         make(map[string]nestedMessageState),
 		nestedMessages:   make(map[string]nestedMessageState),
 		tools:            make(map[string]*toolState),
 		events:           make(chan ports.ChatEvent, eventBuffer),
@@ -446,7 +446,7 @@ func (c *conversation) ActivateLiveReconnect(ctx context.Context, providerTurnID
 			c.compactionBefore = c.contextTokens
 		}
 		c.messages = make(map[string]string)
-		c.thoughts = make(map[string]string)
+		c.thoughts = make(map[string]nestedMessageState)
 		c.nestedMessages = make(map[string]nestedMessageState)
 		c.tools = make(map[string]*toolState)
 	}
@@ -720,7 +720,7 @@ func (c *conversation) StartDeferredTurn(providerTurnID string) error {
 	c.turnCancel = cancel
 	sessionID := c.sessionID
 	c.messages = make(map[string]string)
-	c.thoughts = make(map[string]string)
+	c.thoughts = make(map[string]nestedMessageState)
 	c.nestedMessages = make(map[string]nestedMessageState)
 	c.tools = make(map[string]*toolState)
 	c.turnDiffs = nil
@@ -918,7 +918,7 @@ func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult,
 	turnCtx, cancel := context.WithCancel(context.Background())
 	c.turnCancel = cancel
 	c.messages = make(map[string]string)
-	c.thoughts = make(map[string]string)
+	c.thoughts = make(map[string]nestedMessageState)
 	c.nestedMessages = make(map[string]nestedMessageState)
 	c.tools = make(map[string]*toolState)
 	c.turnDiffs = nil
@@ -1295,10 +1295,11 @@ func (c *conversation) settleOpenItems(turnID string, turnState ...domain.TurnSt
 	}
 	thoughtIDs := sortedKeys(thoughts)
 	for _, id := range thoughtIDs {
-		text := thoughts[id]
+		item := thoughts[id]
 		c.emit(ports.ChatEvent{Kind: ports.ChatEventActivityCompleted, ProviderTurnID: turnID,
 			ProviderItemID: id, ActivityKind: domain.ActivityKindReasoning,
-			ActivityStatus: activityStatus, Summary: "Reasoning", Text: text})
+			ActivityStatus: activityStatus, Summary: "Reasoning", Text: item.text,
+			Detail: nestedThoughtDetail(item.parentID)})
 	}
 	nestedIDs := sortedKeys(nestedMessages)
 	for _, id := range nestedIDs {

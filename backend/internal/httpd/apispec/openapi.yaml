@@ -7960,6 +7960,144 @@ paths:
       summary: Steer the active turn or send a new turn when idle
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/messages:
+    post:
+      operationId: messageSessionConversationSubagent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: providerItemId of the subagent's Agent/Task activity in the conversation
+          snapshot.
+        in: path
+        name: toolUseId
+        required: true
+        schema:
+          description: providerItemId of the subagent's Agent/Task activity in the
+            conversation snapshot.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSubagentMessageRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendSubagentMessageResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Queue a message for one running subagent in a chat session
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/subagents/{toolUseId}/stop:
+    post:
+      operationId: stopSessionConversationSubagent
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: providerItemId of the subagent's Agent/Task activity in the conversation
+          snapshot.
+        in: path
+        name: toolUseId
+        required: true
+        schema:
+          description: providerItemId of the subagent's Agent/Task activity in the
+            conversation snapshot.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopSubagentResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Stop one running subagent in a chat session
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/title:
     put:
       operationId: setSessionConversationTitle
@@ -18796,6 +18934,28 @@ components:
       - text
       - clientMessageId
       type: object
+    SendSubagentMessageRequest:
+      properties:
+        text:
+          description: Message for the subagent, at most 8 KiB.
+          type: string
+      required:
+      - text
+      type: object
+    SendSubagentMessageResponse:
+      properties:
+        id:
+          type: string
+        state:
+          enum:
+          - queued
+          - delivered
+          - dropped
+          type: string
+      required:
+      - id
+      - state
+      type: object
     SessionActivityResponse:
       properties:
         current:
@@ -20704,6 +20864,13 @@ components:
       required:
       - outcome
       - duplicate
+      type: object
+    StopSubagentResponse:
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
       type: object
     SubmitReviewInput:
       properties:
