@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,7 +44,6 @@ type ShellTerminalsController struct {
 	// Commands and Messages back the Run button on agents' code blocks.
 	Commands SessionCommandRunner
 	Messages SessionCommandMessenger
-	Log      *slog.Logger
 }
 
 // Register mounts the bounded shell terminal REST routes.
@@ -82,11 +80,15 @@ func (c *ShellTerminalsController) runSessionCommand(w http.ResponseWriter, r *h
 		return
 	}
 	sessionID := domain.SessionID(chi.URLParam(r, "sessionId"))
+	var onDone func(shelltermsvc.SessionCommandResult) error
+	if c.Messages != nil {
+		onDone = SessionCommandResultDelivery(c.Messages)
+	}
 	terminal, err := c.Commands.RunSessionCommand(r.Context(), shelltermsvc.RunSessionCommandInput{
 		SessionID: sessionID,
 		Shell:     req.Shell,
 		Command:   req.Command,
-		OnDone:    c.deliverSessionCommandResult,
+		OnDone:    onDone,
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
@@ -97,19 +99,17 @@ func (c *ShellTerminalsController) runSessionCommand(w http.ResponseWriter, r *h
 	})
 }
 
-// deliverSessionCommandResult queues the result like a message the user sent,
-// since the user chose to run the command.
-func (c *ShellTerminalsController) deliverSessionCommandResult(result shelltermsvc.SessionCommandResult) {
-	if c.Messages == nil {
-		return
-	}
-	_, err := c.Messages.Send(context.Background(), result.SessionID, ports.ChatUserMessage{
-		Text:            result.AgentMessage(),
-		ClientMessageID: "terminal-command:" + result.Terminal.HandleID,
-		Origin:          domain.MessageOriginHuman,
-	})
-	if err != nil && c.Log != nil {
-		c.Log.Warn("deliver terminal command result", "sessionId", result.SessionID, "handleId", result.Terminal.HandleID, "error", err)
+// SessionCommandResultDelivery queues a result like a message the user sent,
+// since the user chose to run the command. The daemon also uses it for the runs
+// it resumes at boot, so it does not depend on a controller instance.
+func SessionCommandResultDelivery(messages SessionCommandMessenger) func(shelltermsvc.SessionCommandResult) error {
+	return func(result shelltermsvc.SessionCommandResult) error {
+		_, err := messages.Send(context.Background(), result.SessionID, ports.ChatUserMessage{
+			Text:            result.AgentMessage(),
+			ClientMessageID: "terminal-command:" + result.Terminal.HandleID,
+			Origin:          domain.MessageOriginHuman,
+		})
+		return err
 	}
 }
 

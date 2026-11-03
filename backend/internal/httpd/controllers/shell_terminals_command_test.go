@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,25 +17,29 @@ import (
 )
 
 type fakeSessionCommandRunner struct {
-	got    *shelltermsvc.RunSessionCommandInput
-	result shelltermsvc.SessionCommandResult
+	got        *shelltermsvc.RunSessionCommandInput
+	result     shelltermsvc.SessionCommandResult
+	deliverErr error
 }
 
 func (f *fakeSessionCommandRunner) RunSessionCommand(_ context.Context, in shelltermsvc.RunSessionCommandInput) (shelltermsvc.ShellTerminal, error) {
 	f.got = &in
 	f.result.SessionID, f.result.Command = in.SessionID, in.Command
-	in.OnDone(f.result)
+	if in.OnDone != nil {
+		f.deliverErr = in.OnDone(f.result)
+	}
 	return f.result.Terminal, nil
 }
 
 type fakeSessionCommandMessenger struct {
 	sessionID domain.SessionID
 	msg       ports.ChatUserMessage
+	err       error
 }
 
 func (f *fakeSessionCommandMessenger) Send(_ context.Context, id domain.SessionID, msg ports.ChatUserMessage) (domain.ConversationTurn, error) {
 	f.sessionID, f.msg = id, msg
-	return domain.ConversationTurn{}, nil
+	return domain.ConversationTurn{}, f.err
 }
 
 func runSessionCommandRequest(t *testing.T, c *controllers.ShellTerminalsController, origin string) *httptest.ResponseRecorder {
@@ -66,6 +71,19 @@ func TestRunSessionCommandHandsTheResultToTheAgent(t *testing.T) {
 	if messenger.sessionID != "kugelaudio-2" || messenger.msg.Origin != domain.MessageOriginHuman ||
 		messenger.msg.ClientMessageID != "terminal-command:shellterm-run1" || !strings.Contains(messenger.msg.Text, "No changes.") {
 		t.Fatalf("sent %s %+v", messenger.sessionID, messenger.msg)
+	}
+}
+
+// The service retries a result that did not arrive, so a failed send must reach it.
+func TestRunSessionCommandReportsAFailedDelivery(t *testing.T) {
+	runner := &fakeSessionCommandRunner{result: shelltermsvc.SessionCommandResult{
+		Terminal: shelltermsvc.ShellTerminal{HandleID: "shellterm-run1"},
+	}}
+	wantErr := errors.New("chat is mid-handoff")
+	messenger := &fakeSessionCommandMessenger{err: wantErr}
+	runSessionCommandRequest(t, &controllers.ShellTerminalsController{Commands: runner, Messages: messenger}, "app://renderer")
+	if !errors.Is(runner.deliverErr, wantErr) {
+		t.Fatalf("delivery error = %v, want %v", runner.deliverErr, wantErr)
 	}
 }
 

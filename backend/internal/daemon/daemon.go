@@ -774,6 +774,10 @@ func Run(buildVersion string) error {
 	agentAuthSvc := agentauth.NewWithAgentResolver(hostCommands, agentSvc, shellTermSvc, cfg.DataDir)
 	agentSvc.SetCodexAccountLoginTerminalOpener(shellTermSvc)
 	agentAccountSvc.SetTerminals(shellTermSvc)
+	shellTermSvc.SetSessionAccountEnv(agentAccountSvc.SessionAccountEnv)
+	// Terminal hosts outlive the daemon, so a Run in progress when it last stopped
+	// may still be running, or may have finished with nobody watching.
+	shellTermSvc.ResumeSessionCommands(ctx, controllers.SessionCommandResultDelivery(chatSvc))
 	// Late-bound so Kill/Cleanup close a session's scoped shells before its
 	// worktree is torn down (shellTermSvc cannot exist before sessMgr does; see
 	// SetShellTerminalCloser).

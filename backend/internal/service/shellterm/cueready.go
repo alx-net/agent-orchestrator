@@ -94,11 +94,12 @@ func prepareShellReadiness(dataDir string, argv []string, env map[string]string,
 	case "bash", "bash.exe":
 		// Bash runs PROMPT_COMMAND immediately before rendering the first prompt.
 		// A profile that replaces it will cause a safe timeout.
-		hook := "if [ -z \"$AO_CUE_READY_SENT\" ]; then printf ready > " + shellSingleQuote(result.file) + "; AO_CUE_READY_SENT=1; fi"
+		// >| because the file already exists and the user may set noclobber.
+		hook := "if [ -z \"$AO_CUE_READY_SENT\" ]; then printf ready >| " + shellSingleQuote(result.file) + "; AO_CUE_READY_SENT=1; fi"
 		if result.doneFile != "" {
 			// Runs before the ready hook, so it skips the first prompt and fires
 			// on the prompt after the command AO sends.
-			hook = "if [ -n \"$AO_CUE_READY_SENT\" ] && [ -z \"$AO_CUE_DONE_SENT\" ]; then printf 'done %s' \"$__ao_cue_status\" > " +
+			hook = "if [ -n \"$AO_CUE_READY_SENT\" ] && [ -z \"$AO_CUE_DONE_SENT\" ]; then printf 'done %s' \"$__ao_cue_status\" >| " +
 				shellSingleQuote(result.doneFile) + "; AO_CUE_DONE_SENT=1; fi; " + hook
 		}
 		if previous := getenv("PROMPT_COMMAND"); previous != "" {
@@ -116,7 +117,7 @@ func prepareShellReadiness(dataDir string, argv []string, env map[string]string,
 		if previous := getenv("ENV"); previous != "" {
 			content = ". " + shellSingleQuote(previous) + "\n"
 		}
-		content += "printf ready > " + shellSingleQuote(result.file) + "\n"
+		content += "printf ready >| " + shellSingleQuote(result.file) + "\n"
 		if err := os.WriteFile(profile, []byte(content), 0o600); err != nil {
 			result.cleanup()
 			return cueShellReadiness{}, err
@@ -136,24 +137,33 @@ func prepareShellReadiness(dataDir string, argv []string, env map[string]string,
 			original = getenv("HOME")
 		}
 		for _, file := range []string{".zshenv", ".zshrc"} {
-			content := "if [[ -f " + shellSingleQuote(filepath.Join(original, file)) + " ]]; then source " + shellSingleQuote(filepath.Join(original, file)) + "; fi\n"
-			if file == ".zshenv" {
-				content += "export ZDOTDIR=" + shellSingleQuote(wrapper) + "\n"
-			}
+			content := ""
 			if file == ".zshrc" {
-				content += "function _ao_cue_ready { print -rn -- ready > " + shellSingleQuote(result.file) + "; precmd_functions=(${precmd_functions:#_ao_cue_ready}); }\n"
-				content += "precmd_functions+=(_ao_cue_ready)\n"
-				if result.doneFile != "" {
-					// Armed by the command's preexec and placed first in precmd, so it
-					// records that command's status before other hooks run.
-					content += "function _ao_cue_done { local s=$?; print -rn -- \"done $s\" > " + shellSingleQuote(result.doneFile) + "; precmd_functions=(${precmd_functions:#_ao_cue_done}); }\n"
-					content += "function _ao_cue_arm { preexec_functions=(${preexec_functions:#_ao_cue_arm}); precmd_functions=(_ao_cue_done $precmd_functions); }\n"
-					content += "preexec_functions+=(_ao_cue_arm)\n"
-				}
+				// Undo the wrapper first: its directory is deleted once the shell is
+				// ready, and what the user's startup files derive from ZDOTDIR (such
+				// as a completion dump) must not point into it. The global zshrc
+				// already ran, and on macOS it derives HISTFILE from ZDOTDIR.
 				if getenv("ZDOTDIR") == "" {
 					content += "unset ZDOTDIR\n"
 				} else {
 					content += "export ZDOTDIR=" + shellSingleQuote(getenv("ZDOTDIR")) + "\n"
+				}
+				content += "if [[ $HISTFILE == " + shellSingleQuote(wrapper) + "/* ]]; then HISTFILE=" + shellSingleQuote(filepath.Join(original, ".zsh_history")) + "; fi\n"
+			}
+			content += "if [[ -f " + shellSingleQuote(filepath.Join(original, file)) + " ]]; then source " + shellSingleQuote(filepath.Join(original, file)) + "; fi\n"
+			if file == ".zshenv" {
+				content += "export ZDOTDIR=" + shellSingleQuote(wrapper) + "\n"
+			}
+			if file == ".zshrc" {
+				// >| because the file already exists and the user may set noclobber.
+				content += "function _ao_cue_ready { print -rn -- ready >| " + shellSingleQuote(result.file) + "; precmd_functions=(${precmd_functions:#_ao_cue_ready}); }\n"
+				content += "precmd_functions+=(_ao_cue_ready)\n"
+				if result.doneFile != "" {
+					// Armed by the command's preexec and placed first in precmd, so it
+					// records that command's status before other hooks run.
+					content += "function _ao_cue_done { local s=$?; print -rn -- \"done $s\" >| " + shellSingleQuote(result.doneFile) + "; precmd_functions=(${precmd_functions:#_ao_cue_done}); }\n"
+					content += "function _ao_cue_arm { preexec_functions=(${preexec_functions:#_ao_cue_arm}); precmd_functions=(_ao_cue_done $precmd_functions); }\n"
+					content += "preexec_functions+=(_ao_cue_arm)\n"
 				}
 			}
 			if err := os.WriteFile(filepath.Join(wrapper, file), []byte(content), 0o600); err != nil {

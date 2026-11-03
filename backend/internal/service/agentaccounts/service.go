@@ -1062,6 +1062,34 @@ func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID) (ma
 	return s.launchEnv(ctx, id, domain.AgentAccount{})
 }
 
+// SessionAccountEnv is the environment of the accounts a running session is on,
+// for a process started beside its agent, such as a Run tab. Unlike
+// SessionLaunchEnv it changes nothing: no binding, no folder preparation, and no
+// MCP sign-in sharing, which touches the keychain and credentials the running
+// agent is using.
+func (s *Service) SessionAccountEnv(ctx context.Context, id domain.SessionID) (map[string]string, error) {
+	env := map[string]string{}
+	var errs []error
+	for _, p := range domain.AgentAccountProviders {
+		provider := s.providers[p]
+		if provider == nil {
+			continue
+		}
+		account, _, err := s.SessionAccount(ctx, id, p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if account.Device() {
+			continue
+		}
+		for key, value := range provider.LaunchEnv(account.Home) {
+			env[key] = value
+		}
+	}
+	return env, errors.Join(errs...)
+}
+
 // SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
 // session's account for its provider, for starting an agent on an account the
 // session moves to. The session's binding is not changed.

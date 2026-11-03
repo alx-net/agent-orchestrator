@@ -210,7 +210,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		fs:            &controllers.FSController{Svc: deps.Directories},
-		shellTerms:    shellTerminalsController(deps, log),
+		shellTerms:    shellTerminalsController(deps),
 		cues:          &controllers.CuesController{Svc: deps.Cues},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations, Renders: attachmentstore.New(cfg.DataDir), Search: deps.ConversationSearch},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
@@ -432,8 +432,8 @@ func agentBrowserURL(raw string) *url.URL {
 
 // shellTerminalsController wires the Run button: the shell service runs the
 // command and the chat service hands its result to the agent.
-func shellTerminalsController(deps APIDeps, log *slog.Logger) *controllers.ShellTerminalsController {
-	c := &controllers.ShellTerminalsController{Svc: deps.ShellTerminals, Log: log}
+func shellTerminalsController(deps APIDeps) *controllers.ShellTerminalsController {
+	c := &controllers.ShellTerminalsController{Svc: deps.ShellTerminals}
 	if runner, ok := deps.ShellTerminals.(controllers.SessionCommandRunner); ok {
 		c.Commands = runner
 	}

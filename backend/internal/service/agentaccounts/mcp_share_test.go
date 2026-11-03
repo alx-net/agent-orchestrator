@@ -20,6 +20,43 @@ func (c *sharingClaude) ShareMCPAuth(_ context.Context, home string) error {
 	return nil
 }
 
+// A Run tab opens beside a running agent, so reading its account's environment
+// must not touch that account's credentials or bind anything.
+func TestSessionAccountEnvChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	store := &memStore{
+		accounts: []domain.AgentAccount{{ID: "b", Provider: domain.AgentAccountProviderClaude, Home: "/b", Email: "b@example.com"}},
+		defaults: map[domain.AgentAccountProvider]string{},
+		bindings: map[domain.SessionID]string{"s1": "b"},
+	}
+	claude := &sharingClaude{fakeClaude: &fakeClaude{signedInAs: map[string]string{"": "a@example.com", "/b": "b@example.com"}}}
+	svc := New(store, []ports.AgentAccountProviderCLI{claude}, t.TempDir(), nil, nil)
+	svc.SetAgentActivity(func(context.Context, string, domain.SessionID) bool { return false })
+
+	env, err := svc.SessionAccountEnv(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["CLAUDE_CONFIG_DIR"] != "/b" {
+		t.Fatalf("env = %v, want the session's account folder", env)
+	}
+	if len(claude.shared) != 0 {
+		t.Fatalf("shared MCP sign-ins into a running agent's account: %v", claude.shared)
+	}
+	// A session with no binding reads as the default, which is the computer's own
+	// folder here, and stays unbound.
+	env, err = svc.SessionAccountEnv(ctx, "s2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 0 {
+		t.Fatalf("env = %v, want none for the computer's own account", env)
+	}
+	if _, bound := store.bindings["s2"]; bound {
+		t.Fatal("reading the environment bound the session to an account")
+	}
+}
+
 func TestMCPSignInsAreSharedAtLaunchOnlyWhileNoOtherAgentUsesTheAccount(t *testing.T) {
 	ctx := context.Background()
 	store := &memStore{
