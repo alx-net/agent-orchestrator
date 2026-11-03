@@ -46,7 +46,7 @@ func (s *Service) Add(ctx context.Context, in AddInput) (Propagation, error) {
 	if err := s.addUserServer(ctx, in.Name, config, in.Headers); err != nil {
 		return Propagation{}, err
 	}
-	s.afterConfigChange(ctx)
+	s.afterConfigChange(ctx, in.Name)
 	return s.propagate(ctx, change{kind: changeAdd, name: in.Name, config: config}), nil
 }
 
@@ -131,7 +131,7 @@ func (s *Service) Remove(ctx context.Context, name string) (Propagation, error) 
 	if result.ExitCode != 0 {
 		return Propagation{}, errors.New(strings.TrimSpace(result.Stderr + " " + result.Stdout))
 	}
-	s.afterConfigChange(ctx)
+	s.afterConfigChange(ctx, name)
 	return s.propagate(ctx, change{kind: changeRemove, name: name}), nil
 }
 
@@ -194,13 +194,14 @@ func (s *Service) SetKey(ctx context.Context, name string, headers map[string]st
 		}
 		return Propagation{}, err
 	}
-	s.afterConfigChange(ctx)
+	s.afterConfigChange(ctx, name)
 	return s.propagate(ctx, change{kind: changeKey, name: name, config: updated}), nil
 }
 
 // afterConfigChange carries the user's global config into every account folder
-// and forgets the readings it made stale.
-func (s *Service) afterConfigChange(ctx context.Context) {
+// and forgets the readings it made stale, Claude Code's own included: without
+// that, an agent starting next would read a just-fixed key as still refused.
+func (s *Service) afterConfigChange(ctx context.Context, name string) {
 	accounts, err := s.accounts.ClaudeAccounts(ctx)
 	if err != nil {
 		s.log.Warn("list accounts after MCP config change", "error", err)
@@ -208,6 +209,9 @@ func (s *Service) afterConfigChange(ctx context.Context) {
 	for _, account := range accounts {
 		if err := s.accounts.PrepareClaudeAccount(ctx, account); err != nil {
 			s.log.Warn("share MCP config into account", "account", account.ID, "error", err)
+		}
+		if err := s.cli.MCPForgetAuthCache(account.Home, name); err != nil {
+			s.log.Debug("forget MCP auth cache", "account", account.ID, "error", err)
 		}
 	}
 	s.invalidateChecks("")

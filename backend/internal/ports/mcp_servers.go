@@ -68,4 +68,7 @@ type MCPCLI interface {
 	MCPApprove(home, dir, name string) error
 	// MCPTrust records only that the folder trusts dir.
 	MCPTrust(home, dir string) error
+	// MCPForgetAuthCache drops what the folder's CLI remembers about servers that
+	// wanted a sign-in, so its next look really connects. No names drops it all.
+	MCPForgetAuthCache(home string, names ...string) error
 }

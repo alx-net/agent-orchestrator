@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -3778,12 +3779,14 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 }
 
 // replaceMCPServers records the provider's whole inventory: a server it no
-// longer lists is gone. Known servers keep their place in the list.
+// longer lists is gone. Known servers keep their place in the list. An unchanged
+// inventory writes nothing: views poll this, and each write wakes every client.
 func (c *Controller) replaceMCPServers(ctx context.Context, servers []ports.ChatMCPServer) error {
 	c.mcpPersistMu.Lock()
 	defer c.mcpPersistMu.Unlock()
 
 	c.mu.Lock()
+	before := c.mcpServersLocked()
 	fresh := make(map[string]domain.ConversationMCPServer, len(servers))
 	for _, server := range servers {
 		if server.Name != "" {
@@ -3814,6 +3817,9 @@ func (c *Controller) replaceMCPServers(ctx context.Context, servers []ports.Chat
 	recorded := c.mcpServersLocked()
 	c.mu.Unlock()
 
+	if reflect.DeepEqual(before, recorded) {
+		return nil
+	}
 	return c.store.RecordMCPServers(ctx, c.conversation.ID, recorded)
 }
 

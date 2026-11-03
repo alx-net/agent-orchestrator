@@ -83,6 +83,8 @@ var (
 	ErrServerExists = errors.New("an MCP server with that name already exists")
 	// ErrNotEditable is a server whose config AO does not own.
 	ErrNotEditable = errors.New("AO does not own this server's config")
+	// ErrNoSignIn is a server that has nothing to sign in to.
+	ErrNoSignIn = errors.New("nothing to sign in to")
 	// ErrInvalid is a request that makes no sense.
 	ErrInvalid = errors.New("invalid MCP server request")
 	// ErrUnknownOperation is a sign-in AO has no record of.
@@ -92,7 +94,7 @@ var (
 	// ErrHarnessUnsupported is a session whose agent is not Claude Code.
 	ErrHarnessUnsupported = errors.New("MCP servers are managed for Claude Code sessions")
 	// ErrUnavailable means this daemon has no Claude Code to ask.
-	ErrUnavailable = errors.New("Claude Code is not available")
+	ErrUnavailable = errors.New("the Claude Code CLI is not available")
 	// ErrNotLive reports a session with no running agent to change.
 	ErrNotLive = errors.New("the session has no running agent")
 	// ErrInPlaceUnsupported reports a running agent that cannot take a change.
@@ -301,7 +303,7 @@ func (s *Service) List(ctx context.Context, in ListInput) (List, error) {
 	for _, account := range accounts {
 		out.Accounts = append(out.Accounts, AccountRef{ID: account.ID, Email: account.Email, Device: account.Device()})
 	}
-	out.Servers = s.render(ctx, accounts, projects)
+	out.Servers = s.render(accounts, projects)
 	return out, nil
 }
 
@@ -421,7 +423,7 @@ func scopeOrder(scope string) int {
 	}
 }
 
-func (s *Service) render(ctx context.Context, accounts []domain.AgentAccount, projects []projectServers) []Server {
+func (s *Service) render(accounts []domain.AgentAccount, projects []projectServers) []Server {
 	rows := map[rowKey]*Server{}
 	for _, account := range accounts {
 		definitions := s.definitions(account, projects)

@@ -708,6 +708,7 @@ var _ sessionmanager.ChatLauncher = chatLauncher{}
 // forward compiles but silently turns the feature off.
 var _ sessionmanager.ChatVersionRefresher = chatLauncher{}
 var _ sessionmanager.ChatUpdateHibernator = chatLauncher{}
+var _ sessionmanager.ChatToolServerRestarter = chatLauncher{}
 var _ interface {
 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
 	RunPromptSuggestionTask(context.Context, domain.SessionID, string, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
@@ -833,6 +834,10 @@ func (c chatLauncher) HibernateChat(ctx context.Context, id domain.SessionID) (b
 
 func (c chatLauncher) SwitchToInstalledRelease(ctx context.Context, id domain.SessionID, minIdle time.Duration) (bool, error) {
 	return c.svc.SwitchToInstalledRelease(ctx, id, minIdle)
+}
+
+func (c chatLauncher) RestartChatForToolServers(ctx context.Context, id domain.SessionID) (bool, error) {
+	return c.svc.RestartChatForToolServers(ctx, id)
 }
 
 func (c chatLauncher) HibernateChatForUpdate(ctx context.Context, id domain.SessionID) (bool, error) {

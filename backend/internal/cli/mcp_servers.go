@@ -188,7 +188,11 @@ func writeMCPServers(out io.Writer, list mcpServersDTO) error {
 				tools = fmt.Sprintf("%d", *status.ToolCount)
 			}
 			account := labels[status.AccountID]
-			if account == "" {
+			switch {
+			case account != "":
+			case strings.HasPrefix(status.AccountID, "device-"):
+				account = "this computer"
+			default:
 				account = status.AccountID
 			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", server.Name, mcpStatusWords(status.Status, status.RawStatus), tools, server.Auth, defined, account, mcpDetail(server, status))
@@ -305,10 +309,7 @@ func (c *commandContext) mcpLogin(ctx context.Context, out io.Writer, name, acco
 		}
 		select {
 		case <-ctx.Done():
-			// Stop the sign-in too, so it does not wait 5 minutes on a closed browser.
-			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			_ = c.postJSON(stopCtx, path+"/cancel", struct{}{}, nil)
+			c.cancelMCPLogin(ctx, path)
 			return ctx.Err()
 		case <-ticker.C:
 		}
@@ -318,6 +319,14 @@ func (c *commandContext) mcpLogin(ctx context.Context, out io.Writer, name, acco
 		}
 		op = current.Operation
 	}
+}
+
+// cancelMCPLogin stops the sign-in too, so it does not wait out its time limit on
+// a browser nobody will finish in.
+func (c *commandContext) cancelMCPLogin(ctx context.Context, path string) {
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = c.postJSON(stopCtx, path+"/cancel", struct{}{}, nil)
 }
 
 func writeMCPConnected(out io.Writer, op mcpOperationDTO) error {
@@ -397,8 +406,10 @@ func writeMCPTest(out io.Writer, result mcpTestDTO) error {
 	}
 	if result.Live != nil {
 		line := "This agent has it: " + mcpStatusWords(result.Live.Status, "")
-		if result.Live.ToolCount != nil {
-			line += fmt.Sprintf(", %d tools", *result.Live.ToolCount)
+		if count := result.Live.ToolCount; count != nil && *count == 1 {
+			line += ", 1 tool"
+		} else if count != nil {
+			line += fmt.Sprintf(", %d tools", *count)
 		}
 		if result.Live.Error != "" {
 			line += " (" + firstLine(result.Live.Error) + ")"

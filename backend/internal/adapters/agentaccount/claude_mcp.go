@@ -158,6 +158,37 @@ func (c *Claude) updateMCPProject(home, dir string, change func(map[string]json.
 	return writeObject(path, config)
 }
 
+// MCPForgetAuthCache drops entries from the file where Claude Code remembers a
+// server wanted a sign-in. While an entry stands the CLI reports needs-auth
+// without connecting (measured on 2.1.314), so a server whose key was just fixed
+// would keep reading as refused. Claude Code writes it again on the next refusal.
+func (c *Claude) MCPForgetAuthCache(home string, names ...string) error {
+	dir := home
+	if dir == "" {
+		dir = c.DeviceHome
+	}
+	if dir == "" {
+		return nil
+	}
+	mcpConfigMu.Lock()
+	defer mcpConfigMu.Unlock()
+	path := filepath.Join(dir, claudeMCPNeedsAuthFile)
+	cache, err := readObject(path)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		cache = map[string]json.RawMessage{}
+	}
+	for _, name := range names {
+		delete(cache, name)
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return writeObject(path, cache)
+}
+
 func stringList(raw json.RawMessage) []string {
 	var out []string
 	if len(raw) != 0 {
@@ -336,7 +367,7 @@ func (s *mcpProbeSession) request(ctx context.Context, body map[string]any) (jso
 		return nil, err
 	}
 	if _, err := s.stdin.Write(append(line, '\n')); err != nil {
-		return nil, fmt.Errorf("Claude Code stopped: %w", err)
+		return nil, fmt.Errorf("the CLI stopped: %w", err)
 	}
 	select {
 	case response := <-waiter:
@@ -345,7 +376,7 @@ func (s *mcpProbeSession) request(ctx context.Context, body map[string]any) (jso
 		}
 		return response.Response.Response, nil
 	case <-s.done:
-		return nil, errors.New("Claude Code stopped before it answered")
+		return nil, errors.New("the CLI stopped before it answered")
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

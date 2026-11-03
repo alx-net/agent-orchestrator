@@ -132,6 +132,20 @@ func (s *Service) restartLater(id domain.SessionID, out *Propagation) {
 	out.Restarting = append(out.Restarting, string(id))
 }
 
+// forgetBeforeRestart clears what the account's CLI remembers about refused
+// servers just before an agent may start. The agent running now can write a stale
+// entry back, and the new one would then skip connecting to that server and read
+// a key that works as refused for the rest of the entry's life.
+func (s *Service) forgetBeforeRestart(ctx context.Context, id domain.SessionID) {
+	_, account, err := s.sessionAccount(ctx, id)
+	if err != nil {
+		return
+	}
+	if err := s.cli.MCPForgetAuthCache(account.Home); err != nil {
+		s.log.Debug("forget MCP auth cache", "account", account.ID, "error", err)
+	}
+}
+
 // scheduleRestart restarts the agent as soon as it is idle: right away if it is
 // now, otherwise when its turn ends, and never under a turn.
 func (s *Service) scheduleRestart(id domain.SessionID) {
@@ -154,6 +168,7 @@ func (s *Service) scheduleRestart(id domain.SessionID) {
 		giveUp := time.Now().Add(s.restartPatience)
 		for time.Now().Before(giveUp) {
 			ctx, cancel := context.WithTimeout(s.ctx, time.Minute)
+			s.forgetBeforeRestart(ctx, id)
 			done, err := s.restarter.RestartAgentForToolServers(ctx, id)
 			cancel()
 			if err != nil {

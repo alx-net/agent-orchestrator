@@ -935,7 +935,7 @@ type fakeAgent struct {
 	mcpServers          []mcpBridgeServer
 	mcpReconnectRefusal string
 	mcpApplyErrors      map[string]string
-	subagentErr     error
+	subagentErr         error
 }
 
 type fakeExtensionCall struct {

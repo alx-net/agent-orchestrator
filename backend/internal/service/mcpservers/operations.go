@@ -98,7 +98,7 @@ func (s *Service) resolveTarget(ctx context.Context, in TargetInput) (target, er
 	out := target{account: account, projectID: in.ProjectID}
 	if in.ProjectID != "" {
 		for _, project := range s.projectsWithServers(ctx) {
-			if string(project.record.ID) == in.ProjectID {
+			if project.record.ID == in.ProjectID {
 				out.dir = project.record.Path
 			}
 		}
@@ -151,10 +151,10 @@ func (s *Service) Connect(ctx context.Context, in TargetInput) (Operation, error
 	}
 	d, known := s.definitionAt(t, in.Name)
 	if known && (d.Auth == AuthAPIKey || d.Auth == AuthHelper) {
-		return Operation{}, fmt.Errorf("%w: %s uses a key in its config, so there is nothing to sign in to", ErrNotEditable, in.Name)
+		return Operation{}, fmt.Errorf("%w: %s uses a key in its config", ErrNoSignIn, in.Name)
 	}
 	if known && d.Transport == "stdio" {
-		return Operation{}, fmt.Errorf("%w: %s is a local process, so there is nothing to sign in to", ErrNotEditable, in.Name)
+		return Operation{}, fmt.Errorf("%w: %s is a local process", ErrNoSignIn, in.Name)
 	}
 	if err := s.accounts.PrepareClaudeAccount(ctx, t.account); err != nil {
 		s.log.Warn("prepare account for sign-in", "account", t.account.ID, "error", err)
@@ -374,6 +374,10 @@ func (s *Service) Test(ctx context.Context, in TargetInput) (TestResult, error) 
 			s.log.Debug("trust folder for MCP test", "account", t.account.ID, "error", err)
 		}
 	}
+	// A test must connect, not repeat what the CLI remembered about a refusal.
+	if err := s.cli.MCPForgetAuthCache(t.account.Home, in.Name); err != nil {
+		s.log.Debug("forget MCP auth cache", "account", t.account.ID, "error", err)
+	}
 	probed, err := s.cli.MCPProbe(ctx, ports.MCPTarget{Home: t.account.Home, Dir: t.dir}, request)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -511,6 +515,9 @@ func (s *Service) Approve(ctx context.Context, in TargetInput) (Propagation, err
 	if err := s.cli.MCPApprove(t.account.Home, t.dir, in.Name); err != nil {
 		return Propagation{}, fmt.Errorf("approve %s: %w", in.Name, err)
 	}
+	if err := s.cli.MCPForgetAuthCache(t.account.Home, in.Name); err != nil {
+		s.log.Debug("forget MCP auth cache", "account", t.account.ID, "error", err)
+	}
 	s.invalidateChecks(t.account.ID)
 	return s.propagate(ctx, change{kind: changeApprove, name: in.Name, accountID: t.account.ID, projectID: t.projectID, config: d.Raw}), nil
 }
@@ -520,6 +527,9 @@ func (s *Service) Reconnect(ctx context.Context, id domain.SessionID, name strin
 	t, err := s.resolveTarget(ctx, TargetInput{Name: name, SessionID: string(id)})
 	if err != nil {
 		return SessionList{}, err
+	}
+	if err := s.cli.MCPForgetAuthCache(t.account.Home, name); err != nil {
+		s.log.Debug("forget MCP auth cache", "account", t.account.ID, "error", err)
 	}
 	d, known := s.definitionAt(t, name)
 	ch := change{kind: changeConnect, name: name}
@@ -532,7 +542,7 @@ func (s *Service) Reconnect(ctx context.Context, id domain.SessionID, name strin
 
 var (
 	oscLink  = regexp.MustCompile("\x1b\\]8;;([^\x07\x1b]+)(?:\x07|\x1b\\\\)")
-	escapes  = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)|\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]")
+	escapes  = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)|\x1b\\[[0-9;?]*[\\x20-\\x2f]*[\\x40-\\x7e]|\x1b[()][0-9A-Za-z]")
 	plainURL = regexp.MustCompile(`https?://[^\s\x1b\x07]+`)
 )
 
@@ -560,8 +570,9 @@ func connectorLogin(text string) bool {
 // loginFailure is what the user should read: Claude Code's own last words, minus
 // its prompts and the sign-in link.
 func loginFailure(text string, err error) string {
-	var lines []string
-	for _, line := range strings.Split(cleanTerminal(text), "\n") {
+	raw := strings.Split(cleanTerminal(text), "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
 		line = strings.TrimSpace(line)
 		switch {
 		case line == "",

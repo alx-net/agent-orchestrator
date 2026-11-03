@@ -140,6 +140,10 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount, dir str
 	if err := s.accounts.PrepareClaudeAccount(ctx, account); err != nil {
 		s.log.Warn("prepare account for MCP check", "account", account.ID, "error", err)
 	}
+	// A check must connect, not repeat what the CLI remembered about a refusal.
+	if err := s.cli.MCPForgetAuthCache(account.Home); err != nil {
+		s.log.Debug("forget MCP auth cache", "account", account.ID, "error", err)
+	}
 	target := ports.MCPTarget{Home: account.Home, Dir: dir}
 	if dir == "" {
 		probed, err := s.cli.MCPProbe(ctx, target, ports.MCPProbeRequest{})
@@ -159,7 +163,7 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount, dir str
 	}
 	defined, err := s.cli.MCPProjectServers(dir)
 	if err != nil {
-		return listed, nil
+		return listed, nil //nolint:nilerr // the list's reading stands; only tool counts are missing
 	}
 	approved := map[string]json.RawMessage{}
 	for _, entry := range listed {
@@ -173,7 +177,7 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount, dir str
 	}
 	probed, err := s.cli.MCPProbe(ctx, target, ports.MCPProbeRequest{Servers: approved})
 	if err != nil {
-		return listed, nil // the list's reading stands; only the tool counts are missing
+		return listed, nil //nolint:nilerr // the list's reading stands; only tool counts are missing
 	}
 	byName := map[string]checkEntry{}
 	for _, entry := range entriesFromProbe(probed) {
@@ -442,7 +446,7 @@ func (s *Service) definitions(account domain.AgentAccount, projects []projectSer
 	for _, project := range projects {
 		for name, raw := range project.servers {
 			d := parseDefinition(name, raw, ScopeRepo)
-			d.ProjectID, d.ProjectName, d.Dir = string(project.record.ID), projectLabel(project.record), project.record.Path
+			d.ProjectID, d.ProjectName, d.Dir = project.record.ID, projectLabel(project.record), project.record.Path
 			out[rowKey{name, project.record.Path}] = d
 		}
 	}
@@ -453,7 +457,7 @@ func projectLabel(record domain.ProjectRecord) string {
 	if record.DisplayName != "" {
 		return record.DisplayName
 	}
-	return string(record.ID)
+	return record.ID
 }
 
 var secretArg = regexp.MustCompile(`(?i)(token|secret|password|passwd|api[-_]?key|auth)`)

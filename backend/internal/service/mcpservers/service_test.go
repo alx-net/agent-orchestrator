@@ -45,6 +45,7 @@ type fakeCLI struct {
 	probed   []fakeProbe
 	approved []string
 	trusted  []string
+	forgot   []string
 }
 
 type fakeCommand struct {
@@ -125,6 +126,19 @@ func (f *fakeCLI) MCPTrust(home, dir string) error {
 	defer f.mu.Unlock()
 	f.trusted = append(f.trusted, home+"|"+dir)
 	return nil
+}
+
+func (f *fakeCLI) MCPForgetAuthCache(home string, names ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgot = append(f.forgot, home+"|"+strings.Join(names, ","))
+	return nil
+}
+
+func (f *fakeCLI) forgotten() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.forgot...)
 }
 
 func (f *fakeCLI) calls() []fakeCommand {
@@ -616,7 +630,7 @@ func TestConnectRefusesAServerWithNoSignInToDo(t *testing.T) {
 		"local":  raw(`{"type":"stdio","command":"cat"}`),
 	}
 	for _, name := range []string{"keyed", "helper", "local"} {
-		if _, err := r.svc.Connect(context.Background(), TargetInput{Name: name}); !errors.Is(err, ErrNotEditable) {
+		if _, err := r.svc.Connect(context.Background(), TargetInput{Name: name}); !errors.Is(err, ErrNoSignIn) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
@@ -684,6 +698,37 @@ func TestTestPassesWithToolsFromARealConnectOfOnlyThatServer(t *testing.T) {
 	}
 	if got := statusOn(t, findServer(t, list.Servers, "x"), deviceID); got.Status != StatusConnected || *got.ToolCount != 2 {
 		t.Fatalf("list after test = %+v", got)
+	}
+}
+
+// The CLI answers needs-auth from memory while it remembers a refusal, which
+// would make a just-fixed key read as refused: measured on 2.1.314.
+func TestChecksAndTestsReallyConnectRatherThanTrustTheCLIsMemory(t *testing.T) {
+	r := newRig(t)
+	r.cli.user[""] = map[string]json.RawMessage{"x": raw(`{"type":"http","url":"https://x"}`)}
+	r.cli.probes["|"] = []ports.MCPProbeServer{{Name: "x", Status: "connected"}}
+	if _, err := r.svc.Test(context.Background(), TargetInput{Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(r.cli.forgotten(), []string{"|x"}) {
+		t.Fatalf("forgot = %v", r.cli.forgotten())
+	}
+	listNow(t, r.svc)
+	got := strings.Join(r.cli.forgotten(), " ")
+	if !strings.Contains(got, "/acct|") {
+		t.Fatalf("a check of the account did not clear its memory: %v", r.cli.forgotten())
+	}
+}
+
+func TestSetKeyClearsEveryAccountsMemoryOfTheRefusal(t *testing.T) {
+	r := newRig(t)
+	r.cli.user[""] = map[string]json.RawMessage{"x": raw(`{"type":"http","url":"https://x","headers":{"K":"old"}}`)}
+	if _, err := r.svc.SetKey(context.Background(), "x", map[string]string{"K": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	forgot := r.cli.forgotten()
+	if !reflect.DeepEqual(forgot, []string{"|x", "/acct|x"}) {
+		t.Fatalf("forgot = %v", forgot)
 	}
 }
 
@@ -919,6 +964,17 @@ func TestARestartWaitsForTheAgentToBeIdle(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := r.restart.count(); got != 4 {
 		t.Fatalf("restart asked %d times; it should stop once done", got)
+	}
+}
+
+// An agent starting next must not read a key that works as refused because the
+// agent it replaces wrote its old refusal back.
+func TestARestartClearsTheCLIsMemoryFirst(t *testing.T) {
+	r := newRig(t)
+	r.svc.scheduleRestart("s1")
+	awaitRestarts(t, r, 1)
+	if got := r.cli.forgotten(); len(got) == 0 || got[0] != "/acct|" {
+		t.Fatalf("forgot = %v", got)
 	}
 }
 

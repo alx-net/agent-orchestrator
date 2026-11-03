@@ -357,6 +357,35 @@ func TestMCPApproveRefusesAnUnreadableConfig(t *testing.T) {
 	}
 }
 
+func TestMCPForgetAuthCacheDropsOnlyWhatItIsAsked(t *testing.T) {
+	c := fakeClaude(t, "")
+	account := t.TempDir()
+	path := filepath.Join(account, claudeMCPNeedsAuthFile)
+	if err := os.WriteFile(path, []byte(`{"keep":{"timestamp":1},"drop":{"timestamp":2}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.MCPForgetAuthCache(account, "drop"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.MCPNeedsAuth(account); strings.Join(got, ",") != "keep" {
+		t.Fatalf("after dropping one: %v", got)
+	}
+	if err := c.MCPForgetAuthCache(account); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.MCPNeedsAuth(account); len(got) != 0 {
+		t.Fatalf("after dropping all: %v", got)
+	}
+	// No file yet: nothing to do, and it does not create one.
+	empty := t.TempDir()
+	if err := c.MCPForgetAuthCache(empty, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, claudeMCPNeedsAuthFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a file appeared: %v", err)
+	}
+}
+
 func TestMCPTrustRecordsOnlyTrust(t *testing.T) {
 	c := fakeClaude(t, "")
 	repo := t.TempDir()

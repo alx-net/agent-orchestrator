@@ -288,6 +288,8 @@ func writeMCPServerError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "MCP_SERVER_INVALID", err.Error(), nil)
 	case errors.Is(err, mcpservers.ErrServerExists):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "MCP_SERVER_EXISTS", err.Error(), nil)
+	case errors.Is(err, mcpservers.ErrNoSignIn):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "MCP_SERVER_NO_SIGN_IN", err.Error(), nil)
 	case errors.Is(err, mcpservers.ErrNotEditable):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "MCP_SERVER_NOT_EDITABLE", err.Error(), nil)
 	case errors.Is(err, mcpservers.ErrUnknownServer):
