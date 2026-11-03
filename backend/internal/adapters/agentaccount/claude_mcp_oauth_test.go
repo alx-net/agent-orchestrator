@@ -94,6 +94,64 @@ func TestShareMCPAuthCopiesTheComputersSignInsAndKeepsTheAccountsOwn(t *testing.
 	}
 }
 
+// Linear rotates refresh tokens: a copy dies the moment the other holder
+// refreshes, so a rotating sign-in stays with whoever made it.
+func TestShareMCPAuthNeverCopiesARotatingSignIn(t *testing.T) {
+	home := t.TempDir()
+	account := ClaudeCredentialsService(home)
+	k := &memKeychain{items: map[string][]byte{
+		"Claude Code-credentials/alex": []byte(`{"mcpOAuth":{"linear|a":{"accessToken":"device-at","refreshToken":"device-rt"},"static|b":{"accessToken":"static-at"}}}`),
+		account + "/alex":              []byte(`{"claudeAiOauth":{"accessToken":"account-login"},"mcpOAuth":{"mine|c":{"accessToken":"mine-at","refreshToken":"mine-rt"}}}`),
+	}}
+	c := &Claude{Keychain: k, KeychainOwner: "alex"}
+	if err := c.ShareMCPAuth(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	mcp, _ := mcpEntries(t, k, account)
+	if _, copied := mcp["linear|a"]; copied {
+		t.Fatalf("a rotating sign-in was copied: %s", mcp["linear|a"])
+	}
+	if string(mcp["static|b"]) != `{"accessToken":"static-at"}` {
+		t.Fatalf("a non-rotating sign-in was not shared: %v", mcp)
+	}
+	if string(mcp["mine|c"]) != `{"accessToken":"mine-at","refreshToken":"mine-rt"}` {
+		t.Fatalf("the account's own sign-in changed: %s", mcp["mine|c"])
+	}
+	// The account's stale copy of a server that now rotates stays as it is:
+	// the computer's entry must not overwrite it either.
+	k.items[account+"/alex"] = []byte(`{"mcpOAuth":{"linear|a":{"accessToken":"old-copy"}}}`)
+	writes := k.writes
+	k.items["Claude Code-credentials/alex"] = []byte(`{"mcpOAuth":{"linear|a":{"accessToken":"device-at-2","refreshToken":"device-rt-2"}}}`)
+	if err := c.ShareMCPAuth(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	if mcp, _ = mcpEntries(t, k, account); string(mcp["linear|a"]) != `{"accessToken":"old-copy"}` || k.writes != writes {
+		t.Fatalf("a rotating sign-in overwrote the account's entry: %s (writes %d -> %d)", mcp["linear|a"], writes, k.writes)
+	}
+}
+
+// An entry with no access token (a server the computer is signed out of) holds
+// nothing to share and must not replace a sign-in that works.
+func TestShareMCPAuthNeverCopiesAnEmptyEntry(t *testing.T) {
+	home := t.TempDir()
+	account := ClaudeCredentialsService(home)
+	k := &memKeychain{items: map[string][]byte{
+		"Claude Code-credentials/alex": []byte(`{"mcpOAuth":{"linear|a":{"accessToken":""},"gone|b":{"clientId":"only-a-client"}}}`),
+		account + "/alex":              []byte(`{"mcpOAuth":{"linear|a":{"accessToken":"works"}}}`),
+	}}
+	c := &Claude{Keychain: k, KeychainOwner: "alex"}
+	if err := c.ShareMCPAuth(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	mcp, _ := mcpEntries(t, k, account)
+	if string(mcp["linear|a"]) != `{"accessToken":"works"}` || k.writes != 0 {
+		t.Fatalf("an empty entry overwrote a working sign-in: %s (writes %d)", mcp["linear|a"], k.writes)
+	}
+	if _, copied := mcp["gone|b"]; copied {
+		t.Fatalf("an entry with no access token was copied: %s", mcp["gone|b"])
+	}
+}
+
 func TestShareMCPAuthLeavesAnAccountWithoutCredentialsAlone(t *testing.T) {
 	home := t.TempDir()
 	k := &memKeychain{items: map[string][]byte{

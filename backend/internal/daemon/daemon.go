@@ -1510,8 +1510,8 @@ func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, 
 	}
 	claude := &agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig}
 	if runtime.GOOS == "darwin" {
-		// The user asked for every account to have the computer's MCP sign-ins;
-		// Claude Code keeps them in the login keychain on macOS.
+		// Claude Code keeps MCP sign-ins in the login keychain on macOS. Accounts
+		// get the computer's non-rotating ones; see ShareMCPAuth.
 		claude.Keychain = agentaccount.SecurityKeychain{}
 		claude.DeviceCredentials = agentaccount.ClaudeCredentialsService(strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")))
 	}

@@ -47,9 +47,9 @@ func ClaudeCredentialsService(configDir string) string {
 	return base + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
-// ShareMCPAuth copies the computer's MCP OAuth sign-ins into home's
-// credentials, so a session on the account has every MCP server the computer
-// has without signing in to each again. The user asked for this.
+// ShareMCPAuth copies the computer's MCP OAuth sign-ins that are safe to share
+// into home's credentials, so a session on the account has them without
+// signing in to each again.
 //
 // Only the "mcpOAuth" entries move; the account's own Claude sign-in
 // ("claudeAiOauth") is never touched. A server the account signed in to itself
@@ -58,10 +58,13 @@ func ClaudeCredentialsService(configDir string) string {
 // uses the account: that agent could refresh a token between the read and the
 // write, and the write would undo the refresh.
 //
-// Refresh-token rotation: a copied entry holds the same refresh token as the
-// computer's. When one side refreshes and the server rotates the token, the
-// other copy's refresh token stops working and that side must sign in to the
-// server again. AO keeps the account's refreshed entry as its own from then on.
+// An entry with a refresh token is never copied. Servers that rotate refresh
+// tokens (Linear does) invalidate every other copy the moment one holder
+// refreshes, which signed accounts out of the server and looked like a random
+// failure. Each account signs in to such a server once, with one click
+// (`ao mcp login`), and keeps its own token. An entry without an access token
+// is never copied either: it holds nothing to share, and writing it could
+// erase a sign-in that works.
 func (c *Claude) ShareMCPAuth(ctx context.Context, home string) error {
 	if home == "" || c.Keychain == nil {
 		return nil
@@ -108,6 +111,9 @@ func (c *Claude) ShareMCPAuth(ctx context.Context, home string) error {
 	copied := readDigests(filepath.Join(home, mcpOAuthLedgerName))
 	changed := false
 	for server, value := range source {
+		if !shareableMCPEntry(value) {
+			continue
+		}
 		mine, has := target[server]
 		switch {
 		case has && digest(mine) == digest(value):
@@ -138,6 +144,19 @@ func (c *Claude) ShareMCPAuth(ctx context.Context, home string) error {
 		}
 	}
 	return writeDigests(filepath.Join(home, mcpOAuthLedgerName), copied)
+}
+
+// shareableMCPEntry reports an entry a second holder can use without harming
+// the first: it has an access token and no refresh token to rotate.
+func shareableMCPEntry(raw json.RawMessage) bool {
+	var entry struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return false
+	}
+	return entry.AccessToken != "" && entry.RefreshToken == ""
 }
 
 func (c *Claude) keychainOwner() string {
