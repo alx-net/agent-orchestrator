@@ -28,6 +28,7 @@ type APIDeps struct {
 	Agents             controllers.AgentCatalog
 	CodexAccounts      controllers.CodexAccountService
 	AgentAccounts      controllers.AgentAccountService
+	MCPServers         controllers.MCPServerService
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
 	ArtifactVersions   controllers.ArtifactVersionService
@@ -131,6 +132,7 @@ type API struct {
 	agents        *controllers.AgentsController
 	codexAccounts *controllers.CodexAccountsController
 	agentAccounts *controllers.AgentAccountsController
+	mcpServers    *controllers.MCPServersController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
 	automations   *controllers.AutomationsController
@@ -180,6 +182,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		},
 		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		agentAccounts: newAgentAccountsController(deps),
+		mcpServers:    &controllers.MCPServersController{Svc: deps.MCPServers},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -274,7 +277,14 @@ func (a *API) Register(root chi.Router) {
 				upload := middleware.Timeout(max(timeout, 10*time.Minute))(next)
 				clone := middleware.Timeout(max(timeout, 30*time.Minute))(next)
 				checkout := middleware.Timeout(max(timeout, 10*time.Minute))(next)
+				mcpCheck := middleware.Timeout(max(timeout, 5*time.Minute))(next)
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					// An MCP check starts every server it covers, per subscription.
+					switch chi.RouteContext(req.Context()).RoutePattern() {
+					case "/api/v1/mcp/servers", "/api/v1/mcp/test", "/api/v1/sessions/{sessionId}/mcp-servers":
+						mcpCheck.ServeHTTP(w, req)
+						return
+					}
 					// `ao checkout` fetches and checks out a whole working tree,
 					// which can outlast one REST request on a large repository.
 					if chi.RouteContext(req.Context()).RoutePattern() == "/api/v1/sessions/{sessionId}/checkouts" {
@@ -319,6 +329,7 @@ func (a *API) Register(root chi.Router) {
 			a.agents.Register(r)
 			a.codexAccounts.Register(r)
 			a.agentAccounts.Register(r)
+			a.mcpServers.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)

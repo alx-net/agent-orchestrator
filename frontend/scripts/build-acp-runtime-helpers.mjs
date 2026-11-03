@@ -779,6 +779,114 @@ export function patchClaudeSubagentControl(adapterPath) {
 	return true;
 }
 
+// Module-level helpers the MCP control patch adds after STEER_PRIORITY.
+const MCP_CONTROL_HELPERS = [
+	"// AO: let the client read and change the live query's MCP servers.",
+	'const AO_MCP_STATUS_METHOD = "_claude/mcp_status";',
+	'const AO_MCP_RECONNECT_METHOD = "_claude/mcp_reconnect";',
+	'const AO_MCP_APPLY_METHOD = "_claude/mcp_apply";',
+	"async function aoMcpStatus(session) {",
+	"    const servers = await session.query.mcpServerStatus();",
+	"    return servers.map((server) => ({",
+	"        name: server.name,",
+	"        status: server.status,",
+	"        scope: server.scope,",
+	"        error: server.error,",
+	'        toolCount: server.status === "connected" ? (server.tools?.length ?? 0) : undefined,',
+	"    }));",
+	"}",
+	"async function aoReconnectMcp(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const name = params?.serverName;",
+	'    if (typeof name !== "string" || name === "") {',
+	'        throw RequestError.invalidParams(undefined, "A reconnect needs a server name.");',
+	"    }",
+	"    // A refusal (the server still wants a sign-in, say) leaves the session fine:",
+	"    // report it with the servers' state rather than as a failed request.",
+	"    let error;",
+	"    try {",
+	"        await session.query.reconnectMcpServer(name);",
+	"    }",
+	"    catch (failure) {",
+	"        error = failure instanceof Error ? failure.message : String(failure);",
+	"    }",
+	"    return { servers: await aoMcpStatus(session), error };",
+	"}",
+	"// setMcpServers replaces the session's whole dynamic set, which includes what the",
+	"// session launched with (AO's own tools, the file-change audit), so each call",
+	"// sends those too. Entries that did not change stay connected.",
+	"async function aoApplyMcp(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const overlay = { ...session.aoMcpOverlay };",
+	"    for (const [name, config] of Object.entries(params?.set ?? {})) {",
+	"        overlay[name] = config;",
+	"    }",
+	"    for (const name of params?.remove ?? []) {",
+	"        delete overlay[name];",
+	"    }",
+	"    const result = await session.query.setMcpServers({ ...session.aoMcpLaunched, ...overlay });",
+	"    session.aoMcpOverlay = overlay;",
+	"    return { errors: result.errors ?? {}, servers: await aoMcpStatus(session) };",
+	"}",
+].join("\n");
+
+/**
+ * Let AO see and change which MCP servers a running Claude agent has.
+ *
+ * claude-agent-acp 0.70 never exposes the SDK's MCP controls. Measured against
+ * Claude Code 2.1.314: `reconnectMcpServer` loads a token another process saved
+ * in 33 ms, mid-turn, and `setMcpServers` adds a server configured after the
+ * query started, or replaces one's headers. So a sign-in, a new server or a new
+ * key reaches a running agent without a restart. Apply after
+ * patchClaudeSubagentControl, whose aoLiveSession this uses.
+ */
+export function patchClaudeMcpControl(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: let the client read and change the live query's MCP servers.")) return false;
+	const goalRegistration = ".onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params))";
+	const steeringMeta = "                steering: {\n                    supported: true,\n                },\n";
+	const sessionRecord = "        this.sessions[sessionId] = {\n            query: q,\n";
+	const patches = [
+		['const STEER_PRIORITY = "now";\n', `const STEER_PRIORITY = "now";\n${MCP_CONTROL_HELPERS}\n`],
+		[
+			steeringMeta,
+			[
+				steeringMeta.trimEnd(),
+				"                // AO: live MCP server status and changes.",
+				"                mcpControl: {",
+				"                    supported: true,",
+				"                    statusMethod: AO_MCP_STATUS_METHOD,",
+				"                    reconnectMethod: AO_MCP_RECONNECT_METHOD,",
+				"                    applyMethod: AO_MCP_APPLY_METHOD,",
+				"                },",
+				"",
+			].join("\n"),
+		],
+		[sessionRecord, `${sessionRecord}            aoMcpLaunched: options.mcpServers,\n`],
+		[
+			goalRegistration,
+			[
+				".onRequest(AO_MCP_STATUS_METHOD, { parse: (params) => params }, async (ctx) => ({ servers: await aoMcpStatus(aoLiveSession(agent, ctx.params)) }))",
+				"        .onRequest(AO_MCP_RECONNECT_METHOD, { parse: (params) => params }, (ctx) => aoReconnectMcp(agent, ctx.params))",
+				"        .onRequest(AO_MCP_APPLY_METHOD, { parse: (params) => params }, (ctx) => aoApplyMcp(agent, ctx.params))",
+				`        ${goalRegistration}`,
+			].join("\n"),
+		],
+	];
+	if (!source.includes("function aoLiveSession(agent, params) {")) {
+		throw new Error("claude-agent-acp no longer matches AO's MCP control patch");
+	}
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's MCP control patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
 export function pruneNodeDistribution(nodeRoot) {
 	// The Unix archives expose npm/corepack as bin/ symlinks into lib/. Remove
 	// the entry points before their targets so packagers never see dangling

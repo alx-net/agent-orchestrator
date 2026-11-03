@@ -326,6 +326,49 @@ func (s *Service) find(ctx context.Context, id string) (domain.AgentAccount, err
 	return domain.AgentAccount{}, ports.ErrAgentAccountUnknown
 }
 
+// ClaudeAccounts lists the Claude Code subscriptions, the computer's own first.
+func (s *Service) ClaudeAccounts(ctx context.Context) ([]domain.AgentAccount, error) {
+	accounts, err := s.accounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.AgentAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Provider == domain.AgentAccountProviderClaude {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
+// ClaudeAccount finds one Claude Code subscription.
+func (s *Service) ClaudeAccount(ctx context.Context, id string) (domain.AgentAccount, error) {
+	account, err := s.find(ctx, id)
+	if err != nil {
+		return domain.AgentAccount{}, err
+	}
+	if account.Provider != domain.AgentAccountProviderClaude {
+		return domain.AgentAccount{}, ports.ErrAgentAccountUnknown
+	}
+	return account, nil
+}
+
+// PrepareClaudeAccount brings the user's settings and MCP servers into the
+// account's folder, as a launch there does.
+func (s *Service) PrepareClaudeAccount(_ context.Context, account domain.AgentAccount) error {
+	provider := s.providers[domain.AgentAccountProviderClaude]
+	if provider == nil {
+		return nil
+	}
+	return s.prepare(provider, account.Home)
+}
+
+// ClaudeMCPCLI is the Claude Code provider's MCP commands, if it has them.
+func (s *Service) ClaudeMCPCLI() ports.MCPCLI {
+	cli, _ := s.providers[domain.AgentAccountProviderClaude].(ports.MCPCLI)
+	return cli
+}
+
 // defaultID is the provider's account for new sessions; the computer's own
 // when none was picked or the picked one was removed.
 func (s *Service) defaultID(ctx context.Context, p domain.AgentAccountProvider) (string, error) {

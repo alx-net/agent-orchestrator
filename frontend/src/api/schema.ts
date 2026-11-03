@@ -1322,6 +1322,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mcp/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve a repo's .mcp.json server for a subscription in that project */
+        post: operations["approveMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a browser sign-in to a server for a subscription or a session's account */
+        post: operations["connectMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a sign-in's state */
+        get: operations["getMcpConnectOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop a sign-in still waiting for the browser */
+        post: operations["cancelMcpConnectOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List MCP servers and their state on each Claude Code subscription; poll while checking is true */
+        get: operations["listMcpServers"];
+        put?: never;
+        /** Add a server to the user's global Claude Code config and bring it to running agents */
+        post: operations["addMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/servers/{serverName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a server from the user's global Claude Code config and from running agents */
+        delete: operations["removeMcpServer"];
+        options?: never;
+        head?: never;
+        /** Replace the headers of a global server whose config holds its key */
+        patch: operations["updateMcpServerKey"];
+        trace?: never;
+    };
+    "/api/v1/mcp/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Really connect to one server and list its tools, and report pass or fail */
+        post: operations["testMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mobile/browser-control": {
         parameters: {
             query?: never;
@@ -3177,6 +3298,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read what MCP servers a session's running agent actually has right now */
+        get: operations["getSessionMcpServers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/mcp-servers/{serverName}/reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Have a session's running agent connect to one server again */
+        post: operations["reconnectSessionMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/merge-policy": {
         parameters: {
             query?: never;
@@ -4470,6 +4625,23 @@ export interface components {
         ActivateConversationBranchResponse: {
             activeBranchId: string;
         };
+        AddMCPServerRequest: {
+            args?: string[];
+            command?: string;
+            env?: {
+                [key: string]: string;
+            };
+            headers?: {
+                [key: string]: string;
+            };
+            name: string;
+            /**
+             * @description For a URL; http by default.
+             * @enum {string}
+             */
+            transport?: "http" | "sse";
+            url?: string;
+        };
         AddProjectInput: {
             asWorkspace?: boolean;
             clonePreparationId?: string;
@@ -5576,7 +5748,9 @@ export interface components {
             error?: string;
             failureReason?: string;
             name: string;
+            scope?: string;
             status: string;
+            toolCount?: null | number;
         };
         ConversationMessageResponse: {
             clientMessageId?: string;
@@ -6301,6 +6475,128 @@ export interface components {
             snapshot?: boolean;
             truncated: boolean;
         };
+        MCPAccountRef: {
+            device?: boolean;
+            email?: string;
+            id: string;
+        };
+        MCPChangeResponse: {
+            applied: components["schemas"]["MCPPropagation"];
+        };
+        MCPConnectOperation: {
+            accountId: string;
+            applied: components["schemas"]["MCPPropagation"];
+            authUrl?: string;
+            error?: string;
+            /** Format: date-time */
+            finishedAt?: null | string;
+            id: string;
+            manageUrl?: string;
+            name: string;
+            sessionId?: string;
+            /** Format: date-time */
+            startedAt: string;
+            /** @enum {string} */
+            state: "waiting" | "waiting_external" | "connected" | "failed" | "timed_out" | "cancelled";
+        };
+        MCPConnectOperationResponse: {
+            operation: components["schemas"]["MCPConnectOperation"];
+        };
+        MCPLiveStatus: {
+            error?: string;
+            status: string;
+            toolCount?: null | number;
+        };
+        MCPPropagation: {
+            /** @description Sessions where the server itself failed, with the reason. */
+            failed?: {
+                [key: string]: string;
+            };
+            /** @description Sessions that have it now, with no restart. */
+            inPlace?: string[];
+            /** @description Sessions restarting once idle, conversation kept. */
+            restarting?: string[];
+        };
+        MCPServerAccountStatus: {
+            accountId: string;
+            /**
+             * @description What can fix or manage this server here.
+             * @enum {string}
+             */
+            action?: "connect" | "approve" | "edit_key" | "manage";
+            /** Format: date-time */
+            checkedAt?: null | string;
+            /** @description The last failure, in the server's or Claude Code's own words. */
+            error?: string;
+            /** @description A running agent reported this, rather than a separate check. */
+            live?: boolean;
+            /** @description Claude Code's own word for the state, shown for a state AO has no word for. */
+            rawStatus?: string;
+            /**
+             * @description The server's state in AO's words; rawStatus has Claude Code's own.
+             * @enum {string}
+             */
+            status: "connected" | "needs_sign_in" | "key_rejected" | "needs_approval" | "rejected" | "failed" | "starting" | "disabled" | "not_checked" | "unknown";
+            /** @description How many tools a connected server exposes, once known. */
+            toolCount?: null | number;
+        };
+        MCPServerPayload: {
+            accounts: components["schemas"]["MCPServerAccountStatus"][];
+            /**
+             * @description How the server authenticates.
+             * @enum {string}
+             */
+            auth: "oauth" | "api_key" | "helper" | "none" | "connector" | "unknown";
+            /** @description AO owns the config, so its key can be changed here. */
+            editable?: boolean;
+            headerNames?: string[];
+            /** @description Where it is managed, when that is outside AO. */
+            manageUrl?: string;
+            name: string;
+            projectId?: string;
+            projectName?: string;
+            /**
+             * @description Where the server is defined.
+             * @enum {string}
+             */
+            scope: "global" | "repo" | "local" | "connector" | "plugin" | "other";
+            /** @description URL or command, with anything credential-shaped removed. */
+            target?: string;
+            /** @description stdio, http, sse, or whatever else Claude Code reports. */
+            transport?: string;
+        };
+        MCPServerTargetRequest: {
+            /** @description Omitted is this computer's own account. */
+            accountId?: string;
+            name: string;
+            /** @description For a server in that project's .mcp.json. */
+            projectId?: string;
+            sessionId?: string;
+        };
+        MCPServerTestResponse: {
+            accountId: string;
+            action?: string;
+            auth?: string;
+            /** Format: date-time */
+            checkedAt: string;
+            error?: string;
+            /** @description What the session's running agent has now, for a session's test. */
+            live?: components["schemas"]["MCPLiveStatus"];
+            name: string;
+            ok: boolean;
+            rawStatus?: string;
+            /** @description Why it passed, or what is wrong, in plain words. */
+            reason: string;
+            status: string;
+            toolCount?: null | number;
+            tools?: string[];
+        };
+        MCPServersResponse: {
+            accounts: components["schemas"]["MCPAccountRef"][];
+            /** @description A check is running; poll and the list will fill in. */
+            checking: boolean;
+            servers: components["schemas"]["MCPServerPayload"][];
+        };
         MarkAllNotificationsReadRequest: {
             /** @description Acknowledge exactly these notifications. Omit to acknowledge every unread notification; paginating clients should send the ids they actually rendered so later pages stay unread. */
             ids?: string[];
@@ -6914,6 +7210,12 @@ export interface components {
             /** @enum {string} */
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
+        };
+        SessionMCPServersResponse: {
+            accountId: string;
+            /** @description A running agent reported this. Otherwise it is a check of what the session's account and folder would have. */
+            live: boolean;
+            servers: components["schemas"]["MCPServerPayload"][];
         };
         SessionMemoryProcessResponse: {
             command: string;
@@ -7779,6 +8081,12 @@ export interface components {
         };
         UpdateHarnessDefaultRequest: {
             disabledModels: null | string[];
+        };
+        UpdateMCPServerKeyRequest: {
+            /** @description Header names and new values. An empty value keeps that header's current one. */
+            headers: {
+                [key: string]: string;
+            } | null;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -12380,6 +12688,450 @@ export interface operations {
             };
             /** @description Bad Gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    approveMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    connectMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getMcpConnectOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP sign-in operation identifier. */
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelMcpConnectOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP sign-in operation identifier. */
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listMcpServers: {
+        parameters: {
+            query?: {
+                /** @description Run a new check even over a fresh one. */
+                refresh?: boolean;
+                /** @description Block until the check finishes. */
+                wait?: boolean;
+                /** @description Return only what is known, starting nothing. */
+                noCheck?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServersResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    addMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddMCPServerRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    removeMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateMcpServerKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMCPServerKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    testMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServerTestResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19374,6 +20126,111 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionMcpServers: {
+        parameters: {
+            query?: {
+                /** @description For a session with no running agent, run a new check. */
+                refresh?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionMCPServersResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    reconnectSessionMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier. */
+                sessionId: string;
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionMCPServersResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

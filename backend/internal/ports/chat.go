@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -720,6 +721,42 @@ type ChatMCPServer struct {
 	Status        string
 	Error         string
 	FailureReason string
+	// ToolCount is how many tools the server exposes, when connected and the
+	// provider reports it.
+	ToolCount *int
+	// Scope is where the provider says the server comes from (user, project,
+	// dynamic, claudeai, ...). Empty when it does not say.
+	Scope string
+}
+
+// Tool server statuses AO names itself. A provider's other words pass through.
+const (
+	ChatMCPStatusReady     = "ready"
+	ChatMCPStatusStarting  = "starting"
+	ChatMCPStatusFailed    = "failed"
+	ChatMCPStatusNeedsAuth = "needs_auth"
+	ChatMCPStatusDisabled  = "disabled"
+)
+
+// ChatMCPReconnectResult is the servers' state after a reconnect. Error holds
+// the provider's reason when it refused; the state is still worth reading.
+type ChatMCPReconnectResult struct {
+	Servers []ChatMCPServer
+	Error   string
+}
+
+// ChatMCPChange changes which tool servers a running agent has. Set values are
+// the server's own config object, and can hold secrets: never log them.
+type ChatMCPChange struct {
+	Set    map[string]json.RawMessage
+	Remove []string
+}
+
+// ChatMCPApplyResult is the servers' state after a change, and the provider's
+// reason per server for any it could not connect.
+type ChatMCPApplyResult struct {
+	Servers []ChatMCPServer
+	Errors  map[string]string
 }
 
 // ChatMCPReloadResult distinguishes a complete post-reload inventory from a
@@ -822,6 +859,15 @@ type (
 	// the conversation, and the only alternative is throwing the session away.
 	ChatMCPReloader interface {
 		ReloadMCPServers(ctx context.Context) (ChatMCPReloadResult, error)
+	}
+	// ChatMCPController reads and changes one tool server at a time in a running
+	// agent. Unlike a reload it is safe during a turn, so a sign-in the agent
+	// itself asked for reaches it right away. A driver's implementation applies
+	// only with ChatCapabilityMCPReload.
+	ChatMCPController interface {
+		MCPServerStatus(ctx context.Context) ([]ChatMCPServer, error)
+		ReconnectMCPServer(ctx context.Context, name string) (ChatMCPReconnectResult, error)
+		ApplyMCPServers(ctx context.Context, change ChatMCPChange) (ChatMCPApplyResult, error)
 	}
 )
 
@@ -1151,6 +1197,9 @@ type ChatEvent struct {
 	// the provider reports servers one at a time, so a consumer merges by name
 	// rather than replacing its whole list.
 	MCPServers []ChatMCPServer
+	// MCPServersComplete marks MCPServers as the provider's whole inventory, so a
+	// server it no longer lists is gone.
+	MCPServersComplete bool
 
 	// Err carries display text and optional typed causes. Its presence does not
 	// imply the conversation is over; check Kind and ControllerState.

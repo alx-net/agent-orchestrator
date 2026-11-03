@@ -119,6 +119,8 @@ type conversation struct {
 	skills            []ports.ChatSkill
 	skillsKnown       bool
 	closed            bool
+	mcpReporting      bool
+	mcpReported       string
 	modeFor           func(ports.PermissionMode) string
 	optionsFor        func(ports.ChatTurnSettings) []SessionOption
 	// requireAdvertised refuses a config option the session did not advertise
@@ -341,6 +343,7 @@ func (c *conversation) start(
 	c.legacyMode = modes != nil
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+	c.reportMCPStatus(mcpStartupReportDelays)
 }
 
 func (c *conversation) ProviderConversationID() string {
@@ -884,6 +887,7 @@ func (c *conversation) finishPrompt(
 	}
 	c.mu.Unlock()
 	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
+	c.reportMCPStatus(mcpTurnEndReportDelays)
 }
 
 func (c *conversation) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {

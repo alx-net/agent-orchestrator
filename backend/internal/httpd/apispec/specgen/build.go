@@ -64,6 +64,8 @@ func Build() ([]byte, error) {
 	r.Spec.Tags = []openapi31.Tag{
 		*(&openapi31.Tag{Name: "agents"}).WithDescription(
 			"Supported and locally runnable agent adapters"),
+		*(&openapi31.Tag{Name: "mcp"}).WithDescription(
+			"MCP servers per Claude Code subscription: status, sign-in, testing, and changes"),
 		*(&openapi31.Tag{Name: "projects"}).WithDescription(
 			"Project registry, configuration, and lifecycle administration"),
 		*(&openapi31.Tag{Name: "sessions"}).WithDescription(
@@ -160,6 +162,26 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersTelemetryIdentityResponse":                 "TelemetryIdentityResponse",
 	"ControllersAgentAccountIDParam":                       "AgentAccountIDParam",
 	"ControllersAgentAccountLoginIDParam":                  "AgentAccountLoginIDParam",
+	"ControllersMCPServerAccountStatus":                    "MCPServerAccountStatus",
+	"ControllersMCPServerPayload":                          "MCPServerPayload",
+	"ControllersMCPAccountRef":                             "MCPAccountRef",
+	"ControllersMCPServersResponse":                        "MCPServersResponse",
+	"ControllersAddMCPServerRequest":                       "AddMCPServerRequest",
+	"ControllersUpdateMCPServerKeyRequest":                 "UpdateMCPServerKeyRequest",
+	"ControllersMCPChangeResponse":                         "MCPChangeResponse",
+	"ControllersMCPPropagation":                            "MCPPropagation",
+	"ControllersMCPServerTargetRequest":                    "MCPServerTargetRequest",
+	"ControllersMCPServerTestResponse":                     "MCPServerTestResponse",
+	"ControllersMCPLiveStatus":                             "MCPLiveStatus",
+	"ControllersMCPConnectOperation":                       "MCPConnectOperation",
+	"ControllersMCPConnectOperationResponse":               "MCPConnectOperationResponse",
+	"ControllersSessionMCPServersResponse":                 "SessionMCPServersResponse",
+	"ControllersMCPServerNameParam":                        "MCPServerNameParam",
+	"ControllersMCPOperationIDParam":                       "MCPOperationIDParam",
+	"ControllersMCPSessionIDParam":                         "MCPSessionIDParam",
+	"ControllersMCPSessionServerParams":                    "MCPSessionServerParams",
+	"ControllersListMCPServersQuery":                       "ListMCPServersQuery",
+	"ControllersSessionMCPServersQuery":                    "SessionMCPServersQuery",
 	"ControllersAgentAccountSessionIDParam":                "AgentAccountSessionIDParam",
 	"ControllersAgentAccountListQuery":                     "AgentAccountListQuery",
 	"ControllersAgentAccountUsageQuery":                    "AgentAccountUsageQuery",
@@ -2104,6 +2126,66 @@ func agentOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/agents/accounts/usage", id: "getAgentAccountUsage", tag: "agents",
 			summary: "Sum each account's model usage in AO sessions", pathParams: []any{controllers.AgentAccountUsageQuery{}},
 			resps: []respUnit{{http.StatusOK, controllers.AgentAccountUsageResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/mcp/servers", id: "listMcpServers", tag: "mcp",
+			summary: "List MCP servers and their state on each Claude Code subscription; poll while checking is true", pathParams: []any{controllers.ListMCPServersQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPServersResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/servers", id: "addMcpServer", tag: "mcp",
+			summary: "Add a server to the user's global Claude Code config and bring it to running agents",
+			reqBody: controllers.AddMCPServerRequest{},
+			resps:   []respUnit{{http.StatusCreated, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/mcp/servers/{serverName}", id: "updateMcpServerKey", tag: "mcp",
+			summary: "Replace the headers of a global server whose config holds its key", pathParams: []any{controllers.MCPServerNameParam{}},
+			reqBody: controllers.UpdateMCPServerKeyRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/mcp/servers/{serverName}", id: "removeMcpServer", tag: "mcp",
+			summary: "Remove a server from the user's global Claude Code config and from running agents", pathParams: []any{controllers.MCPServerNameParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/approve", id: "approveMcpServer", tag: "mcp",
+			summary: "Approve a repo's .mcp.json server for a subscription in that project",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/test", id: "testMcpServer", tag: "mcp",
+			summary: "Really connect to one server and list its tools, and report pass or fail",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPServerTestResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/connect", id: "connectMcpServer", tag: "mcp",
+			summary: "Start a browser sign-in to a server for a subscription or a session's account",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusAccepted, controllers.MCPConnectOperationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/mcp/connect/{operationId}", id: "getMcpConnectOperation", tag: "mcp",
+			summary: "Read a sign-in's state", pathParams: []any{controllers.MCPOperationIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPConnectOperationResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/connect/{operationId}/cancel", id: "cancelMcpConnectOperation", tag: "mcp",
+			summary: "Stop a sign-in still waiting for the browser", pathParams: []any{controllers.MCPOperationIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPConnectOperationResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/mcp-servers", id: "getSessionMcpServers", tag: "mcp",
+			summary: "Read what MCP servers a session's running agent actually has right now", pathParams: []any{controllers.MCPSessionIDParam{}, controllers.SessionMCPServersQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.SessionMCPServersResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/mcp-servers/{serverName}/reconnect", id: "reconnectSessionMcpServer", tag: "mcp",
+			summary: "Have a session's running agent connect to one server again", pathParams: []any{controllers.MCPSessionServerParams{}},
+			resps: []respUnit{{http.StatusOK, controllers.SessionMCPServersResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login", id: "startAgentAccountLogin", tag: "agents",

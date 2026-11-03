@@ -19,6 +19,7 @@ import {
 	patchClaudeContextUsage,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
+	patchClaudeMcpControl,
 	patchClaudeRetryDetails,
 	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
@@ -1058,6 +1059,143 @@ connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => 
 		writeFileSync(adapterPath, adapterSource);
 		expect(() => patchClaudeSubagentControl(adapterPath)).toThrow(/subagent control patch/);
 		expect(readFileSync(adapterPath, "utf8")).toBe(adapterSource);
+	});
+});
+
+describe("patchClaudeMcpControl", () => {
+	// claude-agent-acp 0.70, cut down to the lines the control patches anchor on.
+	const adapterSource = `
+const STEER_PRIORITY = "now";
+function initializeMeta() {
+    return {
+            _meta: {
+                steering: {
+                    supported: true,
+                },
+                goal: {},
+            },
+    };
+}
+function createSession(sessionId, q, options) {
+        this.sessions[sessionId] = {
+            query: q,
+            input: 1,
+        };
+}
+function aoLiveSession(agent, params) {
+    const session = agent.sessions[params?.sessionId];
+    if (!session) {
+        throw RequestError.invalidParams(undefined, "Live Claude session unavailable.");
+    }
+    return session;
+}
+connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params));
+`;
+
+	function load(query) {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		expect(patchClaudeMcpControl(adapterPath)).toBe(true);
+		expect(patchClaudeMcpControl(adapterPath)).toBe(false);
+		const handlers = new Map();
+		const connection = { onRequest: (method, parser, handler) => {
+			handlers.set(method, (params) => handler({ params: parser.parse(params) }));
+			return connection;
+		} };
+		const agent = { sessions: {}, goal: () => ({}) };
+		const RequestError = {
+			invalidParams: (data, message) => Object.assign(new Error(message), { code: -32602, data }),
+		};
+		const adapter = new Function(
+			"connection", "agent", "GOAL_CONTROL_METHOD", "parseGoalRequest", "RequestError",
+			`${readFileSync(adapterPath, "utf8")}\nreturn { initializeMeta, createSession };`,
+		)(connection, agent, "goal", (params) => params, RequestError);
+		const launched = { ao: { type: "stdio", command: "ao" }, audit: { type: "sdk" } };
+		adapter.createSession.call(agent, "s1", query, { mcpServers: launched });
+		return { adapter, agent, handlers, launched };
+	}
+
+	const connected = { name: "linear", status: "connected", scope: "user", tools: [{ name: "a" }, { name: "b" }] };
+	const needsAuth = { name: "sentry", status: "needs-auth", scope: "project" };
+
+	it("advertises the requests next to steering", () => {
+		const { adapter } = load({});
+		expect(adapter.initializeMeta()._meta.mcpControl).toEqual({
+			supported: true,
+			statusMethod: "_claude/mcp_status",
+			reconnectMethod: "_claude/mcp_reconnect",
+			applyMethod: "_claude/mcp_apply",
+		});
+		expect(adapter.initializeMeta()._meta.steering).toEqual({ supported: true });
+	});
+
+	it("reports each live server with its tool count only when connected", async () => {
+		const { handlers } = load({ mcpServerStatus: async () => [connected, needsAuth] });
+		await expect(handlers.get("_claude/mcp_status")({ sessionId: "s1" })).resolves.toEqual({
+			servers: [
+				{ name: "linear", status: "connected", scope: "user", error: undefined, toolCount: 2 },
+				{ name: "sentry", status: "needs-auth", scope: "project", error: undefined, toolCount: undefined },
+			],
+		});
+	});
+
+	it("refuses a session that is not live", async () => {
+		const { handlers } = load({ mcpServerStatus: async () => [] });
+		await expect(handlers.get("_claude/mcp_status")({ sessionId: "gone" })).rejects.toThrow("Live Claude session unavailable.");
+	});
+
+	it("reconnects a named server and reports a refusal with the servers' state", async () => {
+		const reconnected = [];
+		const { handlers } = load({
+			mcpServerStatus: async () => [needsAuth],
+			reconnectMcpServer: async (name) => {
+				reconnected.push(name);
+				if (name === "sentry") throw new Error("Server status: needs-auth");
+			},
+		});
+		const reconnect = handlers.get("_claude/mcp_reconnect");
+		await expect(reconnect({ sessionId: "s1", serverName: "linear" })).resolves.toMatchObject({ error: undefined });
+		const refused = await reconnect({ sessionId: "s1", serverName: "sentry" });
+		expect(refused.error).toBe("Server status: needs-auth");
+		expect(refused.servers.map((server) => server.status)).toEqual(["needs-auth"]);
+		expect(reconnected).toEqual(["linear", "sentry"]);
+		await expect(reconnect({ sessionId: "s1" })).rejects.toThrow("needs a server name");
+	});
+
+	it("keeps what the session launched with whenever it changes the dynamic set", async () => {
+		const sets = [];
+		const { handlers, launched } = load({
+			mcpServerStatus: async () => [connected],
+			setMcpServers: async (servers) => {
+				sets.push(servers);
+				return { added: Object.keys(servers), removed: [], errors: { broken: "no route" } };
+			},
+		});
+		const apply = handlers.get("_claude/mcp_apply");
+		const config = { type: "http", url: "https://example.test/mcp", headers: { "X-Api-Key": "secret" } };
+		const result = await apply({ sessionId: "s1", set: { added: config } });
+		expect(result.errors).toEqual({ broken: "no route" });
+		expect(sets[0]).toEqual({ ...launched, added: config });
+
+		// A later change keeps an earlier one, and a removal drops only its own.
+		await apply({ sessionId: "s1", set: { second: config } });
+		expect(Object.keys(sets[1]).sort()).toEqual(["added", "ao", "audit", "second"]);
+		await apply({ sessionId: "s1", remove: ["added"] });
+		expect(Object.keys(sets[2]).sort()).toEqual(["ao", "audit", "second"]);
+	});
+
+	it("refuses a bridge it no longer recognizes and leaves it untouched", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		for (const changed of [
+			adapterSource.replace('const STEER_PRIORITY = "now";', 'const STEER_PRIORITY = "later";'),
+			adapterSource.replace("query: q,", "q,"),
+			adapterSource.replace("connection.onRequest(GOAL_CONTROL_METHOD", "connection.onNotification(GOAL_CONTROL_METHOD"),
+			adapterSource.replace("function aoLiveSession(agent, params) {", "function other(agent, params) {"),
+		]) {
+			writeFileSync(adapterPath, changed);
+			expect(() => patchClaudeMcpControl(adapterPath)).toThrow(/MCP control patch/);
+			expect(readFileSync(adapterPath, "utf8")).toBe(changed);
+		}
 	});
 });
 

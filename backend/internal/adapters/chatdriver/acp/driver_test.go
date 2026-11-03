@@ -929,6 +929,12 @@ type fakeAgent struct {
 	// subagentControl advertises AO's claude-agent-acp subagent extension.
 	subagentControl bool
 	subagentCalls   []fakeExtensionCall
+	// mcpControl advertises AO's claude-agent-acp MCP extension.
+	mcpControl          bool
+	mcpCalls            []fakeExtensionCall
+	mcpServers          []mcpBridgeServer
+	mcpReconnectRefusal string
+	mcpApplyErrors      map[string]string
 	subagentErr     error
 }
 
@@ -1086,6 +1092,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 	if a.steering {
 		meta["steering"] = map[string]any{"supported": true}
 	}
+	if a.mcpControl {
+		meta[mcpControlExtension] = map[string]any{"supported": true}
+	}
 	if a.subagentControl {
 		meta[subagentControlExtension] = map[string]any{
 			"supported": true, "messageMethod": subagentMessageMethod, "stopMethod": subagentStopMethod,
@@ -1110,6 +1119,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 func (a *fakeAgent) HandleExtensionMethod(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	if method == subagentMessageMethod || method == subagentStopMethod {
 		return a.handleSubagentExtension(method, raw)
+	}
+	if method == mcpStatusMethod || method == mcpReconnectMethod || method == mcpApplyMethod {
+		return a.handleMCPExtension(method, raw)
 	}
 	if method != steeringMethod {
 		return nil, acpsdk.NewMethodNotFound(method)

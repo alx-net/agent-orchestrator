@@ -1030,6 +1030,7 @@ func Run(buildVersion string) error {
 		Agents:             agentSvc,
 		CodexAccounts:      agentSvc,
 		AgentAccounts:      agentAccountSvc,
+		MCPServers:         newMCPServers(ctx, store, agentAccountSvc, chatSvc, sessMgr, log),
 		SystemChecks:       systemChecks,
 		Installer:          systemInstall,
 		Sessions:           sessionSvc,

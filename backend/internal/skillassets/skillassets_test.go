@@ -286,6 +286,42 @@ func TestEmbeddedSendGuidanceKeepsCoordinationTrafficLean(t *testing.T) {
 	}
 }
 
+func TestEmbeddedMCPGuidanceHasAgentsConnectServersThemselves(t *testing.T) {
+	data, err := files.ReadFile("using-ao/commands/mcp.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(data)
+	for _, want := range []string{
+		"ao mcp login <server>",
+		"ao mcp test <server>",
+		"ao mcp ls",
+		"ao mcp add <name> <url>",
+		"ao mcp rm <name>",
+		"Do not ask the user to run `claude`",
+		"Nobody restarts anything",
+		"depends on how the server authenticates, never on its",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Fatalf("commands/mcp.md lost %q", want)
+		}
+	}
+	skill, err := files.ReadFile("using-ao/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[commands/mcp.md](commands/mcp.md)") {
+		t.Fatal("SKILL.md does not list ao mcp")
+	}
+	refs, err := files.ReadFile("using-ao/references.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(refs), "ao mcp login <server>") {
+		t.Fatal("references.md does not route to ao mcp login")
+	}
+}
+
 func TestEmbeddedWaitGuidanceReplacesPolling(t *testing.T) {
 	body, err := files.ReadFile("using-ao/commands/wait.md")
 	if err != nil {

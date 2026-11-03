@@ -18,6 +18,7 @@ import {
 	patchClaudeContextUsage,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
+	patchClaudeMcpControl,
 	patchClaudeRetryDetails,
 	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
@@ -99,6 +100,8 @@ patchClaudeSteerSettlement(claudeAdapter);
 patchClaudeSubagentProgress(claudeAdapter);
 // Extends the PreToolUse block the progress patch writes.
 patchClaudeSubagentControl(claudeAdapter);
+// Uses the session lookup the subagent control patch adds.
+patchClaudeMcpControl(claudeAdapter);
 
 // The Claude Agent SDK declares platform-native Claude executables as optional
 // dependencies. --omit=optional excludes them; this removal is defense-in-depth.

@@ -27,6 +27,7 @@ Natural-language-to-command mappings for common AO tasks.
 | Register a repo as a project | `ao project add --path <abs-path> --name <name>` |
 | List projects | `ao project ls` |
 | Work on code from one of the user's repositories | `ao checkout <project-id>`, then work in the printed path |
+| Connect an MCP server, or check one | `ao mcp login <server>` opens the browser and waits; `ao mcp test <server>` really connects and lists its tools |
 | Check installed agent harnesses and readiness | `ao agent ls --refresh` |
 | Save a repetitive agent task or exact command as a Cue | `ao cue list --json`, then `ao cue create --name "..." --prompt "..."` or `--command "..."` |
 | Rename a worker session (not the orchestrator) | `ao session rename <id> "<name>"` |

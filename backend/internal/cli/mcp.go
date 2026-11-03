@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"unicode/utf8"
 
@@ -30,15 +31,32 @@ const (
 var mcpProtocolVersions = []string{mcpDefaultProtocolVersion, "2025-03-26", "2024-11-05"}
 
 func newMCPCommand(ctx *commandContext) *cobra.Command {
-	return &cobra.Command{
-		Use:    "mcp",
-		Short:  "Serve AO's chat tools over stdio MCP (internal)",
-		Hidden: true,
-		Args:   noArgs,
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Connect, check, and manage MCP servers",
+		Long: "Connect, check, and manage the MCP servers Claude Code agents use.\n\n" +
+			"With no subcommand and piped stdin, it serves AO's own chat tools over stdio MCP, for the agent's harness.",
+		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if stdinIsTerminal(cmd) {
+				return cmd.Help()
+			}
 			return ctx.serveMCP(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
+	addMCPServerCommands(ctx, cmd)
+	return cmd
+}
+
+// stdinIsTerminal tells a person typing `ao mcp` from a harness spawning the
+// stdio server, which always pipes it.
+func stdinIsTerminal(cmd *cobra.Command) bool {
+	file, ok := cmd.InOrStdin().(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 type mcpRequest struct {

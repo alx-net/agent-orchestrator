@@ -3316,6 +3316,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		return c.applyThreadState(ctx, *event.ThreadState, now)
 
 	case ports.ChatEventMCPServers:
+		if event.MCPServersComplete {
+			return c.replaceMCPServers(ctx, event.MCPServers)
+		}
 		if len(event.MCPServers) == 0 {
 			return nil
 		}
@@ -3764,12 +3767,7 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 		if _, seen := c.mcpServers[update.Name]; !seen {
 			c.mcpServerOrder = append(c.mcpServerOrder, update.Name)
 		}
-		c.mcpServers[update.Name] = domain.ConversationMCPServer{
-			Name:          update.Name,
-			Status:        update.Status,
-			Error:         update.Error,
-			FailureReason: update.FailureReason,
-		}
+		c.mcpServers[update.Name] = conversationMCPServer(update)
 		c.mcpServerRevision++
 		c.mcpServerSeenRevision[update.Name] = c.mcpServerRevision
 	}
@@ -3777,6 +3775,126 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 	c.mu.Unlock()
 
 	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
+}
+
+// replaceMCPServers records the provider's whole inventory: a server it no
+// longer lists is gone. Known servers keep their place in the list.
+func (c *Controller) replaceMCPServers(ctx context.Context, servers []ports.ChatMCPServer) error {
+	c.mcpPersistMu.Lock()
+	defer c.mcpPersistMu.Unlock()
+
+	c.mu.Lock()
+	fresh := make(map[string]domain.ConversationMCPServer, len(servers))
+	for _, server := range servers {
+		if server.Name != "" {
+			fresh[server.Name] = conversationMCPServer(server)
+		}
+	}
+	order := make([]string, 0, len(fresh))
+	for _, name := range c.mcpServerOrder {
+		if _, ok := fresh[name]; ok {
+			order = append(order, name)
+		}
+	}
+	for _, server := range servers {
+		if server.Name == "" {
+			continue
+		}
+		if _, known := c.mcpServers[server.Name]; !known {
+			order = append(order, server.Name)
+		}
+	}
+	c.mcpServerRevision++
+	c.mcpServers = fresh
+	c.mcpServerOrder = order
+	c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
+	for name := range fresh {
+		c.mcpServerSeenRevision[name] = c.mcpServerRevision
+	}
+	recorded := c.mcpServersLocked()
+	c.mu.Unlock()
+
+	return c.store.RecordMCPServers(ctx, c.conversation.ID, recorded)
+}
+
+func conversationMCPServer(server ports.ChatMCPServer) domain.ConversationMCPServer {
+	return domain.ConversationMCPServer{
+		Name:          server.Name,
+		Status:        server.Status,
+		Error:         server.Error,
+		FailureReason: server.FailureReason,
+		ToolCount:     server.ToolCount,
+		Scope:         server.Scope,
+	}
+}
+
+// mcpController is the running agent's per-server control, when it has one.
+func (c *Controller) mcpController() (ports.ChatMCPController, bool) {
+	controller, ok := c.conv.(ports.ChatMCPController)
+	return controller, ok && c.Capabilities().Has(ports.ChatCapabilityMCPReload)
+}
+
+// LiveMCPServers reads the servers the running agent has right now.
+func (c *Controller) LiveMCPServers(ctx context.Context) ([]domain.ConversationMCPServer, error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, ErrMCPReloadUnsupported
+	}
+	servers, err := controller.MCPServerStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.replaceMCPServers(ctx, servers); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), nil
+}
+
+// ReconnectMCPServer has the running agent connect again to one server. Unlike
+// ReloadMCPServers it does not wait for the turn: an agent asking for its own
+// sign-in is mid-turn by definition, and only this server's connection changes.
+// reason is the provider's word when it refused.
+func (c *Controller) ReconnectMCPServer(ctx context.Context, name string) (servers []domain.ConversationMCPServer, reason string, err error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, "", ErrMCPReloadUnsupported
+	}
+	if c.handoffActive() {
+		return nil, "", ErrControllerHandoff
+	}
+	result, err := controller.ReconnectMCPServer(ctx, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.replaceMCPServers(ctx, result.Servers); err != nil {
+		return nil, "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), result.Error, nil
+}
+
+// ApplyMCPServers adds, replaces or drops servers in the running agent.
+func (c *Controller) ApplyMCPServers(ctx context.Context, change ports.ChatMCPChange) ([]domain.ConversationMCPServer, map[string]string, error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, nil, ErrMCPReloadUnsupported
+	}
+	if c.handoffActive() {
+		return nil, nil, ErrControllerHandoff
+	}
+	result, err := controller.ApplyMCPServers(ctx, change)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.replaceMCPServers(ctx, result.Servers); err != nil {
+		return nil, nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), result.Errors, nil
 }
 
 func (c *Controller) mcpServersLocked() []domain.ConversationMCPServer {
@@ -3802,7 +3920,7 @@ var ErrMCPReloadUnsupported = errors.New("chat driver cannot reload MCP servers"
 // their request failed for a reason they caused.
 func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.ConversationMCPServer, error) {
 	reloader, ok := c.conv.(ports.ChatMCPReloader)
-	if !ok {
+	if !ok || !c.Capabilities().Has(ports.ChatCapabilityMCPReload) {
 		return nil, ErrMCPReloadUnsupported
 	}
 
@@ -3864,12 +3982,7 @@ func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.Conversatio
 		if !seen {
 			freshOrder = append(freshOrder, server.Name)
 		}
-		fresh[server.Name] = domain.ConversationMCPServer{
-			Name:          server.Name,
-			Status:        server.Status,
-			Error:         server.Error,
-			FailureReason: server.FailureReason,
-		}
+		fresh[server.Name] = conversationMCPServer(server)
 	}
 	c.mcpServers = fresh
 	c.mcpServerOrder = freshOrder

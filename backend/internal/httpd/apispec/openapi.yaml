@@ -3235,6 +3235,357 @@ paths:
       summary: Fetch link-preview metadata (Open Graph) for an external URL
       tags:
       - link-preview
+  /api/v1/mcp/approve:
+    post:
+      operationId: approveMcpServer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPServerTargetRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPChangeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Approve a repo's .mcp.json server for a subscription in that project
+      tags:
+      - mcp
+  /api/v1/mcp/connect:
+    post:
+      operationId: connectMcpServer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPServerTargetRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPConnectOperationResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Start a browser sign-in to a server for a subscription or a session's
+        account
+      tags:
+      - mcp
+  /api/v1/mcp/connect/{operationId}:
+    get:
+      operationId: getMcpConnectOperation
+      parameters:
+      - description: MCP sign-in operation identifier.
+        in: path
+        name: operationId
+        required: true
+        schema:
+          description: MCP sign-in operation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPConnectOperationResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a sign-in's state
+      tags:
+      - mcp
+  /api/v1/mcp/connect/{operationId}/cancel:
+    post:
+      operationId: cancelMcpConnectOperation
+      parameters:
+      - description: MCP sign-in operation identifier.
+        in: path
+        name: operationId
+        required: true
+        schema:
+          description: MCP sign-in operation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPConnectOperationResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Stop a sign-in still waiting for the browser
+      tags:
+      - mcp
+  /api/v1/mcp/servers:
+    get:
+      operationId: listMcpServers
+      parameters:
+      - description: Run a new check even over a fresh one.
+        in: query
+        name: refresh
+        schema:
+          description: Run a new check even over a fresh one.
+          type: boolean
+      - description: Block until the check finishes.
+        in: query
+        name: wait
+        schema:
+          description: Block until the check finishes.
+          type: boolean
+      - description: Return only what is known, starting nothing.
+        in: query
+        name: noCheck
+        schema:
+          description: Return only what is known, starting nothing.
+          type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPServersResponse'
+          description: OK
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List MCP servers and their state on each Claude Code subscription;
+        poll while checking is true
+      tags:
+      - mcp
+    post:
+      operationId: addMcpServer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMCPServerRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPChangeResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Add a server to the user's global Claude Code config and bring it to
+        running agents
+      tags:
+      - mcp
+  /api/v1/mcp/servers/{serverName}:
+    delete:
+      operationId: removeMcpServer
+      parameters:
+      - description: MCP server name.
+        in: path
+        name: serverName
+        required: true
+        schema:
+          description: MCP server name.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPChangeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Remove a server from the user's global Claude Code config and from
+        running agents
+      tags:
+      - mcp
+    patch:
+      operationId: updateMcpServerKey
+      parameters:
+      - description: MCP server name.
+        in: path
+        name: serverName
+        required: true
+        schema:
+          description: MCP server name.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMCPServerKeyRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPChangeResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace the headers of a global server whose config holds its key
+      tags:
+      - mcp
+  /api/v1/mcp/test:
+    post:
+      operationId: testMcpServer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPServerTargetRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPServerTestResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Really connect to one server and list its tools, and report pass or
+        fail
+      tags:
+      - mcp
   /api/v1/mobile/browser-control:
     post:
       operationId: setMobileBrowserRemoteAccess
@@ -8972,6 +9323,98 @@ paths:
       summary: Mark a session terminated and tear down runtime/workspace resources
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/mcp-servers:
+    get:
+      operationId: getSessionMcpServers
+      parameters:
+      - description: Session identifier.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier.
+          type: string
+      - description: For a session with no running agent, run a new check.
+        in: query
+        name: refresh
+        schema:
+          description: For a session with no running agent, run a new check.
+          type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMCPServersResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read what MCP servers a session's running agent actually has right
+        now
+      tags:
+      - mcp
+  /api/v1/sessions/{sessionId}/mcp-servers/{serverName}/reconnect:
+    post:
+      operationId: reconnectSessionMcpServer
+      parameters:
+      - description: Session identifier.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier.
+          type: string
+      - description: MCP server name.
+        in: path
+        name: serverName
+        required: true
+        schema:
+          description: MCP server name.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionMCPServersResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Have a session's running agent connect to one server again
+      tags:
+      - mcp
   /api/v1/sessions/{sessionId}/merge-policy:
     patch:
       operationId: setSessionMergePolicy
@@ -13327,6 +13770,35 @@ components:
       required:
       - activeBranchId
       type: object
+    AddMCPServerRequest:
+      properties:
+        args:
+          items:
+            type: string
+          type: array
+        command:
+          type: string
+        env:
+          additionalProperties:
+            type: string
+          type: object
+        headers:
+          additionalProperties:
+            type: string
+          type: object
+        name:
+          type: string
+        transport:
+          description: For a URL; http by default.
+          enum:
+          - http
+          - sse
+          type: string
+        url:
+          type: string
+      required:
+      - name
+      type: object
     AddProjectInput:
       properties:
         asWorkspace:
@@ -16276,8 +16748,14 @@ components:
           type: string
         name:
           type: string
+        scope:
+          type: string
         status:
           type: string
+        toolCount:
+          type:
+          - "null"
+          - integer
       required:
       - name
       - status
@@ -18211,6 +18689,286 @@ components:
       - entries
       - truncated
       type: object
+    MCPAccountRef:
+      properties:
+        device:
+          type: boolean
+        email:
+          type: string
+        id:
+          type: string
+      required:
+      - id
+      type: object
+    MCPChangeResponse:
+      properties:
+        applied:
+          $ref: '#/components/schemas/MCPPropagation'
+      required:
+      - applied
+      type: object
+    MCPConnectOperation:
+      properties:
+        accountId:
+          type: string
+        applied:
+          $ref: '#/components/schemas/MCPPropagation'
+        authUrl:
+          type: string
+        error:
+          type: string
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        manageUrl:
+          type: string
+        name:
+          type: string
+        sessionId:
+          type: string
+        startedAt:
+          format: date-time
+          type: string
+        state:
+          enum:
+          - waiting
+          - waiting_external
+          - connected
+          - failed
+          - timed_out
+          - cancelled
+          type: string
+      required:
+      - id
+      - name
+      - accountId
+      - state
+      - applied
+      - startedAt
+      type: object
+    MCPConnectOperationResponse:
+      properties:
+        operation:
+          $ref: '#/components/schemas/MCPConnectOperation'
+      required:
+      - operation
+      type: object
+    MCPLiveStatus:
+      properties:
+        error:
+          type: string
+        status:
+          type: string
+        toolCount:
+          type:
+          - "null"
+          - integer
+      required:
+      - status
+      type: object
+    MCPPropagation:
+      properties:
+        failed:
+          additionalProperties:
+            type: string
+          description: Sessions where the server itself failed, with the reason.
+          type: object
+        inPlace:
+          description: Sessions that have it now, with no restart.
+          items:
+            type: string
+          type: array
+        restarting:
+          description: Sessions restarting once idle, conversation kept.
+          items:
+            type: string
+          type: array
+      type: object
+    MCPServerAccountStatus:
+      properties:
+        accountId:
+          type: string
+        action:
+          description: What can fix or manage this server here.
+          enum:
+          - connect
+          - approve
+          - edit_key
+          - manage
+          type: string
+        checkedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        error:
+          description: The last failure, in the server's or Claude Code's own words.
+          type: string
+        live:
+          description: A running agent reported this, rather than a separate check.
+          type: boolean
+        rawStatus:
+          description: Claude Code's own word for the state, shown for a state AO
+            has no word for.
+          type: string
+        status:
+          description: The server's state in AO's words; rawStatus has Claude Code's
+            own.
+          enum:
+          - connected
+          - needs_sign_in
+          - key_rejected
+          - needs_approval
+          - rejected
+          - failed
+          - starting
+          - disabled
+          - not_checked
+          - unknown
+          type: string
+        toolCount:
+          description: How many tools a connected server exposes, once known.
+          type:
+          - "null"
+          - integer
+      required:
+      - accountId
+      - status
+      type: object
+    MCPServerPayload:
+      properties:
+        accounts:
+          items:
+            $ref: '#/components/schemas/MCPServerAccountStatus'
+          type: array
+        auth:
+          description: How the server authenticates.
+          enum:
+          - oauth
+          - api_key
+          - helper
+          - none
+          - connector
+          - unknown
+          type: string
+        editable:
+          description: AO owns the config, so its key can be changed here.
+          type: boolean
+        headerNames:
+          items:
+            type: string
+          type: array
+        manageUrl:
+          description: Where it is managed, when that is outside AO.
+          type: string
+        name:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        scope:
+          description: Where the server is defined.
+          enum:
+          - global
+          - repo
+          - local
+          - connector
+          - plugin
+          - other
+          type: string
+        target:
+          description: URL or command, with anything credential-shaped removed.
+          type: string
+        transport:
+          description: stdio, http, sse, or whatever else Claude Code reports.
+          type: string
+      required:
+      - name
+      - scope
+      - auth
+      - accounts
+      type: object
+    MCPServerTargetRequest:
+      properties:
+        accountId:
+          description: Omitted is this computer's own account.
+          type: string
+        name:
+          type: string
+        projectId:
+          description: For a server in that project's .mcp.json.
+          type: string
+        sessionId:
+          type: string
+      required:
+      - name
+      type: object
+    MCPServerTestResponse:
+      properties:
+        accountId:
+          type: string
+        action:
+          type: string
+        auth:
+          type: string
+        checkedAt:
+          format: date-time
+          type: string
+        error:
+          type: string
+        live:
+          $ref: '#/components/schemas/MCPLiveStatus'
+          description: What the session's running agent has now, for a session's test.
+        name:
+          type: string
+        ok:
+          type: boolean
+        rawStatus:
+          type: string
+        reason:
+          description: Why it passed, or what is wrong, in plain words.
+          type: string
+        status:
+          type: string
+        toolCount:
+          type:
+          - "null"
+          - integer
+        tools:
+          items:
+            type: string
+          type: array
+      required:
+      - ok
+      - name
+      - accountId
+      - status
+      - reason
+      - checkedAt
+      type: object
+    MCPServersResponse:
+      properties:
+        accounts:
+          items:
+            $ref: '#/components/schemas/MCPAccountRef'
+          type: array
+        checking:
+          description: A check is running; poll and the list will fill in.
+          type: boolean
+        servers:
+          items:
+            $ref: '#/components/schemas/MCPServerPayload'
+          type: array
+      required:
+      - servers
+      - accounts
+      - checking
+      type: object
     MarkAllNotificationsReadRequest:
       properties:
         ids:
@@ -19734,6 +20492,23 @@ components:
       required:
       - supported
       - targetMode
+      type: object
+    SessionMCPServersResponse:
+      properties:
+        accountId:
+          type: string
+        live:
+          description: A running agent reported this. Otherwise it is a check of what
+            the session's account and folder would have.
+          type: boolean
+        servers:
+          items:
+            $ref: '#/components/schemas/MCPServerPayload'
+          type: array
+      required:
+      - servers
+      - accountId
+      - live
       type: object
     SessionMemoryProcessResponse:
       properties:
@@ -21942,6 +22717,19 @@ components:
       required:
       - disabledModels
       type: object
+    UpdateMCPServerKeyRequest:
+      properties:
+        headers:
+          additionalProperties:
+            type: string
+          description: Header names and new values. An empty value keeps that header's
+            current one.
+          type:
+          - object
+          - "null"
+      required:
+      - headers
+      type: object
     UpdateProjectSettingsInput:
       properties:
         config:
@@ -22913,6 +23701,9 @@ components:
 tags:
 - description: Supported and locally runnable agent adapters
   name: agents
+- description: 'MCP servers per Claude Code subscription: status, sign-in, testing,
+    and changes'
+  name: mcp
 - description: Project registry, configuration, and lifecycle administration
   name: projects
 - description: Agent session lifecycle and messaging

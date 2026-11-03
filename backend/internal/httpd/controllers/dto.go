@@ -3537,6 +3537,10 @@ type ConversationMCPServerPayload struct {
 	// which is actionable in a way a message is not.
 	Error         string `json:"error,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
+	// ToolCount is how many tools the server exposes, when connected and known.
+	ToolCount *int `json:"toolCount,omitempty"`
+	// Scope is where the provider says the server comes from.
+	Scope string `json:"scope,omitempty"`
 }
 
 // ReloadConversationMCPServersResponse reports the tool servers after a reload.
