@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -309,6 +310,57 @@ func TestMCPApproveWritesOnlyThatAccountsProjectEntry(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(repo); err != nil || len(entries) != 0 {
 		t.Fatalf("the repo changed: %v %v", entries, err)
+	}
+}
+
+// Claude Code reads approvals for a linked worktree from the main checkout's
+// entry, so an approval under the worktree's path alone never counts.
+func TestMCPApproveInAWorktreeApprovesTheMainCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	c := fakeClaude(t, "")
+	account := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, worktree := filepath.Join(base, "main"), filepath.Join(base, "wt")
+	if err := os.Mkdir(main, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"worktree", "add", "-q", "--detach", worktree},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = main
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := c.MCPApprove(account, worktree, "mlflow"); err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		Projects map[string]struct {
+			Trust   bool     `json:"hasTrustDialogAccepted"`
+			Enabled []string `json:"enabledMcpjsonServers"`
+		} `json:"projects"`
+	}
+	data, err := os.ReadFile(filepath.Join(account, ".claude.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{worktree, main} {
+		entry := saved.Projects[filepath.ToSlash(key)]
+		if !entry.Trust || len(entry.Enabled) != 1 || entry.Enabled[0] != "mlflow" {
+			t.Fatalf("entry for %s = %+v", key, entry)
+		}
 	}
 }
 

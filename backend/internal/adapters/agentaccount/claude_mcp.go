@@ -136,12 +136,10 @@ func (c *Claude) updateMCPProject(home, dir string, change func(map[string]json.
 	if dir == "" {
 		return errors.New("no folder to approve servers in")
 	}
-	// Claude Code keys projects by the real path, with forward slashes.
-	key, err := filepath.EvalSymlinks(dir)
+	keys, err := mcpProjectKeys(dir)
 	if err != nil {
 		return err
 	}
-	key = filepath.ToSlash(key)
 	mcpConfigMu.Lock()
 	defer mcpConfigMu.Unlock()
 	path := c.mcpConfigPath(home)
@@ -150,12 +148,49 @@ func (c *Claude) updateMCPProject(home, dir string, change func(map[string]json.
 		return err // Claude's to repair; never overwrite it
 	}
 	projects := object(config["projects"])
-	project := object(projects[key])
-	project["hasTrustDialogAccepted"] = json.RawMessage("true")
-	change(project)
-	projects[key] = encode(project)
+	for _, key := range keys {
+		project := object(projects[key])
+		project["hasTrustDialogAccepted"] = json.RawMessage("true")
+		change(project)
+		projects[key] = encode(project)
+	}
 	config["projects"] = encode(projects)
 	return writeObject(path, config)
+}
+
+// mcpProjectKeys names the entries Claude Code consults for dir, by real path
+// with forward slashes. In a linked git worktree it reads MCP approvals from the
+// main checkout's entry, not the worktree's (measured on 2.1.314: an approval
+// under the worktree's path alone leaves `mcp login` refusing), so approving in
+// one worktree of a repository approves it for all of them.
+func mcpProjectKeys(dir string) ([]string, error) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, err
+	}
+	key := filepath.ToSlash(resolved)
+	if root, ok := mainCheckout(resolved); ok && root != key {
+		return []string{key, root}, nil
+	}
+	return []string{key}, nil
+}
+
+// mainCheckout finds the repository's main checkout. Not a repository, no git, or
+// a bare repository (which has no main checkout) all report false.
+func mainCheckout(dir string) (string, bool) {
+	out, err := aoprocess.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return "", false
+	}
+	common := strings.TrimSpace(string(out))
+	if filepath.Base(common) != ".git" {
+		return "", false
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(common))
+	if err != nil {
+		return "", false
+	}
+	return filepath.ToSlash(root), true
 }
 
 // MCPForgetAuthCache drops entries from the file where Claude Code remembers a
