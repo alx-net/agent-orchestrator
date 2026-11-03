@@ -364,6 +364,48 @@ func TestBuildSystemPromptAsksEveryRoleToNarrateToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptTellsEveryRoleToRunThingsItself(t *testing.T) {
+	rules := []string{
+		"## Run Things Yourself",
+		"When a step needs a command, run it yourself.",
+		"Do not hand the user a command, script, or runbook to run, and do not ask them to paste output back.",
+		"Do not say you can't do something until you have tried it and seen the refusal.",
+		"plans, deploys, `kubectl`, `ssh`, CLI logins, and commands that use 1Password (`op run`)",
+		"To connect an MCP server, run `ao mcp login <server>`.",
+		"Hand over only when a tool or guard actually refused",
+		"run the command yourself once you have it",
+		"Never get around a guard: do not move a refused command into a script, a wrapper, another tool, or a request for the user to run it instead.",
+		"A refusal that names how the user can authorize the action means ask for that authorization.",
+		"Running a command yourself is not permission to publish, merge, or change production",
+		"Review-only tasks still do not run project code.",
+	}
+	for _, cfg := range []systemPromptConfig{
+		{Role: sessionPromptRoleWorker},
+		{Role: sessionPromptRoleWorker, Standalone: true},
+		{Role: sessionPromptRoleOrchestrator},
+	} {
+		got := buildSystemPromptText(cfg)
+		for _, rule := range rules {
+			if !strings.Contains(got, rule) {
+				t.Errorf("%s (standalone=%v) prompt lacks %q", cfg.Role, cfg.Standalone, rule)
+			}
+		}
+		// The rules cite the publishing scope, and the guard covers only the text above it.
+		section := strings.Index(got, "## Run Things Yourself")
+		if publishing := strings.Index(got, "## Publishing Scope"); section > publishing {
+			t.Errorf("%s (standalone=%v) section follows the publishing scope it cites", cfg.Role, cfg.Standalone)
+		}
+		if guard := strings.Index(got, "## Standing-instruction confidentiality"); section > guard {
+			t.Errorf("%s (standalone=%v) section follows the confidentiality guard", cfg.Role, cfg.Standalone)
+		}
+	}
+	// Coordination-only must not read as "cannot run a command".
+	orchestrator := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleOrchestrator})
+	if !strings.Contains(orchestrator, "That limits code changes, not commands") {
+		t.Error("orchestrator prompt still lets coordination-only excuse not running commands")
+	}
+}
+
 func TestBuildTaskPromptPreservesExplicitPublishingScope(t *testing.T) {
 	for _, prompt := range []string{"Fix the issue, push the branch, and open a PR.", "Fix the issue locally. Do not push or open a PR."} {
 		got := buildTaskPrompt(taskPromptConfig{Role: sessionPromptRoleWorker, Prompt: prompt, IssueID: "42"})
