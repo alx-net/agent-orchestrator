@@ -54,6 +54,33 @@ describe("Run on an agent's shell block", () => {
 		});
 	});
 
+	it("reports a failure, re-enables Run, and refreshes the tabs for a shell left open", async () => {
+		mocks.post.mockResolvedValue({ error: { message: "The shell did not become ready; the terminal remains open for manual use" } });
+		const showGlobalToast = vi.fn();
+		useUiStore.setState({ showGlobalToast });
+		const client = new QueryClient();
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+		render(
+			<QueryClientProvider client={client}>
+				<RunCommandProvider sessionId="kugelaudio-2">
+					<RunnableCode><ChatMarkdown text={"```sh\nls\n```"} /></RunnableCode>
+				</RunCommandProvider>
+			</QueryClientProvider>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Run this command in a terminal" }));
+		await userEvent.click(await screen.findByRole("button", { name: "Run" }));
+
+		await waitFor(() => expect(showGlobalToast).toHaveBeenCalledWith(
+			"Could not run the command.",
+			"The shell did not become ready; the terminal remains open for manual use",
+			"error",
+		));
+		expect(invalidate).toHaveBeenCalledWith({ queryKey: ["shell-terminals"] });
+		expect(useUiStore.getState().activeShellTerminalHandleId).toBeNull();
+		await waitFor(() => expect(screen.getByRole("button", { name: "Run this command in a terminal" })).toBeEnabled());
+	});
+
 	it("does not run anything when the user cancels", async () => {
 		renderReply("```bash\nterraform apply\n```");
 		await userEvent.click(screen.getByRole("button", { name: "Run this command in a terminal" }));

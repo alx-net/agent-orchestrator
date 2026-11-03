@@ -1,12 +1,11 @@
 /**
  * Run a shell command from an agent's reply, as the user.
  *
- * Agents often stop on a step only the user may take (a guarded apply, an
- * unlocked 1Password, an interactive prompt) and hand over a code block to
- * paste into a terminal, then ask for the output back. The Run button does
- * both halves: the daemon opens a shell tab in the session's worktree, types
- * the command, and sends the exit status and output to the agent when the
- * shell returns to its prompt.
+ * Agents are told to run commands themselves, but one may still hand over a code
+ * block for a step that was refused or needs the user. The Run button saves the
+ * pasting back and forth: the daemon opens a shell tab in the session's worktree,
+ * runs the command, and sends the exit status and output to the agent when it
+ * ends, even if the daemon restarted in between.
  */
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
@@ -79,6 +78,8 @@ export function RunCommandProvider({ sessionId, children }: { sessionId?: string
 			setActiveShellTerminal(terminal.handleId);
 		} catch (error) {
 			showGlobalToast(t("runCommand.failed"), apiErrorMessage(error, t("runCommand.failed")), "error");
+			// A shell that never became ready stays open for manual use, so it must get its tab.
+			void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		} finally {
 			pendingRef.current = false;
 			setPending(null);
