@@ -1125,6 +1125,7 @@ export function ActivityRow({ activity }: { activity: ConversationActivity }) {
 	else if (activity.detail?.event === "workspace.setup") content = <ProjectSetupRow activity={activity} />;
 	else if (activity.detail?.event === "account.switched") content = <AccountSwitchedRow accountId={activity.detail.accountId} />;
 	else if (activity.detail?.event === "account.limit_switch" && activity.detail.phase) content = <UsageLimitSwitchRow detail={activity.detail} />;
+	else if (activity.detail?.event === "mcp.agent_restarted") content = <McpAgentRestartedRow />;
 	else if (renderRef) content = <RenderFrame render={renderRef} />;
 	else if (artifactRef) content = <RenderFrame artifact={artifactRef} />;
 	else content = <GenericActivityRow activity={activity} />;
@@ -2547,6 +2548,12 @@ function AccountSwitchedRow({ accountId }: { accountId?: string }) {
 	const { t } = useTranslation();
 	const label = useAgentAccountLabel();
 	return <TwoRowTimelineMarker message={t("chat.accountSwitched", { email: label(accountId) })} detail={t("chat.accountSwitchedDetail")} wrapDetail />;
+}
+
+/** The agent could not take an MCP server change in place, so AO restarted it. */
+function McpAgentRestartedRow() {
+	const { t } = useTranslation();
+	return <TwoRowTimelineMarker message={t("chat.mcpAgentRestarted")} />;
 }
 
 /** Where AO moved a turn its account's usage limit refused: switching, then

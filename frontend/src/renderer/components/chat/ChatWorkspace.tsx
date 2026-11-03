@@ -165,12 +165,13 @@ import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
 import { ElicitationDock, ElicitationHistory } from "./ElicitationDock";
-import { McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
+import { McpConnectBanner, McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 import {
 	activeTurn,
 	activityPlan,
 	brokenMcpServers,
+	signInMcpServers,
 	can,
 	isCompaction,
 	isSteer,
@@ -1483,6 +1484,7 @@ function ChatWorkspaceContent({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
+	const signInServers = useMemo(() => signInMcpServers(snapshot), [snapshot]);
 	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() => latestPendingInteraction(snapshot.items, "approval", turn),
@@ -1933,6 +1935,7 @@ function ChatWorkspaceContent({
 						shellError={shellError}
 					/>
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
+					{activeRemoteHostId || session?.cloud ? null : <McpConnectBanner sessionId={snapshot.sessionId} servers={signInServers} />}
 					<VersionSwitchBanner
 						staleBinary={session?.staleBinary}
 						hostId={activeRemoteHostId}

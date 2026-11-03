@@ -517,6 +517,7 @@ export interface SystemEventDetail {
 		| "account.switched"
 		/** AO moving a turn its account's usage limit refused to an account with usage left. */
 		| "account.limit_switch"
+		| "mcp.agent_restarted"
 		/** A Cloud turn ran a weaker approval mode than it asked for, which its model does not offer; the summary says which. */
 		| "approval_mode.substituted";
 	/** workspace.script.run: one Setup or Cleanup run, grouped from its workspace.script.step events. */
@@ -897,6 +898,10 @@ export interface McpServer {
 	error?: string;
 	/** Its classification of the failure, which is actionable in a way a message is not. */
 	failureReason?: string;
+	/** How many tools it exposes, when connected and the provider reports it. */
+	toolCount?: number;
+	/** Where the provider says it comes from (user, project, claudeai, ...). */
+	scope?: string;
 }
 
 export interface ConversationSnapshot {
@@ -998,6 +1003,14 @@ export function brokenMcpServers(snapshot: ConversationSnapshot): McpServer[] {
 	return (snapshot.mcpServers ?? []).filter(
 		(server) => server.status === "failed" || server.status === "cancelled",
 	);
+}
+
+/**
+ * Servers the running agent lacks because nobody signed in. A claude.ai connector
+ * is left out: the user may never have wanted it, and it is a claude.ai setting.
+ */
+export function signInMcpServers(snapshot: ConversationSnapshot): McpServer[] {
+	return (snapshot.mcpServers ?? []).filter((server) => server.status === "needs_auth" && server.scope !== "claudeai");
 }
 
 /** Whether the provider is demanding credentials the daemon does not hold. */

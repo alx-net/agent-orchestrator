@@ -418,6 +418,19 @@ describe("ActivityRow", () => {
 		expect(screen.getByRole("button").textContent).not.toContain("`");
 	});
 
+	it("says in one quiet line that AO restarted the agent for an MCP change", () => {
+		render(
+			<ActivityRow activity={{
+				kind: "activity", id: "mcp-restart", sequence: 1, revision: 0,
+				createdAt: "2026-08-23T00:00:00Z", activityKind: "system",
+				status: "completed", summary: "Restarted the agent to load MCP server changes",
+				detail: { event: "mcp.agent_restarted" },
+			}} />,
+		);
+		expect(screen.getByText("Restarted the agent to load MCP server changes. The conversation is kept.")).toBeInTheDocument();
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+	});
+
 	it("shows a finished project setup with its duration and expandable output", () => {
 		render(
 			<ActivityRow activity={{
