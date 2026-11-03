@@ -33,7 +33,7 @@ function workspace(id: string, sessions: WorkspaceSession[], name = id): Workspa
 }
 
 function main(overrides: Partial<MainAgentSummary> = {}): MainAgentSummary {
-	return { state: "idle", turnId: "turn-1", notes: [], decisions: [], sent: [], ...overrides };
+	return { state: "idle", turnId: "turn-1", notes: [], sent: [], ...overrides };
 }
 
 function card(id: string, overrides: Partial<SubagentCard> = {}): SubagentCard {
@@ -47,7 +47,6 @@ function card(id: string, overrides: Partial<SubagentCard> = {}): SubagentCard {
 		startedAt: "2026-10-26T10:00:00.000Z",
 		updatedAt: "2026-10-26T10:00:00.000Z",
 		notes: [],
-		decisions: [],
 		toolCount: 0,
 		inbox: [],
 		...overrides,

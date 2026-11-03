@@ -46,12 +46,12 @@ export interface AgentOutcome {
 }
 
 /**
- * A `Status:` or `Decision:` line the agent wrote, or how it finished. An
+ * A `Status:` line the agent wrote, or how it finished. An
  * outcome is always the newest entry of its turn. The main agent's log also
  * opens each turn with a `turn` entry: the start of the message that began it.
  */
 export interface SubagentNote {
-	kind: "status" | "decision" | "outcome" | "turn";
+	kind: "status" | "outcome" | "turn";
 	text: string;
 	/** When the narration block carrying the line started. Lines in one block share it. */
 	at: string;
@@ -87,9 +87,8 @@ export interface SubagentCard {
 	blockedOn?: string;
 	/** How a settled subagent finished; absent while it runs. */
 	result?: AgentOutcome;
-	/** Status and decision lines, in the order they were written, then its outcome. */
+	/** Status lines, in the order they were written, then its outcome. */
 	notes: SubagentNote[];
-	decisions: SubagentNote[];
 	toolCount: number;
 	lastToolName?: string;
 	/** The task the main agent gave it. */
@@ -150,13 +149,11 @@ export interface MainAgentSummary {
 	result?: AgentOutcome;
 	/**
 	 * The session's running log, oldest first: for every loaded turn that ran, a
-	 * `turn` entry with the message that started it, the status and decision
-	 * lines of its assistant messages, then its outcome once it settled. Only the
+	 * `turn` entry with the message that started it, the status lines of its
+	 * assistant messages, then its outcome once it settled. Only the
 	 * newest {@link MAIN_LOG_LIMIT} lines are kept, each with its turn's entry.
 	 */
 	notes: SubagentNote[];
-	/** Every decision line across the loaded turns, oldest first. */
-	decisions: SubagentNote[];
 	/** What the person steered the running turn with. */
 	sent: SentMessage[];
 }
@@ -198,19 +195,19 @@ function narrationText(activity: ConversationActivity): string {
 	return "";
 }
 
-type ParsedLine = { kind: "status" | "decision"; text: string };
+type ParsedLine = { kind: "status"; text: string };
 
 // Line-start label, case-insensitive. Tolerates the markdown the model tends to
-// wrap it in ("- **Status:** …", "**Decision**: …").
-const NOTE_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?(status|decision)(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*?)\s*(?:\*\*|__)?\s*$/i;
+// wrap it in ("- **Status:** …", "**Status**: …").
+const NOTE_LINE = /^(?:[-*+•]\s+|>\s*)?(?:\*\*|__)?status(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.*?)\s*(?:\*\*|__)?\s*$/i;
 
-/** One narration line as a status or decision note, or nothing. */
+/** One narration line as a status note, or nothing. */
 export function parseSubagentNoteLine(line: string): ParsedLine | undefined {
 	const match = NOTE_LINE.exec(line.trim());
 	if (!match) return undefined;
-	const text = match[2]?.trim();
+	const text = match[1]?.trim();
 	if (!text) return undefined;
-	return { kind: match[1]!.toLowerCase() === "decision" ? "decision" : "status", text };
+	return { kind: "status", text };
 }
 
 // `Outcome: done — <summary>`, `Outcome: blocked - <on what>`, `Outcome: failed: <why>`,
@@ -569,11 +566,10 @@ interface TurnLog {
 	key: string;
 	/** The message that started the turn. */
 	divider?: SubagentNote;
-	/** Its status and decision lines, then its outcome once it settled. */
+	/** Its status lines, then its outcome once it settled. */
 	body: SubagentNote[];
-	/** Its status and decision lines alone. */
+	/** Its status lines alone. */
 	lines: SubagentNote[];
-	decisions: SubagentNote[];
 }
 
 function messageKey(message: ConversationMessage): string {
@@ -670,7 +666,6 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			divider: prompt ? turnEntry(prompt) : undefined,
 			body: outcome ? [...lines, outcomeNote(outcome)] : lines,
 			lines,
-			decisions: lines.filter((note) => note.kind === "decision"),
 		};
 	}
 
@@ -773,7 +768,6 @@ export function createSubagentBoardDeriver(): SubagentBoardDeriver {
 			blockedOn,
 			result,
 			notes: cappedLog(turnLogs, MAIN_LOG_LIMIT),
-			decisions: turnLogs.flatMap((log) => log.decisions),
 			sent: inputs.steers.map(steerMessage),
 		};
 		main = { key, logs: turnLogs, summary };
@@ -1039,7 +1033,6 @@ function buildCard(
 		blockedOn: lane === "needs_you" ? blockedOn : undefined,
 		result,
 		notes,
-		decisions: notes.filter((note) => note.kind === "decision"),
 		toolCount: Math.max(toolCount, typeof detail.progressToolUses === "number" ? detail.progressToolUses : 0),
 		lastToolName: text(detail.lastToolName) ?? lastToolName,
 		prompt,
@@ -1086,7 +1079,7 @@ export function withPendingMessages(echoed: readonly SentMessage[], pending: rea
 }
 
 /**
- * Status and decision lines with the person's messages placed by when they were
+ * Status lines with the person's messages placed by when they were
  * sent. A line carries its narration block's start time, so a message lands
  * after every block that started before it.
  */

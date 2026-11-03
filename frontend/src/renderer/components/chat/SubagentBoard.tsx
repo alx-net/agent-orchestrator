@@ -1,8 +1,7 @@
 /**
  * The session's agents as a board: the main agent pinned on top, then its Claude
- * Code subagents, each with what it was asked to do, what it is doing now, and
- * the decisions it made on the way, so a person can step in without reading the
- * raw trace.
+ * Code subagents, each with what it was asked to do and what it is doing now, so
+ * a person can step in without reading the raw trace.
  *
  * Lanes follow the session board: Working, Needs you, Done. Failed and stopped
  * subagents settle into Done with their own glyph rather than a lane of their
@@ -398,9 +397,8 @@ const SubagentCardView = memo(function SubagentCardView({
 });
 
 /**
- * The main agent: what it is doing now and its latest decision, with the turn's
- * status and decision lines when opened. Pinned above the lanes, so it is there
- * before any subagent starts.
+ * The main agent: what it is doing now, with the turn's status lines when
+ * opened. Pinned above the lanes, so it is there before any subagent starts.
  */
 const MainAgentCardView = memo(function MainAgentCardView({
 	control,
@@ -429,7 +427,6 @@ const MainAgentCardView = memo(function MainAgentCardView({
 	const title = t("subagents.main");
 	const needsYou = summary.state === "needs_you";
 	const nowLine = mainNowLine(t, summary);
-	const decision = summary.decisions.at(-1);
 	const sent = useMemo(() => withPendingMessages(summary.sent, control.pending), [summary.sent, control.pending]);
 	return (
 		<article
@@ -458,18 +455,6 @@ const MainAgentCardView = memo(function MainAgentCardView({
 						data-testid="main-agent-now"
 					>
 						{nowLine}
-					</span>
-					<span
-						className="mt-0.5 h-[1lh] truncate text-sm font-medium leading-snug text-foreground"
-						data-testid="main-agent-decision"
-						title={decision?.text}
-					>
-						{decision ? (
-							<>
-								<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t("subagents.decision")}</span>
-								{decision.text}
-							</>
-						) : null}
 					</span>
 				</span>
 				<ChevronRight
@@ -816,9 +801,8 @@ export const SENT_STATE_KEYS = {
 } as const satisfies Record<SentMessageState, string>;
 
 /**
- * Status and decision lines newest first, decisions emphasized, with what the
- * person sent placed by when they sent it, and the agent's outcome on top once
- * it finished. The main agent's log runs across turns, newest turn first: each
+ * Status lines newest first, with what the person sent placed by when they
+ * sent it, and the agent's outcome on top once it finished. The main agent's log runs across turns, newest turn first: each
  * turn's lines sit above a divider naming the message that started it.
  */
 export function NotesTimeline({
@@ -899,7 +883,7 @@ export function NotesTimeline({
 								</li>
 							);
 						}
-						const strong = note.kind !== "status";
+						const strong = note.kind === "outcome";
 						return (
 							<li
 								className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 text-sm leading-snug"
@@ -912,9 +896,7 @@ export function NotesTimeline({
 									{note.kind === "outcome" && note.outcome ? (
 										<span className="mr-1.5 text-xs font-normal text-muted-foreground">{t(OUTCOME_KEYS[note.outcome])}</span>
 									) : (
-										<span className={note.kind === "decision" ? "mr-1.5 text-xs font-normal text-muted-foreground" : "sr-only"}>
-											{note.kind === "decision" ? t("subagents.decision") : t("subagents.status")}
-										</span>
+										<span className="sr-only">{t("subagents.status")}</span>
 									)}
 									{note.text}
 								</span>

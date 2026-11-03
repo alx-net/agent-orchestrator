@@ -744,8 +744,7 @@ describe("patchClaudeSubagentProgress", () => {
 		expect(updatedInput).toEqual({ ...input, prompt: updatedInput.prompt });
 		expect(updatedInput.prompt).toBe(
 			"Find the retry loop.\n\nWhile you work, before each major step write one short line that starts with " +
-			"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
-			"starts with \"Decision:\" stating the choice and the reason in under 20 words. End your final report " +
+			"\"Status:\" saying what you are doing now. End your final report " +
 			"with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, " +
 			"and the result or what you are waiting for in under 20 words.",
 		);
@@ -835,7 +834,7 @@ async function onMessage(session, message) {
 connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params));
 `;
 	const prefix =
-		"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+		"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: line): ";
 
 	function load({ userHooks } = {}) {
 		const adapterPath = join(temporaryDirectory(), "acp-agent.js");

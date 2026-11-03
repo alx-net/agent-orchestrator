@@ -40,12 +40,11 @@ const audit: SubagentCard = {
 	startedAt: "2026-10-26T10:00:00.000Z",
 	updatedAt: "2026-10-26T10:00:05.000Z",
 	notes: [],
-	decisions: [],
 	toolCount: 1,
 	inbox: [],
 };
 
-const working: MainAgentSummary = { state: "working", turnId: "turn-1", startedAt: "2026-10-26T10:00:00.000Z", notes: [], decisions: [], sent: [] };
+const working: MainAgentSummary = { state: "working", turnId: "turn-1", startedAt: "2026-10-26T10:00:00.000Z", notes: [], sent: [] };
 const needsInput: MainAgentSummary = {
 	state: "needs_you",
 	turnId: "turn-1",
@@ -53,7 +52,6 @@ const needsInput: MainAgentSummary = {
 	nowSource: "outcome",
 	result: { kind: "needs_input", text: "Should paused sessions keep their slot?", at: "2026-10-26T10:05:00.000Z", source: "outcome_line" },
 	notes: [{ kind: "turn", text: "Pause sessions", at: "2026-10-26T10:00:00.000Z", fromYou: true }],
-	decisions: [],
 	sent: [],
 };
 

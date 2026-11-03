@@ -22,7 +22,6 @@ function card(overrides: Partial<SubagentCard> & Pick<SubagentCard, "id">): Suba
 		startedAt: new Date(Date.now() - 90_000).toISOString(),
 		updatedAt: new Date().toISOString(),
 		notes: [],
-		decisions: [],
 		toolCount: 3,
 		inbox: [],
 		...overrides,
@@ -49,7 +48,7 @@ const working = card({
 	prompt: "Read the auth module and report risks.",
 	notes: [
 		{ kind: "status", text: "Reading the auth module", at: "2026-10-26T10:00:01.000Z" },
-		{ kind: "decision", text: "Start with login, because it is the entry point", at: "2026-10-26T10:00:02.000Z" },
+		{ kind: "status", text: "Looking at the login handler", at: "2026-10-26T10:00:02.000Z" },
 	],
 });
 const blocked = card({ id: "b", title: "Clean the build", lane: "needs_you", outcome: "needs_you", blockedOn: "Run rm -rf build" });
@@ -72,13 +71,11 @@ const mainWorking: MainAgentSummary = {
 	nowSource: "status",
 	notes: [
 		{ kind: "status", text: "Reading the board code", at: "2026-10-26T10:00:01.000Z" },
-		{ kind: "decision", text: "Reuse the card timeline, since it already emphasizes decisions", at: "2026-10-26T10:00:02.000Z" },
 		{ kind: "status", text: "Wiring the board into the chat", at: "2026-10-26T10:00:03.000Z" },
 	],
-	decisions: [{ kind: "decision", text: "Reuse the card timeline, since it already emphasizes decisions", at: "2026-10-26T10:00:02.000Z" }],
 	sent: [],
 };
-const mainIdle: MainAgentSummary = { state: "idle", turnId: "turn-1", notes: [], decisions: [], sent: [] };
+const mainIdle: MainAgentSummary = { state: "idle", turnId: "turn-1", notes: [], sent: [] };
 
 function renderBoard(ui: ReactElement) {
 	return render(<TooltipProvider>{ui}</TooltipProvider>);
@@ -99,7 +96,7 @@ describe("SubagentBoard", () => {
 		expect(screen.queryByTestId("main-agent-card")).not.toBeInTheDocument();
 	});
 
-	it("pins the main agent above the lanes with its now line and latest decision", async () => {
+	it("pins the main agent above the lanes with its now line", async () => {
 		const user = userEvent.setup();
 		const onStopTurn = vi.fn();
 		renderBoard(<SubagentBoard activeTurnId="turn-1" cards={[working]} main={mainWorking} mode="chat" onStopTurn={onStopTurn} />);
@@ -109,7 +106,6 @@ describe("SubagentBoard", () => {
 		expect(main).toHaveAttribute("data-state", "working");
 		expect(within(main).getByText("Working")).toHaveClass("sr-only");
 		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Wiring the board into the chat");
-		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent("Reuse the card timeline, since it already emphasizes decisions");
 		expect(within(main).getByText("2m")).toBeInTheDocument();
 
 		await user.click(within(main).getByRole("button", { name: "Stop turn" }));
@@ -119,7 +115,7 @@ describe("SubagentBoard", () => {
 		await user.click(toggle);
 		expect(toggle).toHaveAttribute("aria-expanded", "true");
 		const updates = within(main).getByRole("region", { name: "Updates" });
-		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "decision", "status"]);
+		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "status"]);
 		fireEvent.keyDown(toggle, { key: "Escape" });
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 	});
@@ -133,29 +129,25 @@ describe("SubagentBoard", () => {
 			notes: [
 				{ kind: "turn", text: "Pause sessions from the board", at: "2026-10-26T10:00:00.000Z", fromYou: true },
 				{ kind: "status", text: "Reading the session lifecycle", at: "2026-10-26T10:00:01.000Z" },
-				{ kind: "decision", text: "Pause through the daemon", at: "2026-10-26T10:00:02.000Z" },
 				{ kind: "outcome", outcome: "needs_input", text: "Should paused sessions keep their slot?", at: "2026-10-26T10:05:00.000Z" },
 				{ kind: "turn", text: "Yes, keep the slot", at: "2026-10-26T10:06:00.000Z", fromYou: true },
 				{ kind: "turn", text: "Also check the CLI", at: "2026-10-26T10:07:00.000Z", sender: "Pause orchestrator" },
 				{ kind: "status", text: "Keeping the slot on pause", at: "2026-10-26T10:07:01.000Z" },
 			],
-			decisions: [{ kind: "decision", text: "Pause through the daemon", at: "2026-10-26T10:00:02.000Z" }],
 		};
 		renderBoard(<SubagentBoard activeTurnId="turn-2" cards={[]} main={twoTurns} mode="chat" />);
 		const main = screen.getByRole("article", { name: "Main agent" });
-		// The newest decision of any turn stays on the folded card.
-		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent("Pause through the daemon");
 		await user.click(within(main).getByRole("button", { name: /Main agent/ }));
 		const updates = within(main).getByRole("region", { name: "Updates" });
 		// The newest line on top; each turn's lines sit above the message that began it.
-		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "turn", "turn", "outcome", "decision", "status", "turn"]);
+		expect(within(updates).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "turn", "turn", "outcome", "status", "turn"]);
 		const dividers = within(updates).getAllByTestId("turn-divider");
 		expect(dividers.map((divider) => divider.textContent)).toEqual([
 			expect.stringContaining("Pause orchestrator:Also check the CLI"),
 			expect.stringContaining("You:Yes, keep the slot"),
 			expect.stringContaining("You:Pause sessions from the board"),
 		]);
-		// Quiet: muted small text over a hairline, never the weight of a decision.
+		// Quiet: muted small text over a hairline, never the weight of an outcome.
 		expect(dividers[1]).toHaveClass("border-b", "text-xs");
 		expect(within(dividers[1]!).getByText("Yes, keep the slot", { exact: false })).toHaveClass("text-muted-foreground");
 	});
@@ -224,20 +216,19 @@ describe("SubagentBoard", () => {
 		expect(within(article).getByTestId("subagent-now")).toHaveTextContent("Blocked the staging DB needs a VPN");
 	});
 
-	it("uses readable type: titles at body size, status lines below, decisions stronger, metadata smallest", async () => {
+	it("uses readable type: titles at body size, status lines below, metadata smallest", async () => {
 		const user = userEvent.setup();
 		renderBoard(<SubagentBoard activeTurnId="turn-1" cards={[working]} main={mainWorking} mode="chat" />);
 		const main = screen.getByRole("article", { name: "Main agent" });
 		expect(within(main).getByText("Main agent")).toHaveClass("text-base");
 		expect(within(main).getByTestId("main-agent-now")).toHaveClass("text-sm");
-		expect(within(main).getByTestId("main-agent-decision")).toHaveClass("text-sm", "font-medium");
 		const subagent = screen.getByRole("article", { name: "Audit the auth flow" });
 		expect(within(subagent).getByTitle("Audit the auth flow")).toHaveClass("text-base");
 		expect(within(subagent).getByText("Explore")).toHaveClass("text-xs");
 		await user.click(within(subagent).getByRole("button", { name: /Audit the auth flow/ }));
 		const entries = within(within(subagent).getByRole("region", { name: "Updates" })).getAllByRole("listitem");
 		expect(entries[1]).toHaveClass("text-sm");
-		expect(within(entries[0]!).getByText("Start with login, because it is the entry point")).toHaveClass("font-medium");
+		expect(within(entries[0]!).getByText("Looking at the login handler")).toHaveClass("text-muted-foreground");
 		expect(entries[1]!.querySelector("time")).toHaveClass("text-xs");
 		for (const element of subagent.querySelectorAll("[class*='text-2xs'], [class*='text-caption']")) {
 			throw new Error(`small type left on the card: ${element.className}`);
@@ -268,7 +259,7 @@ describe("SubagentBoard", () => {
 		expect(within(doneLane!).getByText("Failed")).toBeInTheDocument();
 	});
 
-	it("expands a card into its decisions, task and final report", async () => {
+	it("expands a card into its updates, task and final report", async () => {
 		const user = userEvent.setup();
 		renderBoard(<SubagentBoard cards={[working, done]} mode="chat" />);
 		const toggle = screen.getByRole("button", { name: /Audit the auth flow/ });
@@ -276,9 +267,9 @@ describe("SubagentBoard", () => {
 		await user.click(toggle);
 		expect(toggle).toHaveAttribute("aria-expanded", "true");
 		const updates = screen.getByRole("region", { name: "Updates" });
-		const decision = within(updates).getByText("Start with login, because it is the entry point").closest("li");
-		expect(decision).toHaveAttribute("data-note-kind", "decision");
-		expect(within(decision!).getByText("Decision")).toBeInTheDocument();
+		const update = within(updates).getByText("Looking at the login handler").closest("li");
+		expect(update).toHaveAttribute("data-note-kind", "status");
+		expect(within(update!).getByText("Status")).toHaveClass("sr-only");
 		expect(screen.queryByText("Read the auth module and report risks.")).not.toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: "Task" }));
 		expect(screen.getByText("Read the auth module and report risks.")).toBeInTheDocument();
@@ -339,10 +330,9 @@ describe("SubagentBoard", () => {
 		expect(within(long).getByTitle(untyped.title!)).toHaveClass("truncate");
 		// The type line is held even when the provider named none.
 		expect(within(long).getByTestId("subagent-now").previousElementSibling).toHaveClass("h-[1lh]");
-		// The main card keeps its now line, its decision line and its footer while no turn runs.
+		// The main card keeps its now line and its footer while no turn runs.
 		const main = screen.getByRole("article", { name: "Main agent" });
 		expect(within(main).getByTestId("main-agent-now")).toHaveClass("h-[2lh]");
-		expect(within(main).getByTestId("main-agent-decision")).toHaveClass("h-[1lh]", "truncate");
 		expect(main.querySelector(".h-8")).not.toBeNull();
 	});
 
@@ -466,7 +456,7 @@ describe("SubagentBoard stepping in", () => {
 			"queued",
 			"dropped",
 			"delivered",
-			"decision",
+			"status",
 			"status",
 		]);
 		const [queued, dropped, delivered] = within(updates).getAllByTestId("sent-message");

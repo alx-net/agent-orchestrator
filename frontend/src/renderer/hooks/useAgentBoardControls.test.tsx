@@ -36,7 +36,6 @@ const audit: SubagentCard = {
 	startedAt: new Date(Date.now() - 60_000).toISOString(),
 	updatedAt: new Date().toISOString(),
 	notes: [{ kind: "status", text: "Reading the token validator", at: new Date(Date.now() - 30_000).toISOString() }],
-	decisions: [],
 	toolCount: 2,
 	inbox: [],
 };
@@ -47,7 +46,6 @@ const main: MainAgentSummary = {
 	startedAt: new Date(Date.now() - 120_000).toISOString(),
 	nowLine: "Waiting on the audit",
 	notes: [],
-	decisions: [],
 	sent: [],
 };
 

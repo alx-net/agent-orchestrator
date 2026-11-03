@@ -52,7 +52,7 @@ import { TooltipProvider } from "./ui/tooltip";
 const at = (second: number) => `2026-10-26T10:00:${String(second).padStart(2, "0")}.000Z`;
 
 function main(overrides: Partial<MainAgentSummary> = {}): MainAgentSummary {
-	return { state: "working", turnId: "turn-1", notes: [], decisions: [], sent: [], ...overrides };
+	return { state: "working", turnId: "turn-1", notes: [], sent: [], ...overrides };
 }
 
 function subagent(id: string, lane: SubagentCard["lane"]): SubagentCard {
@@ -64,7 +64,6 @@ function subagent(id: string, lane: SubagentCard["lane"]): SubagentCard {
 		startedAt: at(1),
 		updatedAt: at(2),
 		notes: [],
-		decisions: [],
 		toolCount: 0,
 		inbox: [],
 	};
@@ -73,15 +72,11 @@ function subagent(id: string, lane: SubagentCard["lane"]): SubagentCard {
 const model = (summary: MainAgentSummary, cards: SubagentCard[] = []): SubagentBoardModel => ({ main: summary, cards });
 
 describe("BoardAgentContextView", () => {
-	it("shows the latest decision stronger, then what a working agent is doing, holding two lines for it", () => {
+	it("shows what a working agent is doing, holding two lines for it", () => {
 		const working = model(
 			main({
 				nowLine: "Running the pause e2e spec",
 				nowSource: "tool",
-				decisions: [
-					{ kind: "decision", text: "Reuse the session lock", at: at(1) },
-					{ kind: "decision", text: "Keep the slot while paused, as asked", at: at(9) },
-				],
 			}),
 			[subagent("a", "working"), subagent("b", "needs_you"), subagent("c", "done")],
 		);
@@ -89,12 +84,6 @@ describe("BoardAgentContextView", () => {
 		const now = screen.getByTestId("board-agent-now");
 		expect(now).toHaveTextContent("Running the pause e2e spec");
 		expect(now).toHaveClass("line-clamp-2", "text-muted-foreground", "min-h-[2lh]");
-		const decision = screen.getByTestId("board-agent-decision");
-		expect(decision).toHaveTextContent("Decision Keep the slot while paused, as asked");
-		expect(decision).toHaveClass("line-clamp-2", "font-medium", "text-foreground");
-		expect(within(decision).getByText("Decision")).toHaveClass("font-normal", "text-muted-foreground");
-		// The now line sits last, next to the card's status line it refines.
-		expect(decision.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 		expect(screen.queryByTestId("board-agent-subagents")).not.toBeInTheDocument();
 	});
 
@@ -177,7 +166,7 @@ const message = (id: string, turnId: string, role: "user" | "assistant", text: s
 	createdAt: at(second),
 });
 
-/** Turn 1 decided and asked; the person answered, and turn 2 is under way. */
+/** Turn 1 narrated and asked; the person answered, and turn 2 is under way. */
 function twoTurns(extra = ""): ConversationSnapshot {
 	const turns: ConversationTurn[] = [
 		{ id: "t1", state: "completed", requestedAt: at(0), startedAt: at(0), completedAt: at(10) },
@@ -185,7 +174,7 @@ function twoTurns(extra = ""): ConversationSnapshot {
 	];
 	const items: ConversationItem[] = [
 		message("u1", "t1", "user", "Pause sessions from the board", 0),
-		message("m1", "t1", "assistant", "Status: Reading the lifecycle\nDecision: Pause through the daemon\nOutcome: needs input — Keep the slot?", 5),
+		message("m1", "t1", "assistant", "Status: Reading the lifecycle\nOutcome: needs input — Keep the slot?", 5),
 		message("u2", "t2", "user", "Yes, keep it", 12),
 		message("m2", "t2", "assistant", `Status: Keeping the slot on pause\n${extra}`, 14),
 		{
@@ -222,7 +211,7 @@ describe("board session cards", () => {
 		scmSummaryMock.mockClear();
 	});
 
-	it("shows a chat session's now line and latest decision across turns, and leaves a terminal card as it was", () => {
+	it("shows a chat session's now line across turns, and leaves a terminal card as it was", () => {
 		const chat = workerSession("chat");
 		const tui = workerSession("tui", { mode: "tui" });
 		const workspaces: WorkspaceSummary[] = [{ id: "app", name: "app", path: "/repos/app", sessions: [chat, tui] }];
@@ -239,8 +228,6 @@ describe("board session cards", () => {
 		const [chatCard, tuiCard] = screen.getAllByTestId("board-session-card");
 		const context = within(chatCard!).getByTestId("board-agent-context");
 		expect(within(context).getByTestId("board-agent-now")).toHaveTextContent("Keeping the slot on pause");
-		// Decided in the first turn, still the latest after the person answered.
-		expect(within(context).getByTestId("board-agent-decision")).toHaveTextContent("Pause through the daemon");
 		// The footer keeps its one status line, with the running subagents among its metadata.
 		expect(within(chatCard!).getAllByTestId("session-status")).toHaveLength(1);
 		expect(within(chatCard!).getByTestId("session-status")).toHaveTextContent("Working");
@@ -256,9 +243,8 @@ describe("board session cards", () => {
 		renderCards(<BoardSessionCardAdapter onOpen={vi.fn()} session={chat} />);
 		const cardRenders = scmSummaryMock.mock.calls.length;
 
-		act(() => conversations.set("chat", twoTurns("Status: Running the e2e spec\nDecision: Skip the flaky retry\n")));
+		act(() => conversations.set("chat", twoTurns("Status: Running the e2e spec\n")));
 		expect(screen.getByTestId("board-agent-now")).toHaveTextContent("Running the e2e spec");
-		expect(screen.getByTestId("board-agent-decision")).toHaveTextContent("Skip the flaky retry");
 		expect(scmSummaryMock.mock.calls.length).toBe(cardRenders);
 	});
 });

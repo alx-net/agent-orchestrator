@@ -93,12 +93,10 @@ const orchestratorMain: MainAgentSummary = {
 	notes: [
 		{ kind: "turn", text: "Add pausing to sessions", at: at(0), fromYou: true },
 		{ kind: "status", text: "Reading the issue", at: at(1) },
-		{ kind: "decision", text: "Split the work into an API and a UI worker", at: at(2) },
 		{ kind: "turn", text: "Go ahead", at: at(3), fromYou: true },
 		{ kind: "status", text: "Spawned both workers", at: at(3) },
 		{ kind: "status", text: "Dispatching the pause work", at: at(4) },
 	],
-	decisions: [{ kind: "decision", text: "Split the work into an API and a UI worker", at: at(2) }],
 	sent: [],
 };
 
@@ -109,7 +107,6 @@ const blockedMain: MainAgentSummary = {
 	nowSource: "outcome",
 	result: { kind: "blocked", text: "on you turning on 2FA in Verda", at: at(9), source: "blocked_line" },
 	notes: [{ kind: "outcome", outcome: "blocked", text: "on you turning on 2FA in Verda", at: at(9) }],
-	decisions: [],
 	sent: [],
 };
 
@@ -126,10 +123,9 @@ const audit: SubagentCard = {
 	nowLine: "Reading the token validator",
 	nowSource: "status",
 	notes: [
-		{ kind: "decision", text: "Start from the middleware", at: at(5) },
+		{ kind: "status", text: "Looking at the middleware", at: at(5) },
 		{ kind: "status", text: "Reading the token validator", at: at(6) },
 	],
-	decisions: [{ kind: "decision", text: "Start from the middleware", at: at(5) }],
 	toolCount: 2,
 	inbox: [],
 };
@@ -146,7 +142,7 @@ function overview(details: Map<string, SessionAgentsDetail> = new Map(), session
 
 const loaded = () => new Map<string, SessionAgentsDetail>([
 	["orch", { status: "ready", model: { main: orchestratorMain, cards: [] } }],
-	["api", { status: "ready", model: { main: { ...orchestratorMain, nowLine: "Writing the handler", notes: [], decisions: [] }, cards: [audit] } }],
+	["api", { status: "ready", model: { main: { ...orchestratorMain, nowLine: "Writing the handler", notes: [] }, cards: [audit] } }],
 	["solo", { status: "ready", model: { main: blockedMain, cards: [] } }],
 ]);
 
@@ -172,14 +168,12 @@ describe("AgentsOverviewView", () => {
 		expect(within(orch).getByText("Orchestrator")).toBeInTheDocument();
 		expect(within(orch).getByTestId("agents-overview-now")).toHaveTextContent("Dispatching the pause work");
 		expect(within(orch).getByText("2m")).toBeInTheDocument();
-		// The latest updates newest first, without repeating the now line or a turn's divider, decisions emphasized.
+		// The latest updates newest first, without repeating the now line or a turn's divider.
 		const updates = within(orch).getByTestId("agents-overview-updates");
 		expect(within(updates).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
 			expect.stringContaining("Spawned both workers"),
-			expect.stringContaining("Split the work into an API and a UI worker"),
 			expect.stringContaining("Reading the issue"),
 		]);
-		expect(within(updates).getByText("Split the work into an API and a UI worker")).toHaveClass("font-medium");
 
 		expect(within(rowOf("Pause API")).getByText("Worker")).toBeInTheDocument();
 		const subagent = screen.getByTestId("agents-overview-subagent");
@@ -220,7 +214,7 @@ describe("AgentsOverviewView", () => {
 		expect(disclosure).toHaveAttribute("aria-expanded", "true");
 		const timeline = document.getElementById(disclosure.getAttribute("aria-controls")!)!;
 		// Newest first, each turn's lines above the message that began it.
-		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "status", "turn", "decision", "status", "turn"]);
+		expect(within(timeline).getAllByRole("listitem").map((item) => item.dataset.noteKind)).toEqual(["status", "status", "turn", "status", "turn"]);
 		// It scrolls inside one height instead of growing with its updates.
 		expect(within(timeline).getByRole("list")).toHaveClass("h-80", "overflow-y-auto");
 
@@ -312,7 +306,7 @@ const SUBAGENT_STOP = "/api/v1/sessions/{sessionId}/conversation/subagents/{tool
 
 const RUNNING: SessionControlFacts = { runningTurnId: "turn-1", steer: true, subagents: true };
 const ENDED: SessionControlFacts = { steer: true, subagents: true };
-const apiMain: MainAgentSummary = { ...orchestratorMain, nowLine: "Writing the handler", notes: [], decisions: [] };
+const apiMain: MainAgentSummary = { ...orchestratorMain, nowLine: "Writing the handler", notes: [] };
 
 /** The sessions as the shared summaries hold them, with what each conversation allows. */
 const controlled = () => new Map<string, SessionAgentsDetail>([

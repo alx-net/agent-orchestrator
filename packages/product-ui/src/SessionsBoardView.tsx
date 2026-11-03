@@ -231,8 +231,8 @@ export type SessionCardViewProps = {
 	branchIcon?: ReactNode;
 	branchLabel?: ReactNode;
 	/**
-	 * The agent's live context (its latest decision, what it is doing now or how
-	 * its turn ended), shown after the evidence and right above the status line it
+	 * The agent's live context (what it is doing now or how its turn
+	 * ended), shown after the evidence and right above the status line it
 	 * refines. Takes no room when it renders nothing.
 	 */
 	context?: ReactNode;

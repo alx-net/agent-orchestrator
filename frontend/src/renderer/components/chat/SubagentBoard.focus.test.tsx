@@ -26,7 +26,6 @@ function snapshot(index: number, lane: SubagentCard["lane"] = "working") {
 		updatedAt: new Date().toISOString(),
 		nowLine: `Step ${index}`,
 		notes,
-		decisions: [],
 		toolCount: index,
 		inbox: [],
 	};
@@ -37,7 +36,6 @@ function snapshot(index: number, lane: SubagentCard["lane"] = "working") {
 		nowLine: `Main step ${index}`,
 		nowSource: "status",
 		notes,
-		decisions: [],
 		sent: [],
 	};
 	// The controls hook hands out a new object whenever any card's state moves.

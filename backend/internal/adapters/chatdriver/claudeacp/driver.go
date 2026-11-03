@@ -46,13 +46,12 @@ const claudePlanGuidance = "When you make a to-do list or plan, or do work with 
 
 // claudeStatusGuidance asks the main Claude agent to narrate its progress the
 // same way AO's bridge hook asks its subagents to, so the chat's agents board
-// can show what the main agent is doing now and the choices it made. It does
+// can show what the main agent is doing now and how its turn ended. It does
 // not depend on the to-do tools, which the user can turn off.
 const claudeStatusGuidance = "While you work, before each major step write one short line that starts with " +
-	"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
-	"starts with \"Decision:\" stating the choice and the reason in under 20 words. End every reply that " +
-	"finishes your turn with one line that starts with \"Outcome:\" followed by done, blocked, failed or " +
-	"needs input, a dash, and the result or what you are waiting for in under 20 words."
+	"\"Status:\" saying what you are doing now. End every reply that finishes your turn with one line that " +
+	"starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or " +
+	"what you are waiting for in under 20 words."
 
 // claudeTodoToolsChoice returns the value the user chose for the to-do tools in
 // the project env or the daemon's own environment. A blank value is no choice.

@@ -639,9 +639,9 @@ type InlineUpdate = { entry: BoardTimelineEntry; order: number };
 const NO_UPDATES: readonly InlineUpdate[] = [];
 
 /**
- * The newest lines worth showing under the now line, newest first: decisions,
- * statuses and what the person sent, not an outcome or a turn's divider, nor
- * the status the now line already repeats. Each keeps its place from the oldest
+ * The newest lines worth showing under the now line, newest first: statuses and
+ * what the person sent, not an outcome or a turn's divider, nor the status the
+ * now line already repeats. Each keeps its place from the oldest
  * as its key, so a new line re-keys nothing.
  */
 function latestUpdates(
@@ -703,10 +703,7 @@ function InlineUpdates({ entries, note }: { entries: readonly InlineUpdate[]; no
 						return (
 							<li className={UPDATE_LINE_CLASS} data-note-kind={update.kind} key={`note:${order}`}>
 								<time className="shrink-0 text-xs tabular-nums text-passive" dateTime={update.at}>{formatTime(update.at)}</time>
-								<span className={cn("min-w-0 truncate", update.kind === "decision" ? "font-medium text-foreground" : "text-muted-foreground")} title={update.text}>
-									{update.kind === "decision" ? <span className="mr-1.5 text-xs font-normal text-muted-foreground">{t("subagents.decision")}</span> : null}
-									{update.text}
-								</span>
+								<span className="min-w-0 truncate text-muted-foreground" title={update.text}>{update.text}</span>
 							</li>
 						);
 					})}

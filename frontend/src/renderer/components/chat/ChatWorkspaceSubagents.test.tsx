@@ -47,7 +47,7 @@ function withSubagent({ keepPending = false }: { keepPending?: boolean } = {}): 
 		revision: 1,
 		role: "assistant",
 		origin: "provider",
-		text: "Status: Handing the auth audit to a subagent\nDecision: Audit with a subagent, since the main turn keeps the migration going",
+		text: "Status: Handing the auth audit to a subagent",
 		streaming: true,
 		createdAt: at,
 	};
@@ -129,16 +129,13 @@ describe("ChatWorkspace agents board", () => {
 		expect(screen.getByRole("tab", { name: /Agents/ })).toHaveAttribute("aria-selected", "false");
 	});
 
-	it("shows the main agent's status and decision lines from the running turn", async () => {
+	it("shows the main agent's status line from the running turn", async () => {
 		const user = userEvent.setup();
 		render(<ChatWorkspace snapshot={withSubagent()} session={session} />);
 		await user.click(screen.getByRole("tab", { name: /Agents/ }));
 		const main = within(screen.getByTestId("chat-subagents-panel")).getByRole("article", { name: "Main agent" });
 		expect(main).toHaveAttribute("data-state", "working");
 		expect(within(main).getByTestId("main-agent-now")).toHaveTextContent("Handing the auth audit to a subagent");
-		expect(within(main).getByTestId("main-agent-decision")).toHaveTextContent(
-			"Audit with a subagent, since the main turn keeps the migration going",
-		);
 	});
 
 	it("starts a draft about the subagent, stops only it from its card, and stops the turn from the main card", async () => {

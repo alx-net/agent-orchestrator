@@ -52,13 +52,12 @@ const conversations: Record<string, () => unknown> = {
 	"orch-pausing": () => snapshot("orch-pausing", [live("orch-turn")], [
 		message("orch-pausing", "orch-turn", [
 			"Status: Reading the pausing issue",
-			"Decision: Split the work into an API and a UI worker, since they touch different packages",
 			"Status: Spawned both workers",
 			"Status: Waiting on the API and UI workers",
 		].join("\n"), 40),
 	]),
 	"worker-api": () => snapshot("worker-api", [live("api-turn")], [
-		message("worker-api", "api-turn", "Status: Writing the pause handler\nDecision: Reuse the session lock instead of adding a second one", 20),
+		message("worker-api", "api-turn", "Status: Writing the pause handler", 20),
 	]),
 	// Finished on the person's own BLOCKED convention, after its last status line.
 	"worker-ui": () => snapshot("worker-ui", [ended("ui-turn")], [
@@ -83,7 +82,7 @@ const conversations: Record<string, () => unknown> = {
 			id: "scan-voice", providerItemId: "scan-voice", activityKind: "mcp_tool", status: "running", summary: "Subagent response",
 			detail: {
 				nestedAgent: true, parentProviderItemId: "agent-scan",
-				progress: "Status: Reading deploy/fly.toml\nDecision: Skip the vendored charts; they hold no keys\nStatus: Reading deploy/hetzner.tf",
+				progress: "Status: Reading deploy/fly.toml\nStatus: Reading deploy/hetzner.tf",
 			},
 		}),
 		activity("secrets-turn", {
@@ -229,7 +228,7 @@ test("the Agents page shows every session's agents as one hierarchy, with how ea
 	// The orchestrator holds both live workers; the blocked one sorts first and needs you.
 	await expect(row("Ship session pausing")).toHaveAttribute("data-state", "working");
 	await expect(row("Ship session pausing").getByTestId("agents-overview-now")).toHaveText("Waiting on the API and UI workers");
-	await expect(row("Ship session pausing")).toContainText("Split the work into an API and a UI worker");
+	await expect(row("Ship session pausing")).toContainText("Spawned both workers");
 	const workers = branch("orch-pausing").locator("[data-testid='agents-overview-branch']");
 	await expect(workers).toHaveCount(2);
 	await expect(workers.nth(0)).toHaveAttribute("data-session-id", "worker-ui");
@@ -257,7 +256,7 @@ test("the Agents page shows every session's agents as one hierarchy, with how ea
 	await row("Ship session pausing").getByRole("button", { name: "Updates for Ship session pausing" }).click();
 	await expect(branch("orch-pausing").getByRole("region", { name: "Updates" }).first()).toContainText("Reading the pausing issue");
 	await subagents.nth(0).click();
-	await expect(branch("worker-secrets").getByRole("region", { name: "Updates" })).toContainText("Skip the vendored charts; they hold no keys");
+	await expect(branch("worker-secrets").getByRole("region", { name: "Updates" })).toContainText("Reading deploy/fly.toml");
 	// The open rows' chevrons point down once their rotation settles.
 	for (const disclosure of [
 		row("Ship session pausing").getByRole("button", { name: "Updates for Ship session pausing" }),

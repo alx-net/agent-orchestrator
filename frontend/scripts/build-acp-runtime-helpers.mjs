@@ -415,7 +415,6 @@ export function patchClaudeSteerSettlement(adapterPath) {
 
 const SUBAGENT_REPORTING_RULE =
 	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
-	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words. " +
 	"End your final report with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or what you are waiting for in under 20 words.";
 
 /**
@@ -425,7 +424,7 @@ const SUBAGENT_REPORTING_RULE =
  * the SDK for its periodic subagent summaries. Turn the summaries on and
  * forward each subagent's progress as a meta-only tool_call_update on the
  * Agent/Task call that spawned it, leaving the call's status, content, and
- * title alone. A PreToolUse hook also appends AO's Status:/Decision: reporting
+ * title alone. A PreToolUse hook also appends AO's Status: reporting
  * rule to every Agent/Task prompt, after any user and file-change-audit hooks.
  */
 export function patchClaudeSubagentProgress(adapterPath) {
@@ -457,7 +456,7 @@ export function patchClaudeSubagentProgress(adapterPath) {
 				"                PreToolUse: [",
 				"                    ...(userProvidedOptions?.hooks?.PreToolUse || []),",
 				"                    ...(fileChangeAuditSupport ? [{ hooks: [fileChangeAuditSupport.preToolUseHook] }] : []),",
-				"                    // AO: ask every subagent for Status:/Decision: lines.",
+				"                    // AO: ask every subagent for Status: lines.",
 				"                    {",
 				'                        matcher: "Agent|Task",',
 				"                        hooks: [",
@@ -534,7 +533,7 @@ export function patchClaudeSubagentProgress(adapterPath) {
 }
 
 const SUBAGENT_MESSAGE_PREFIX =
-	"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+	"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: line): ";
 
 // Module-level helpers the subagent control patch adds after STEER_PRIORITY.
 // Kept free of template literals so the injected source reads as written.
@@ -756,8 +755,8 @@ export function patchClaudeSubagentControl(adapterPath) {
 			['                                    message.patch.status === "killed") {', ...ended.map((line) => `    ${line}`), ""].join("\n"),
 		],
 		[
-			"                    // AO: ask every subagent for Status:/Decision: lines.\n",
-			`${inboxHook}                    // AO: ask every subagent for Status:/Decision: lines.\n`,
+			"                    // AO: ask every subagent for Status: lines.\n",
+			`${inboxHook}                    // AO: ask every subagent for Status: lines.\n`,
 		],
 		[postToolUse, postToolUse + inboxHook],
 		[

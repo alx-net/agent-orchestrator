@@ -112,10 +112,10 @@ function planned(step: string): ConversationPlan {
 }
 
 describe("parseSubagentNoteLine", () => {
-	it("reads status and decision lines at the start of a line, case-insensitively", () => {
+	it("reads status lines at the start of a line, case-insensitively", () => {
 		expect(parseSubagentNoteLine("Status: Reading the auth module")).toEqual({ kind: "status", text: "Reading the auth module" });
-		expect(parseSubagentNoteLine("  decision:  Use the session cookie, because tokens expire  ")).toEqual({
-			kind: "decision",
+		expect(parseSubagentNoteLine("  status:  Use the session cookie, because tokens expire  ")).toEqual({
+			kind: "status",
 			text: "Use the session cookie, because tokens expire",
 		});
 		expect(parseSubagentNoteLine("STATUS: done")).toEqual({ kind: "status", text: "done" });
@@ -123,12 +123,14 @@ describe("parseSubagentNoteLine", () => {
 
 	it("tolerates the markdown the model wraps labels in", () => {
 		expect(parseSubagentNoteLine("**Status:** Running tests")).toEqual({ kind: "status", text: "Running tests" });
-		expect(parseSubagentNoteLine("- **Decision**: Skip the flaky suite")).toEqual({ kind: "decision", text: "Skip the flaky suite" });
+		expect(parseSubagentNoteLine("- **Status**: Skip the flaky suite")).toEqual({ kind: "status", text: "Skip the flaky suite" });
 	});
 
 	it("ignores lines that only mention a label or carry no text", () => {
 		expect(parseSubagentNoteLine("The status: unknown")).toBeUndefined();
 		expect(parseSubagentNoteLine("Statuses: many")).toBeUndefined();
+		// Decision lines are ordinary text now.
+		expect(parseSubagentNoteLine("Decision: Skip the flaky suite")).toBeUndefined();
 		expect(parseSubagentNoteLine("Status:")).toBeUndefined();
 		expect(parseSubagentNoteLine("Just prose.")).toBeUndefined();
 	});
@@ -138,7 +140,7 @@ describe("createSubagentBoardDeriver", () => {
 	it("builds a working card from the Agent call, its narration and its tools", () => {
 		const [card] = derive([
 			parent(),
-			narration("n1", "Looking around.\nStatus: Reading the auth module\nDecision: Start with login, because it is the entry point\n"),
+			narration("n1", "Looking around.\nStatus: Reading the auth module\n"),
 			tool("t1", "rg session", "completed"),
 		]);
 		expect(card).toMatchObject({
@@ -154,9 +156,7 @@ describe("createSubagentBoardDeriver", () => {
 		});
 		expect(card!.notes.map((note) => [note.kind, note.text])).toEqual([
 			["status", "Reading the auth module"],
-			["decision", "Start with login, because it is the entry point"],
 		]);
-		expect(card!.decisions).toHaveLength(1);
 		expect(card!.finalReport).toBeUndefined();
 	});
 
@@ -293,24 +293,24 @@ describe("createSubagentBoardDeriver", () => {
 	it("parses streamed narration incrementally and reuses unchanged cards", () => {
 		const deriver = createSubagentBoardDeriver();
 		const agent = parent();
-		const first = narration("n1", "Status: Reading\nDecision: Use");
+		const first = narration("n1", "Status: Reading\nStatus: Use");
 		const turns = [turn()];
 		const before = deriver.derive([agent, first], turns).cards[0]!;
 		expect(before.notes.map((note) => note.text)).toEqual(["Reading", "Use"]);
 		expect(deriver.derive([agent, first], turns).cards[0]).toBe(before);
 
-		const grown = { ...first, revision: 2, detail: { ...first.detail, progress: "Status: Reading\nDecision: Use the cookie\nStatus: Testing" } };
+		const grown = { ...first, revision: 2, detail: { ...first.detail, progress: "Status: Reading\nStatus: Use the cookie\nStatus: Testing" } };
 		const after = deriver.derive([agent, grown], turns).cards[0]!;
 		expect(after).not.toBe(before);
 		expect(after.notes.map((note) => [note.kind, note.text])).toEqual([
 			["status", "Reading"],
-			["decision", "Use the cookie"],
+			["status", "Use the cookie"],
 			["status", "Testing"],
 		]);
 		expect(after.nowLine).toBe("Testing");
 
 		// A settle can rewrite the block; the parse starts over.
-		const settled = { ...first, revision: 3, status: "completed" as const, detail: { ...first.detail, progress: "Decision: Ship it" } };
+		const settled = { ...first, revision: 3, status: "completed" as const, detail: { ...first.detail, progress: "Status: Ship it" } };
 		expect(deriver.derive([agent, settled], turns).cards[0]!.notes.map((note) => note.text)).toEqual(["Ship it"]);
 	});
 
@@ -323,9 +323,9 @@ describe("main agent summary", () => {
 	const topLevelTool = (id: string, summary: string, status: ActivityStatus = "running") =>
 		activity({ id, providerItemId: id, activityKind: "command", status, summary, detail: { providerToolName: "Bash" } as ConversationActivity["detail"] });
 
-	it("reads its status and decision lines from its own assistant messages", () => {
+	it("reads its status lines from its own assistant messages", () => {
 		const prompt = said("u1", "Status: not the agent", { role: "user", origin: "human" });
-		const message = said("m1", "Looking at the board.\nStatus: Reading the board code\nDecision: Reuse the line parser, because it is incremental\n");
+		const message = said("m1", "Looking at the board.\nStatus: Reading the board code\n");
 		const main = mainOf([
 			prompt,
 			message,
@@ -343,9 +343,7 @@ describe("main agent summary", () => {
 		expect(main.notes).toEqual([
 			{ kind: "turn", text: "Status: not the agent", at: prompt.createdAt, fromYou: true },
 			{ kind: "status", text: "Reading the board code", at: message.createdAt },
-			{ kind: "decision", text: "Reuse the line parser, because it is incremental", at: message.createdAt },
 		]);
-		expect(main.decisions.map((note) => note.text)).toEqual(["Reuse the line parser, because it is incremental"]);
 	});
 
 	it("shows the newest of its plan step, its status line and its running tool", () => {
@@ -420,19 +418,18 @@ describe("main agent summary", () => {
 
 		const earlier: ConversationTurn = { id: "turn-0", state: "completed", requestedAt: "2026-10-26T09:00:00.000Z", completedAt: "2026-10-26T09:30:00.000Z" };
 		const items = [
-			said("m0", "Decision: Add a migration, since the column is new\nStatus: Wrote the migration\nAdded the column.", { turnId: "turn-0" }),
+			said("m0", "Status: Add a migration, since the column is new\nStatus: Wrote the migration\nAdded the column.", { turnId: "turn-0" }),
 			said("m1", "Here is the answer."),
 		];
 		const settled = mainOf(items, [earlier, turn("completed")]);
 		expect(settled).toMatchObject({ state: "completed", turnId: "turn-1", startedAt: undefined, nowLine: "Here is the answer.", nowSource: "outcome" });
 		// Each turn's lines, then how it ended.
 		expect(settled.notes.map((note) => [note.kind, note.text, note.at])).toEqual([
-			["decision", "Add a migration, since the column is new", items[0]!.createdAt],
+			["status", "Add a migration, since the column is new", items[0]!.createdAt],
 			["status", "Wrote the migration", items[0]!.createdAt],
 			["outcome", "Added the column.", "2026-10-26T09:30:00.000Z"],
 			["outcome", "Here is the answer.", items[1]!.createdAt],
 		]);
-		expect(settled.decisions).toHaveLength(1);
 
 		// A turn with lines of its own follows the earlier turn's.
 		const own = mainOf([...items, said("m2", "Status: Answering\n")], [earlier, turn("completed")]);
@@ -473,7 +470,7 @@ describe("main agent summary", () => {
 		const first = said("m1", [
 			"Status: Reading the session lifecycle",
 			"Status: Found the pause seam",
-			"Decision: Pause through the daemon, since the CLI must not touch storage",
+			"Status: Pause through the daemon, since the CLI must not touch storage",
 			"Status: Wrote the route",
 			"Status: Wrote the client",
 			"Status: Wired the button",
@@ -489,7 +486,7 @@ describe("main agent summary", () => {
 			["turn", "Pause sessions from the board and keep their worktrees"],
 			["status", "Reading the session lifecycle"],
 			["status", "Found the pause seam"],
-			["decision", "Pause through the daemon, since the CLI must not touch storage"],
+			["status", "Pause through the daemon, since the CLI must not touch storage"],
 			["status", "Wrote the route"],
 			["status", "Wrote the client"],
 			["status", "Wired the button"],
@@ -499,10 +496,6 @@ describe("main agent summary", () => {
 			["status", "Keeping the slot on pause"],
 		]);
 		expect(main.notes.filter((note) => note.kind === "turn").map((note) => [note.at, note.fromYou])).toEqual([[ask.createdAt, true], [answer.createdAt, true]]);
-		// The latest decision is the newest of any turn.
-		expect(main.decisions.map((note) => note.text)).toEqual(["Pause through the daemon, since the CLI must not touch storage"]);
-		const decided = mainOf([ask, first, answer, { ...second, text: `${second.text}Decision: Keep the slot, as asked\n` }], turns);
-		expect(decided.decisions.at(-1)?.text).toBe("Keep the slot, as asked");
 
 		// A message another session sent names it; a long one is cut.
 		const relayed = said("u3", `Please ${"also ".repeat(40)}check the CLI`, {
@@ -536,7 +529,7 @@ describe("main agent summary", () => {
 		];
 		const main = mainOf([
 			said("u1", "First", { role: "user", origin: "human" }),
-			said("m1", `Decision: Start from the oldest\n${lines(30, "early")}\nOutcome: done — first pass`),
+			said("m1", `${lines(30, "early")}\nOutcome: done — first pass`),
 			said("u2", "Second", { role: "user", origin: "human", turnId: "turn-2" }),
 			said("m2", `${lines(60, "middle")}\nOutcome: done — second pass`, { turnId: "turn-2" }),
 			said("u3", "Third", { role: "user", origin: "human", turnId: "turn-3" }),
@@ -548,15 +541,12 @@ describe("main agent summary", () => {
 		// The second turn's 61 entries and the third's 10 leave room for the first's last nine.
 		expect(main.notes.map((note) => note.kind === "turn" ? `> ${note.text}` : note.outcome ?? note.text).slice(0, 3)).toEqual(["> First", "early 23", "early 24"]);
 		expect(main.notes.filter((note) => note.kind === "turn").map((note) => note.text)).toEqual(["First", "Second", "Third"]);
-		expect(main.notes.at(-1)).toMatchObject({ kind: "status", text: "late 10" });
-		// The decision dropped from the log is still the latest one.
-		expect(main.decisions.at(-1)?.text).toBe("Start from the oldest");
-	});
+		expect(main.notes.at(-1)).toMatchObject({ kind: "status", text: "late 10" });	});
 
 	it("parses streamed messages incrementally and keeps an unchanged summary", () => {
 		const deriver = createSubagentBoardDeriver();
 		const turns = [turn()];
-		const streaming = said("m1", "Status: Reading\nDecision: Use", { streaming: true });
+		const streaming = said("m1", "Status: Reading\nStatus: Use", { streaming: true });
 		const before = deriver.derive([streaming], turns).main;
 		expect(before.notes.map((note) => note.text)).toEqual(["Reading", "Use"]);
 		expect(deriver.derive([streaming], turns).main).toBe(before);
@@ -566,7 +556,7 @@ describe("main agent summary", () => {
 		expect(after).not.toBe(before);
 		expect(after.notes.map((note) => [note.kind, note.text])).toEqual([
 			["status", "Reading"],
-			["decision", "Use the cookie"],
+			["status", "Use the cookie"],
 			["status", "Testing"],
 		]);
 		expect(after.nowLine).toBe("Testing");
@@ -795,7 +785,7 @@ describe("messages sent from the board", () => {
 	it("places sent messages after the lines whose block started before them", () => {
 		const notes = [
 			{ kind: "status" as const, text: "first block", at: at(1) },
-			{ kind: "decision" as const, text: "first block too", at: at(1) },
+			{ kind: "status" as const, text: "first block too", at: at(1) },
 			{ kind: "status" as const, text: "second block", at: at(9) },
 		];
 		const entries = boardTimeline(notes, [sent("late", 12), sent("early", 4), sent("same", 9)]);
