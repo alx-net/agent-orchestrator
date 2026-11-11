@@ -5532,3 +5532,46 @@ func TestACPHistoryReplaySplitsIDLessPromptsAfterAnswers(t *testing.T) {
 		t.Fatalf("replayed turns = %+v, want %+v", turns, want)
 	}
 }
+
+// A model change the agent refuses after session/load (Claude Code checks one
+// against the API, and an account at its usage limit answers 429) must not
+// throw the loaded conversation away: the next send applies its settings again
+// and reports the error there.
+func TestACPDriverResumeKeepsSessionWhenTurnSettingIsRefused(t *testing.T) {
+	catalog := []acpsdk.SessionConfigOption{selectConfigOption("model", "Model", "", "fable-5-2", "fable-5-2", "fable")}
+	agent := &fakeAgent{
+		newConfig: catalog,
+		configErr: errors.New("API error: 429 This request would exceed your account's rate limit · model not changed"),
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessCopilot,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			if settings.Model == "" {
+				return nil
+			}
+			return []SessionOption{{ID: "model", Value: settings.Model}}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	resumed, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: domain.SessionID("sess1"), WorkspacePath: t.TempDir(),
+		ProviderConversationID: "claude-session-1", Model: "fable",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v, want the loaded session kept", err)
+	}
+	defer resumed.Close()
+	agent.mu.Lock()
+	calls := agent.setCalls
+	agent.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("Resume never asked the agent for the saved model")
+	}
+	if err := resumed.(*conversation).applyTurnSettings(context.Background(), ports.ChatTurnSettings{Model: "fable"}); err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("next send's settings error = %v, want the agent's refusal", err)
+	}
+}

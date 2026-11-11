@@ -607,11 +607,16 @@ func (d *Driver) resumeSession(
 		conv.discard()
 		return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
 	}
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
-		if !errors.Is(err, ErrACPSetterUnsupported) {
-			conv.discard()
-			return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
-		}
+	// Every send applies its settings again before the prompt, so a setting the
+	// agent refuses now (Claude Code checks a model change against the API, and
+	// an account at its usage limit answers 429) waits for that send, which
+	// reports the real error in the chat. Failing here instead threw away a
+	// conversation that had loaded and left the session impossible to resume.
+	settingsStarted := time.Now()
+	err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
+	d.logStartStage(launchCfg.SessionID, "resume_settings", settingsStarted, err)
+	if err != nil && !errors.Is(err, ErrACPSetterUnsupported) {
+		d.log.Warn("chat: resumed ACP session kept its previous settings", "sessionID", launchCfg.SessionID, "error", err)
 	}
 	if historyConversation != nil {
 		return historyConversation, nil
