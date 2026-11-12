@@ -18,6 +18,14 @@ const providerNames = agentAccountProviderNames;
 // lose a browser sign-in in progress.
 let pendingLogins: Partial<Record<AgentAccountProvider, AgentAccountLogin>> = {};
 
+/** Hands the accounts panel a sign-in started elsewhere (the chat's expired-login
+ * notice), so the panel opens on its login terminal. Returns the sign-in it replaced. */
+export function showPendingAccountLogin(provider: AgentAccountProvider, login: AgentAccountLogin): AgentAccountLogin | undefined {
+	const replaced = pendingLogins[provider];
+	pendingLogins = { ...pendingLogins, [provider]: login };
+	return replaced;
+}
+
 /** The CLI's own login signs in and out through the harness's login terminal. */
 export type CliLoginControls = {
 	/** A login or logout terminal is open, or the harness is busy. */

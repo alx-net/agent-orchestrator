@@ -960,13 +960,30 @@ func pointer[T any](value T) *T { return &value }
 
 // isACPAuthRequired reports whether err is the agent telling us the credential
 // was refused, so the caller can raise a reauth prompt instead of a generic
-// turn failure.
+// turn failure. ACP's code for it is -32000; claude-agent-acp reports a login
+// that expired mid-session as an internal error (-32603) tagged
+// errorKind "authentication_failed" instead.
 func isACPAuthRequired(err error) bool {
 	var requestErr *acpsdk.RequestError
 	if !errors.As(err, &requestErr) {
 		return false
 	}
-	return requestErr.Code == -32000
+	return requestErr.Code == -32000 || acpErrorKind(requestErr.Data) == "authentication_failed"
+}
+
+// acpErrorKind is the errorKind an agent put in a JSON-RPC error's data.
+func acpErrorKind(data any) string {
+	var fields map[string]any
+	switch value := data.(type) {
+	case map[string]any:
+		fields = value
+	case json.RawMessage:
+		_ = json.Unmarshal(value, &fields)
+	case []byte:
+		_ = json.Unmarshal(value, &fields)
+	}
+	kind, _ := fields["errorKind"].(string)
+	return kind
 }
 
 // acpResourceNotFound is ACP's JSON-RPC "Resource not found" error code. A

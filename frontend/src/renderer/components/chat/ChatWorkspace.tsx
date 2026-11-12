@@ -1912,7 +1912,7 @@ function ChatWorkspaceContent({
 				>
 					{snapshot.account ? (
 						<ReauthBanner key={`${snapshot.sessionId}:${snapshot.conversationId}`} account={snapshot.account} harness={snapshot.harness}
-							hostId={activeRemoteHostId} cloud={Boolean(session?.cloud)} />
+							hostId={activeRemoteHostId} cloud={Boolean(session?.cloud)} sessionId={snapshot.sessionId} />
 					) : null}
 					{!draftPersistenceAvailable ? (
 						<div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-4 py-2 text-xs text-muted-foreground">

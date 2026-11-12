@@ -8,6 +8,18 @@ const versionRefreshSetting = vi.hoisted(() => ({ enabled: true }));
 vi.mock("../../hooks/useSettings", () => ({
 	useSettings: () => ({ settings: { versionRefresh: versionRefreshSetting.enabled }, isLoading: false, error: undefined }),
 }));
+const agentAccounts = vi.hoisted(() => ({
+	accounts: [] as Array<{ id: string; provider: string; device: boolean }>,
+	session: {} as Record<string, string>,
+	signInAgain: vi.fn(),
+	cancelLogin: vi.fn(),
+}));
+vi.mock("../../hooks/useAgentAccounts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../hooks/useAgentAccounts")>()),
+	useAgentAccounts: () => ({ data: agentAccounts.accounts }),
+	useSessionAgentAccounts: (sessionId?: string) => ({ data: sessionId ? agentAccounts.session : undefined }),
+	useAgentAccountActions: () => ({ signInAgain: agentAccounts.signInAgain, cancelLogin: agentAccounts.cancelLogin }),
+}));
 vi.mock("../../lib/host-clients", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../lib/host-clients")>()),
 	labelForHost: (hostId: string) => (hostId === "host-air" ? "Macbook Air M1" : undefined),
@@ -40,6 +52,29 @@ describe("ReauthBanner", () => {
 		expect(openGlobalSettings).toHaveBeenCalledWith("harness", {
 			focusAgentId: "codex", harnessView: "local", startLogin: true, preserveProject: true,
 		});
+	});
+
+	// The computer's own login would not reach a session on an account added in
+	// AO, so the button signs that account in and the accounts page shows it.
+	it("signs in the saved account the session runs on", async () => {
+		agentAccounts.accounts = [
+			{ id: "device-claude", provider: "claude", device: true },
+			{ id: "acct-1", provider: "claude", device: false },
+		];
+		agentAccounts.session = { claude: "acct-1" };
+		agentAccounts.signInAgain.mockResolvedValue({ operationId: "op-1" });
+		try {
+			render(<ReauthBanner account={failed} harness="claude-code" sessionId="standalone-26" />);
+			await userEvent.click(screen.getByRole("button", { name: "Log in again" }));
+			expect(agentAccounts.signInAgain).toHaveBeenCalledWith("acct-1");
+			expect(openGlobalSettings).toHaveBeenCalledWith("harness", {
+				focusAgentId: "claude-code", harnessView: "local", startLogin: false, preserveProject: true,
+			});
+		} finally {
+			agentAccounts.accounts = [];
+			agentAccounts.session = {};
+			agentAccounts.signInAgain.mockReset();
+		}
 	});
 
 	// A remote session runs on its host, so that host's login is the one to fix.

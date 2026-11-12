@@ -18,6 +18,8 @@ import { useTranslation } from "react-i18next";
 import { CircleArrowUp, KeyRound, Plug, TriangleAlert, X } from "lucide-react";
 import { useMcpConnect, useSessionMcpServers } from "../../hooks/useMcpServers";
 import { useSettings } from "../../hooks/useSettings";
+import { agentAccountProviderFor, useAgentAccountActions, useAgentAccounts, useSessionAgentAccounts } from "../../hooks/useAgentAccounts";
+import { showPendingAccountLogin } from "../settings/AgentAccountsSection";
 import { versionLabel } from "../../hooks/useHarnessUpdates";
 import { agentLabel } from "../../lib/agent-options";
 import { labelForHost } from "../../lib/host-clients";
@@ -40,6 +42,7 @@ export const ReauthBanner = memo(function ReauthBanner({
 	harness,
 	hostId,
 	cloud = false,
+	sessionId,
 }: {
 	account: ConversationAccount;
 	harness: string;
@@ -47,10 +50,23 @@ export const ReauthBanner = memo(function ReauthBanner({
 	hostId?: string;
 	/** The session runs in the cloud, so its login is the cloud connection's. */
 	cloud?: boolean;
+	/** The session, to sign in the saved account it runs on. */
+	sessionId?: string;
 }) {
 	const { t } = useTranslation();
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const [dismissedFailure, setDismissedFailure] = useState<string>();
+	const [signingIn, setSigningIn] = useState(false);
+	const accountActions = useAgentAccountActions();
+	// A session on an account added in AO needs that account signed in: the
+	// computer's own login would not reach it.
+	const provider = !hostId && !cloud ? agentAccountProviderFor(harness) : null;
+	const sessionAccounts = useSessionAgentAccounts(provider ? sessionId : undefined);
+	const accounts = useAgentAccounts();
+	const savedAccount = provider
+		? accounts.data?.find((option) => option.id === sessionAccounts.data?.[provider] && !option.device)
+		: undefined;
 	const failure = account.authFailureId ?? `${harness}:${account.reauthRequiredAt}:${account.reauthReason}`;
 	const required = account.authenticationState === "required" ||
 		(account.authenticationState === undefined && Boolean(account.reauthRequiredAt));
@@ -63,14 +79,34 @@ export const ReauthBanner = memo(function ReauthBanner({
 			<p className="min-w-0 flex-1 text-xs leading-snug text-foreground">
 				{host ? t("chat.reauth.expiredOnHost", { agent, host }) : t("chat.reauth.expired", { agent })}
 			</p>
-			<Button type="button" size="sm" variant="outline" className="shrink-0"
-				onClick={() => openGlobalSettings("harness", {
-					focusAgentId: harness,
-					...(hostId ? { hostId } : {}),
-					harnessView: cloud ? "cloud" : "local",
-					startLogin: true,
-					preserveProject: true,
-				})}>
+			<Button type="button" size="sm" variant="outline" className="shrink-0" disabled={signingIn}
+				data-terminal-focus-handoff="true"
+				onClick={() => {
+					const openHarness = (startLogin: boolean) => openGlobalSettings("harness", {
+						focusAgentId: harness,
+						...(hostId ? { hostId } : {}),
+						harnessView: cloud ? "cloud" : "local",
+						startLogin,
+						preserveProject: true,
+					});
+					if (!provider || !savedAccount) {
+						openHarness(true);
+						return;
+					}
+					// Start the account's own sign-in; the accounts page opens on it.
+					setSigningIn(true);
+					void accountActions.signInAgain(savedAccount.id)
+						.then((login) => {
+							const replaced = showPendingAccountLogin(provider, login);
+							if (replaced) void accountActions.cancelLogin(replaced.operationId).catch(() => undefined);
+							openHarness(false);
+						})
+						.catch((error: unknown) => {
+							showGlobalToast(t("chat.reauth.logInAgain"), error instanceof Error ? error.message : String(error), "error");
+							openHarness(false);
+						})
+						.finally(() => setSigningIn(false));
+				}}>
 				{t("chat.reauth.logInAgain")}
 			</Button>
 			<Button variant="ghost" size="icon" className="size-6 shrink-0"
