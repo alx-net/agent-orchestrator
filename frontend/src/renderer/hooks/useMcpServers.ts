@@ -16,6 +16,16 @@ export type McpTarget = { name: string; accountId?: string; sessionId?: string; 
 const mcpServersQueryKey = ["mcp-servers"] as const;
 const sessionMcpServersKey = (sessionId: string) => ["mcp-servers", "session", sessionId] as const;
 
+/** The longest a status poll may hold one of the window's few connections to the
+ * daemon. Without it a stuck request kept its connection, and a handful of them
+ * left no connection for anything else: the chat froze and messages could not
+ * be sent. */
+const MCP_POLL_TIMEOUT_MS = 20_000;
+
+function pollSignal(signal: AbortSignal): AbortSignal {
+	return AbortSignal.any([signal, AbortSignal.timeout(MCP_POLL_TIMEOUT_MS)]);
+}
+
 function unwrap<T>({ data, error }: { data?: T; error?: unknown }): T {
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as T;
@@ -26,7 +36,7 @@ function unwrap<T>({ data, error }: { data?: T; error?: unknown }): T {
 export function useMcpServers(enabled = true) {
 	return useQuery({
 		queryKey: mcpServersQueryKey,
-		queryFn: async () => unwrap(await apiClient.GET("/api/v1/mcp/servers", { params: { query: {} } })),
+		queryFn: async ({ signal }) => unwrap(await apiClient.GET("/api/v1/mcp/servers", { params: { query: {} }, signal: pollSignal(signal) })),
 		enabled,
 		refetchInterval: (query) => (query.state.data?.checking ? 2_000 : false),
 	});
@@ -36,8 +46,9 @@ export function useMcpServers(enabled = true) {
 export function useSessionMcpServers(sessionId: string | undefined, enabled = true) {
 	return useQuery({
 		queryKey: sessionMcpServersKey(sessionId ?? ""),
-		queryFn: async () => unwrap(await apiClient.GET("/api/v1/sessions/{sessionId}/mcp-servers", {
+		queryFn: async ({ signal }) => unwrap(await apiClient.GET("/api/v1/sessions/{sessionId}/mcp-servers", {
 			params: { path: { sessionId: sessionId ?? "" }, query: {} },
+			signal: pollSignal(signal),
 		})),
 		enabled: enabled && Boolean(sessionId),
 		refetchInterval: 15_000,

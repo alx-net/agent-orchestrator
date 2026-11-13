@@ -125,6 +125,9 @@ func addMCPServerCommands(ctx *commandContext, parent *cobra.Command) {
 	)
 }
 
+// mcpListTimeout bounds `ao mcp ls`, which may wait for a check of every server.
+const mcpListTimeout = 3 * time.Minute
+
 func newMCPListCommand(ctx *commandContext) *cobra.Command {
 	var jsonOutput, refresh bool
 	cmd := &cobra.Command{
@@ -146,8 +149,9 @@ func newMCPListCommand(ctx *commandContext) *cobra.Command {
 				}
 			}
 			var out mcpServersDTO
-			// No request limit: a check starts every server, which takes a while.
-			if err := ctx.doJSONPathWithHeadersAndTimeout(cmd.Context(), http.MethodGet, "/api/v1/"+path, nil, &out, nil, 0); err != nil {
+			// A check starts every server, which takes a while, but an agent's shell
+			// runs this too and must never wait on it forever.
+			if err := ctx.doJSONPathWithHeadersAndTimeout(cmd.Context(), http.MethodGet, "/api/v1/"+path, nil, &out, nil, mcpListTimeout); err != nil {
 				return err
 			}
 			if jsonOutput {

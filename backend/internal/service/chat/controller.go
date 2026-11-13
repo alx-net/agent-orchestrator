@@ -148,6 +148,9 @@ type Store interface {
 	ReconcileConversationAuthentication(ctx context.Context, conversationID, generation, providerTurnID string, now time.Time) (*domain.ConversationAccount, error)
 	RecordThreadState(ctx context.Context, conversationID string, state domain.ConversationThreadState) error
 	RecordMCPServers(ctx context.Context, conversationID string, servers []domain.ConversationMCPServer) error
+	// WithConversationWriter runs fn holding the store's writer; fn's own writes
+	// reuse it. A provider event projection always holds it first.
+	WithConversationWriter(ctx context.Context, fn func(context.Context) error) error
 
 	UpsertActivity(ctx context.Context, conversationID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
 	MarkCompacted(ctx context.Context, conversationID string, at time.Time) error
@@ -3778,6 +3781,17 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
 }
 
+// recordMCPInventory saves an inventory read outside the event projector, on an
+// HTTP request. It takes the store's writer before mcpPersistMu, the order the
+// projector takes them in. Taking them the other way round deadlocked against a
+// projection: each held one and waited for the other, and every store write in
+// the daemon queued behind them.
+func (c *Controller) recordMCPInventory(ctx context.Context, servers []ports.ChatMCPServer) error {
+	return c.store.WithConversationWriter(ctx, func(ctx context.Context) error {
+		return c.replaceMCPServers(ctx, servers)
+	})
+}
+
 // replaceMCPServers records the provider's whole inventory: a server it no
 // longer lists is gone. Known servers keep their place in the list. An unchanged
 // inventory writes nothing: views poll this, and each write wakes every client.
@@ -3850,7 +3864,7 @@ func (c *Controller) LiveMCPServers(ctx context.Context) ([]domain.ConversationM
 	if err != nil {
 		return nil, err
 	}
-	if err := c.replaceMCPServers(ctx, servers); err != nil {
+	if err := c.recordMCPInventory(ctx, servers); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -3874,7 +3888,7 @@ func (c *Controller) ReconnectMCPServer(ctx context.Context, name string) (serve
 	if err != nil {
 		return nil, "", err
 	}
-	if err := c.replaceMCPServers(ctx, result.Servers); err != nil {
+	if err := c.recordMCPInventory(ctx, result.Servers); err != nil {
 		return nil, "", err
 	}
 	c.mu.Lock()
@@ -3895,7 +3909,7 @@ func (c *Controller) ApplyMCPServers(ctx context.Context, change ports.ChatMCPCh
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := c.replaceMCPServers(ctx, result.Servers); err != nil {
+	if err := c.recordMCPInventory(ctx, result.Servers); err != nil {
 		return nil, nil, err
 	}
 	c.mu.Lock()
@@ -3963,43 +3977,47 @@ func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.Conversatio
 	// positively initialized inventory entries as ready. Holding mcpPersistMu through
 	// the write keeps a notification that raced the reload from persisting stale state
 	// after this replacement.
-	c.mcpPersistMu.Lock()
-	defer c.mcpPersistMu.Unlock()
-	c.mu.Lock()
-	fresh := make(map[string]domain.ConversationMCPServer)
-	freshOrder := make([]string, 0, len(c.mcpServerOrder))
-	for _, name := range c.mcpServerOrder {
-		if c.mcpServerSeenRevision[name] > reloadRevision {
-			fresh[name] = c.mcpServers[name]
-			freshOrder = append(freshOrder, name)
+	// Under the store's writer first, as recordMCPInventory explains.
+	var reconciled []domain.ConversationMCPServer
+	err = c.store.WithConversationWriter(ctx, func(ctx context.Context) error {
+		c.mcpPersistMu.Lock()
+		defer c.mcpPersistMu.Unlock()
+		c.mu.Lock()
+		fresh := make(map[string]domain.ConversationMCPServer)
+		freshOrder := make([]string, 0, len(c.mcpServerOrder))
+		for _, name := range c.mcpServerOrder {
+			if c.mcpServerSeenRevision[name] > reloadRevision {
+				fresh[name] = c.mcpServers[name]
+				freshOrder = append(freshOrder, name)
+			}
 		}
-	}
-	for _, server := range result.Servers {
-		if server.Name == "" {
-			continue
+		for _, server := range result.Servers {
+			if server.Name == "" {
+				continue
+			}
+			current, seen := fresh[server.Name]
+			if seen && current.Status != "ready" {
+				// The status list is a snapshot, while this non-ready state came from
+				// a startup notification observed after the reload began. Keep the
+				// newer failure/transition instead of promoting it back to ready.
+				continue
+			}
+			if !seen {
+				freshOrder = append(freshOrder, server.Name)
+			}
+			fresh[server.Name] = conversationMCPServer(server)
 		}
-		current, seen := fresh[server.Name]
-		if seen && current.Status != "ready" {
-			// The status list is a snapshot, while this non-ready state came from
-			// a startup notification observed after the reload began. Keep the
-			// newer failure/transition instead of promoting it back to ready.
-			continue
+		c.mcpServers = fresh
+		c.mcpServerOrder = freshOrder
+		c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
+		for name := range fresh {
+			c.mcpServerSeenRevision[name] = c.mcpServerRevision
 		}
-		if !seen {
-			freshOrder = append(freshOrder, server.Name)
-		}
-		fresh[server.Name] = conversationMCPServer(server)
-	}
-	c.mcpServers = fresh
-	c.mcpServerOrder = freshOrder
-	c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
-	for name := range fresh {
-		c.mcpServerSeenRevision[name] = c.mcpServerRevision
-	}
-	reconciled := c.mcpServersLocked()
-	c.mu.Unlock()
-
-	if err := c.store.RecordMCPServers(ctx, c.conversation.ID, reconciled); err != nil {
+		reconciled = c.mcpServersLocked()
+		c.mu.Unlock()
+		return c.store.RecordMCPServers(ctx, c.conversation.ID, reconciled)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return reconciled, nil

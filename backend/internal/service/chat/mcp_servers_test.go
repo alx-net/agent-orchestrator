@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -149,4 +150,53 @@ func TestRestartForToolServersWaitsForTheTurn(t *testing.T) {
 	if err != nil || done {
 		t.Fatalf("restart during a turn: done = %v err = %v", done, err)
 	}
+}
+
+// The agent's own MCP report saves the list under the store's writer; a request
+// reading or changing the agent's servers saves it too. They took the writer and
+// the controller's MCP lock in opposite orders, so an `ao mcp add` that landed
+// beside a report deadlocked, and every store write in the daemon queued behind
+// it: chats froze and messages could not be sent.
+func TestMCPReportsAndRequestsDoNotDeadlock(t *testing.T) {
+	recorder := &mcpControlRecorder{fakeConversation: newFakeConversation(), servers: []ports.ChatMCPServer{
+		{Name: "hubspot", Status: ports.ChatMCPStatusNeedsAuth},
+	}}
+	h := newHarnessWithConversation(t, recorder)
+	const rounds = 5000
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 1; i <= rounds; i++ {
+				count := i
+				recorder.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers, MCPServersComplete: true, MCPServers: []ports.ChatMCPServer{
+					{Name: "hubspot", Status: ports.ChatMCPStatusReady, ToolCount: &count},
+				}})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				if _, err := h.svc.LiveMCPServers(context.Background(), testSession); err != nil {
+					t.Errorf("LiveMCPServers: %v", err)
+					return
+				}
+				if _, _, err := h.svc.ApplyMCPServers(context.Background(), testSession, ports.ChatMCPChange{}); err != nil {
+					t.Errorf("ApplyMCPServers: %v", err)
+					return
+				}
+			}
+		}()
+		wg.Wait()
+	}()
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("MCP reports and requests deadlocked")
+	}
+	// The store still takes writes.
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Conversation.MCPServers) == 1 })
 }

@@ -74,6 +74,21 @@ func (s *Store) conversationWriter(ctx context.Context) (*gen.Queries, func()) {
 	return s.qw, s.writeMu.Unlock
 }
 
+// WithConversationWriter runs fn holding the conversation writer. Writes fn
+// makes through the context it gets reuse that writer instead of waiting for it,
+// so a caller can take its own locks inside the writer's: the order a provider
+// event projection takes them in. Inside a projection it is that projection's.
+func (s *Store) WithConversationWriter(ctx context.Context, fn func(context.Context) error) error {
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
+		return fn(ctx)
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return fn(context.WithValue(ctx, conversationProjectionTxKey{}, s.qw))
+}
+
 func (s *Store) conversationReader(ctx context.Context) *gen.Queries {
 	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
 		return q
