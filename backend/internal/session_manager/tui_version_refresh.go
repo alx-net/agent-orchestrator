@@ -166,8 +166,16 @@ func (m *Manager) terminalIdleForRestart(ctx context.Context, rec domain.Session
 // terminalRestartEligible is the durable-fact and viewer check, read before
 // and again after the input gate closes.
 func (m *Manager) terminalRestartEligible(rec domain.SessionRecord, minIdle time.Duration) bool {
+	if rec.StaleBinary == nil || rec.StaleBinary.SwitchFailedAt != nil {
+		return false
+	}
+	return m.terminalRestartIdle(rec, minIdle)
+}
+
+// terminalRestartIdle is every check of a restart but why it is wanted.
+func (m *Manager) terminalRestartIdle(rec domain.SessionRecord, minIdle time.Duration) bool {
 	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI || rec.IsTerminated || rec.Kind == domain.KindOrchestrator ||
-		!m.terminalVersionRefreshSupported(rec.Harness) || rec.StaleBinary == nil || rec.StaleBinary.SwitchFailedAt != nil ||
+		!m.terminalVersionRefreshSupported(rec.Harness) ||
 		rec.Activity.State != domain.ActivityIdle || rec.Activity.LastActivityAt.Add(minIdle).After(m.clock()) {
 		return false
 	}

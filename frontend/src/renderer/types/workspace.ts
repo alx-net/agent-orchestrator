@@ -127,6 +127,12 @@ export type WorkspaceSession = {
 	autoReviewEnabled?: boolean;
 	kind?: SessionKind;
 	/**
+	 * The session whose `ao spawn` created this one (an orchestrator, for its
+	 * workers). Absent for sessions started any other way, and for a parent the
+	 * daemon could not find in the same project when this session spawned.
+	 */
+	parentSessionId?: string;
+	/**
 	 * Which controller is currently committed for this session. The session
 	 * surface renders from THIS value, never from the current creation default.
 	 * Only the daemon's durable interface-transition coordinator may change it.

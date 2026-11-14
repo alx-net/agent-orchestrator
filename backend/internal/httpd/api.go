@@ -28,6 +28,7 @@ type APIDeps struct {
 	Agents             controllers.AgentCatalog
 	CodexAccounts      controllers.CodexAccountService
 	AgentAccounts      controllers.AgentAccountService
+	MCPServers         controllers.MCPServerService
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
 	ArtifactVersions   controllers.ArtifactVersionService
@@ -43,6 +44,8 @@ type APIDeps struct {
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
 	Reports            controllers.ReportService
+	Waits              controllers.WaitService
+	Checkouts          controllers.CheckoutService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
@@ -129,6 +132,7 @@ type API struct {
 	agents        *controllers.AgentsController
 	codexAccounts *controllers.CodexAccountsController
 	agentAccounts *controllers.AgentAccountsController
+	mcpServers    *controllers.MCPServersController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
 	automations   *controllers.AutomationsController
@@ -138,6 +142,8 @@ type API struct {
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
 	reports       *controllers.ReportsController
+	waits         *controllers.WaitsController
+	checkouts     *controllers.CheckoutsController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
 	fs            *controllers.FSController
@@ -176,6 +182,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		},
 		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
 		agentAccounts: newAgentAccountsController(deps),
+		mcpServers:    &controllers.MCPServersController{Svc: deps.MCPServers},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -201,10 +208,12 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		reports:       &controllers.ReportsController{Svc: deps.Reports},
+		waits:         &controllers.WaitsController{Svc: deps.Waits},
+		checkouts:     &controllers.CheckoutsController{Svc: deps.Checkouts},
 		push:          &controllers.PushController{Registry: deps.Push},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		fs:            &controllers.FSController{Svc: deps.Directories},
-		shellTerms:    &controllers.ShellTerminalsController{Svc: deps.ShellTerminals},
+		shellTerms:    shellTerminalsController(deps),
 		cues:          &controllers.CuesController{Svc: deps.Cues},
 		conversations: &controllers.ConversationsController{Svc: deps.Conversations, Renders: attachmentstore.New(cfg.DataDir), Search: deps.ConversationSearch},
 		settings:      &controllers.SettingsController{Svc: deps.Settings},
@@ -267,7 +276,21 @@ func (a *API) Register(root chi.Router) {
 				ordinary := middleware.Timeout(timeout)(next)
 				upload := middleware.Timeout(max(timeout, 10*time.Minute))(next)
 				clone := middleware.Timeout(max(timeout, 30*time.Minute))(next)
+				checkout := middleware.Timeout(max(timeout, 10*time.Minute))(next)
+				mcpCheck := middleware.Timeout(max(timeout, 5*time.Minute))(next)
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					// An MCP check starts every server it covers, per subscription.
+					switch chi.RouteContext(req.Context()).RoutePattern() {
+					case "/api/v1/mcp/servers", "/api/v1/mcp/test", "/api/v1/sessions/{sessionId}/mcp-servers":
+						mcpCheck.ServeHTTP(w, req)
+						return
+					}
+					// `ao checkout` fetches and checks out a whole working tree,
+					// which can outlast one REST request on a large repository.
+					if chi.RouteContext(req.Context()).RoutePattern() == "/api/v1/sessions/{sessionId}/checkouts" {
+						checkout.ServeHTTP(w, req)
+						return
+					}
 					// A clone downloads the whole repository inside the request,
 					// which takes minutes for a large repository.
 					if pattern := chi.RouteContext(req.Context()).RoutePattern(); pattern == "/api/v1/projects/clone" ||
@@ -306,6 +329,7 @@ func (a *API) Register(root chi.Router) {
 			a.agents.Register(r)
 			a.codexAccounts.Register(r)
 			a.agentAccounts.Register(r)
+			a.mcpServers.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)
@@ -315,6 +339,8 @@ func (a *API) Register(root chi.Router) {
 			a.reviews.Register(r)
 			a.notifications.Register(r)
 			a.reports.Register(r)
+			a.waits.Register(r)
+			a.checkouts.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.fs.Register(r)
@@ -413,4 +439,17 @@ func agentBrowserURL(raw string) *url.URL {
 		return nil
 	}
 	return u
+}
+
+// shellTerminalsController wires the Run button: the shell service runs the
+// command and the chat service hands its result to the agent.
+func shellTerminalsController(deps APIDeps) *controllers.ShellTerminalsController {
+	c := &controllers.ShellTerminalsController{Svc: deps.ShellTerminals}
+	if runner, ok := deps.ShellTerminals.(controllers.SessionCommandRunner); ok {
+		c.Commands = runner
+	}
+	if deps.Conversations != nil {
+		c.Messages = deps.Conversations
+	}
+	return c
 }

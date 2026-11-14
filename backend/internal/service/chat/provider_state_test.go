@@ -907,6 +907,14 @@ type mcpReloadRecorder struct {
 	count int
 }
 
+func (r *mcpReloadRecorder) Capabilities() ports.ChatCapabilities {
+	caps := ports.ChatCapabilities{ports.ChatCapabilityMCPReload: true}
+	for key, value := range r.fakeConversation.Capabilities() {
+		caps[key] = value
+	}
+	return caps
+}
+
 func (r *mcpReloadRecorder) ReloadMCPServers(context.Context) (ports.ChatMCPReloadResult, error) {
 	r.mu.Lock()
 	r.count++

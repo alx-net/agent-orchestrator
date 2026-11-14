@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   openExternal: vi.fn(),
   showMessageBox: vi.fn(),
   providerAuthenticate: vi.fn(),
+  keychainReads: vi.fn(),
 }));
 
 // The browser login itself is exercised in provider-auth-flow tests; here it
@@ -57,7 +58,10 @@ vi.mock("electron", () => ({
     decryptString: mocks.decryptString,
     encryptString: mocks.encryptString,
     getSelectedStorageBackend: () => mocks.selectedStorageBackend,
-    isEncryptionAvailable: () => mocks.encryptionAvailable,
+    isEncryptionAvailable: () => {
+      mocks.keychainReads();
+      return mocks.encryptionAvailable;
+    },
   },
   shell: { openExternal: mocks.openExternal },
 }));
@@ -171,6 +175,14 @@ describe("native WorkOS authentication", () => {
       "ao-app://callback?code=code_123&state=unverified_state", dataDir,
     )).resolves.toEqual(account);
     expect(mocks.authenticateWithCode).toHaveBeenCalledTimes(1);
+  });
+
+  // On macOS safeStorage reads the keychain on the main thread: touching it with
+  // nothing stored would freeze startup on a prompt the user never needed.
+  it("does not touch the keychain when no sign-in is stored", async () => {
+    mocks.keychainReads.mockClear();
+    await expect(readAuthStore(dataDir)).resolves.toMatchObject({});
+    expect(mocks.keychainReads).not.toHaveBeenCalled();
   });
 
   it("quietly returns to an account saved before callback deduplication was added", async () => {

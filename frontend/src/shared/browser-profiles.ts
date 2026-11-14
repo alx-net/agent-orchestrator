@@ -35,6 +35,8 @@ export type BrowserProfileRegistry = {
 	bindings: Record<string, BrowserProfileBinding>;
 	/** Profile new sessions fall back to when they have no session-specific binding. */
 	defaultProfileId: BrowserProfileId | null;
+	/** AO already created its shared Default profile once and must not recreate it. */
+	defaultProfileSeeded?: boolean;
 };
 
 export type BrowserProfileStoreError = {

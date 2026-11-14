@@ -46,7 +46,10 @@ import (
 )
 
 const (
-	maxPromptLen      = 16 << 10
+	// Large enough for pasted transcripts and @-mentioned files, and still well
+	// under macOS's ~1 MiB argv budget for agents that take the prompt in their
+	// launch command (Codex, Cursor, Copilot... in terminal mode).
+	maxPromptLen      = 512 << 10
 	maxMessageLen     = 4096
 	maxModelLen       = 256
 	maxDisplayNameLen = 100
@@ -108,6 +111,8 @@ type SessionService interface {
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 	DelegateTask(ctx context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error)
 	PrepareTask(ctx context.Context, projectID domain.ProjectID) (string, error)
+	PrepareStandaloneTask(ctx context.Context) (string, error)
+	RenewTaskPreparation(ctx context.Context, token string) error
 	CancelTaskPreparation(ctx context.Context, token string) error
 	ListPRListing(ctx context.Context, id domain.SessionID) (sessionsvc.PRListing, error)
 	ClaimPR(ctx context.Context, id domain.SessionID, ref string, opts sessionsvc.ClaimPROptions) (sessionsvc.ClaimPRResult, error)
@@ -146,6 +151,11 @@ type SessionService interface {
 
 type sessionMessageOptionsSender interface {
 	SendWithOptions(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error
+}
+
+// sessionFYIQueuer holds an `ao send --fyi` message for the target's next turn.
+type sessionFYIQueuer interface {
+	QueueFYI(ctx context.Context, id domain.SessionID, message string, options ports.MessageDeliveryOptions) (int, error)
 }
 
 // ActivityRecorder applies an agent activity-state signal to a session. It is
@@ -277,6 +287,8 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Post("/orchestrators", c.spawnOrchestrator)
 	r.Post("/orchestrators/delegate", c.delegateTask)
 	r.Post("/projects/{id}/tasks/prepare", c.prepareTask)
+	r.Post("/standalone/tasks/prepare", c.prepareStandaloneTask)
+	r.Post("/task-preparations/{token}/renew", c.renewTaskPreparation)
 	r.Delete("/task-preparations/{token}", c.cancelTaskPreparation)
 	r.Get("/orchestrators/{id}", c.getOrchestrator)
 }
@@ -355,7 +367,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(in.Prompt) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "Prompt must be 16 KiB or fewer", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "Prompt must be 512 KiB or fewer", nil)
 		return
 	}
 	// displayName is optional at the API (the desktop new-task dialog omits it
@@ -379,10 +391,11 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	if in.ClientRequestID != "" {
 		keyless := in
 		keyless.ClientRequestID = ""
+		keyless.TaskPreparation = ""
 		keyless.Attachments = nil
 		requestHash = clientRequestFingerprint("session", keyless, attachments)
 	}
-	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash})
+	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, RequestedOutput: in.RequestedOutput, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}, EffortOverride: strings.TrimSpace(in.Effort) != "", ClientRequestID: in.ClientRequestID, ClientRequestHash: requestHash, TaskPreparation: domain.TaskPreparationToken(strings.TrimSpace(in.TaskPreparation))})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -576,27 +589,34 @@ func (c *SessionsController) previewFile(w http.ResponseWriter, r *http.Request)
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/preview/files/*")
 		return
 	}
+	assetPath, _, pathErr := wildcardPath(r)
+	artifactSource := r.URL.Query().Get("source") == "artifact"
+	// A staged attachment answers before the session lookup: a task preparation
+	// stays hidden from session reads until it is claimed, yet its composer and
+	// opening message show the files staged into it. Canonical copies exist only
+	// under a session row AO owns, and their names are unguessable.
+	if pathErr == nil && !artifactSource && c.Attachments != nil {
+		if name, ok := attachmentstore.NameFromWorkspacePath(assetPath); ok {
+			file, info, openErr := c.Attachments.Open(r.Context(), sessionID(r), name)
+			if openErr == nil {
+				defer func() { _ = file.Close() }()
+				serveOpenedPreviewFile(w, r, file, info, assetPath)
+				return
+			}
+		}
+	}
 	sess, err := c.Svc.Get(r.Context(), sessionID(r))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	assetPath, _, err := wildcardPath(r)
-	if err != nil {
+	if pathErr != nil {
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "PREVIEW_NOT_FOUND", "Preview not found", nil)
 		return
 	}
-	if r.URL.Query().Get("source") == "artifact" {
+	if artifactSource {
 		c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, assetPath)
 		return
-	}
-	if name, ok := attachmentstore.NameFromWorkspacePath(assetPath); ok && c.Attachments != nil {
-		file, info, openErr := c.Attachments.Open(r.Context(), sess.ID, name)
-		if openErr == nil {
-			defer func() { _ = file.Close() }()
-			serveOpenedPreviewFile(w, r, file, info, assetPath)
-			return
-		}
 	}
 	// __ao_artifacts__/ is a reserved marker AO itself prepends when it builds
 	// an artifact preview link (see ArtifactEntryPath), but it was a valid
@@ -2200,6 +2220,10 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "MESSAGE_TOO_LONG", "Message is too long", nil)
 		return
 	}
+	if in.FYI {
+		c.queueFYI(w, r, in)
+		return
+	}
 	var attachment *ports.SpawnAttachment
 	if in.Attachment != nil {
 		decoded, attachErr := decodeAttachment(*in.Attachment, maxAttachmentBytes)
@@ -2228,6 +2252,31 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 	envelope.WriteJSON(w, http.StatusOK, SendSessionMessageResponse{OK: true, SessionID: sessionID(r), Message: message})
 }
 
+// queueFYI stores an informational message for the session's next turn
+// instead of delivering it now.
+func (c *SessionsController) queueFYI(w http.ResponseWriter, r *http.Request, in SendSessionMessageRequest) {
+	if in.Attachment != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "FYI_ATTACHMENT_UNSUPPORTED", "An FYI message cannot carry an attachment", nil)
+		return
+	}
+	message := domain.SanitizeControlChars(in.Message)
+	if strings.TrimSpace(message) == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "MESSAGE_REQUIRED", "Message is required", nil)
+		return
+	}
+	queuer, ok := c.Svc.(sessionFYIQueuer)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/send")
+		return
+	}
+	pending, err := queuer.QueueFYI(r.Context(), sessionID(r), message, ports.MessageDeliveryOptions{AuthoredByUser: in.UserAuthored, SenderSessionID: in.SenderSessionID})
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SendSessionMessageResponse{OK: true, SessionID: sessionID(r), Message: message, PendingFYIs: pending})
+}
+
 func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request) {
 	if c.Svc == nil {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/orchestrators/delegate")
@@ -2248,7 +2297,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if len(in.Brief) > maxPromptLen {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task must be 16 KiB or fewer", nil)
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "TASK_TOO_LONG", "Task must be 512 KiB or fewer", nil)
 		return
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(in.Model)) > maxModelLen {
@@ -2329,6 +2378,31 @@ func (c *SessionsController) prepareTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	envelope.WriteJSON(w, http.StatusAccepted, PrepareTaskResponse{OK: true, TaskPreparation: token})
+}
+
+func (c *SessionsController) prepareStandaloneTask(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/standalone/tasks/prepare")
+		return
+	}
+	token, err := c.Svc.PrepareStandaloneTask(r.Context())
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusAccepted, PrepareTaskResponse{OK: true, TaskPreparation: token})
+}
+
+func (c *SessionsController) renewTaskPreparation(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/task-preparations/{token}/renew")
+		return
+	}
+	if err := c.Svc.RenewTaskPreparation(r.Context(), chi.URLParam(r, "token")); err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *SessionsController) cancelTaskPreparation(w http.ResponseWriter, r *http.Request) {

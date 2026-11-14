@@ -639,3 +639,36 @@ func TestSendCarriesCooperativeSessionIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestSend_FYIHoldsMessageForNextTurn(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "worker-3")
+	cfg := setConfigEnv(t)
+	srv, capture := sendServer(t, http.StatusOK, `{"ok":true,"sessionId":"orch-1","message":"PR #7 merged","pendingFyis":2}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "orch-1", "--fyi", "--message", "PR #7 merged")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var req sendAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	// AO labels a delivered FYI with its sender, so the text carries no [from] prefix.
+	if !req.FYI || req.Message != "PR #7 merged" || req.SenderSessionID != "worker-3" || req.UserAuthored {
+		t.Fatalf("request = %+v", req)
+	}
+	if !strings.Contains(out, "FYI held for orch-1 without waking it (2 waiting)") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestSend_FYIRejectsSteer(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }},
+		"send", "--session", "orch-1", "--fyi", "--steer", "--message", "hi")
+	if got := ExitCode(err); got != 2 || !strings.Contains(fmt.Sprint(err), "--fyi") {
+		t.Fatalf("err = %v, exit code = %d, want usage error", err, got)
+	}
+}

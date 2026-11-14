@@ -1,6 +1,7 @@
 import type { SessionPRSummary } from "../hooks/useSessionScmSummary";
 import { sortedPRs, type PRState, type PullRequestFacts, type WorkspaceSession } from "../types/workspace";
 import { appI18n, type PluralMessageKey } from "../i18n";
+import { normalizeWorkspaceFileReference, workspaceFileReferenceLine } from "./workspace-file-path";
 import type {
 	PRCardPresentation,
 	PRCardStatus,
@@ -67,6 +68,45 @@ export function prChecksUrl(pr: SessionPRSummary): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+const encodePathSegments = (path: string) => path.split("/").map(encodeURIComponent).join("/");
+
+/**
+ * The GitHub `blob/{branch}/` root of a session's first open PR: where a file
+ * the agent names lives when its worktree has another branch checked out.
+ * Undefined without an open GitHub PR whose head branch is known.
+ */
+export function pullRequestFileBase(prs: readonly SessionPRSummary[]): string | undefined {
+	for (const pr of [...prs].sort(comparePRDisplaySummaries)) {
+		if ((pr.state !== "open" && pr.state !== "draft") || !pr.sourceBranch) continue;
+		try {
+			const url = new URL(prBrowserUrl(pr));
+			const repo = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/\d+$/);
+			if (url.hostname.toLowerCase() !== "github.com" || !repo) continue;
+			return `${url.origin}/${repo[1]}/${repo[2]}/blob/${encodePathSegments(pr.sourceBranch)}/`;
+		} catch {
+			continue;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * The page for a repo-relative file reference under a {@link pullRequestFileBase},
+ * at its line when it names one. Nothing checks that the file exists, so only a
+ * relative path whose name has an extension qualifies: a branch or a directory
+ * reads the same as a path without one.
+ */
+export function pullRequestFileUrl(base: string, reference: string): string | undefined {
+	const path = normalizeWorkspaceFileReference(reference);
+	const segments = path.split("/");
+	if (segments.length < 2 || segments.some((segment) => !/^[\w.@+-]+$/.test(segment) || /^\.\.?$/.test(segment))) return undefined;
+	if (!/\.[\w-]+$/.test(segments.at(-1)!)) return undefined;
+	const line = workspaceFileReferenceLine(reference);
+	if (line == null) return `${base}${encodePathSegments(path)}`;
+	// GitHub renders Markdown, which has no line anchors, unless asked for the source.
+	return `${base}${encodePathSegments(path)}${/\.(?:md|mdx|markdown)$/i.test(path) ? "?plain=1" : ""}#L${line}`;
 }
 
 // Older daemons and cloud responses can omit the provider's explanation list.

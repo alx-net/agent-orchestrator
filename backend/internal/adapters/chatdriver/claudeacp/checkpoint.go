@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -21,6 +22,8 @@ var _ ports.ChatIsolatedForker = (*checkpointDriver)(nil)
 type checkpointDriver struct {
 	ports.ChatDriver
 	plugin claudePlugin
+	// compactAt reads where sessions compact; see SetCompactAt.
+	compactAt atomic.Pointer[func() int]
 }
 
 // Reconnect forwards to the wrapped driver. Embedding ports.ChatDriver exposes

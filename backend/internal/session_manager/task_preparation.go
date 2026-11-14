@@ -15,7 +15,12 @@ import (
 const defaultTaskPreparationTTL = 5 * time.Minute
 const maxTaskPreparationsPerProject = 2
 
-// taskPreparation is the daemon-owned speculative worktree behind one opaque
+// maxStandaloneTaskPreparations bounds Scratchpad's empty folders. It is higher
+// than the project cap, which exists because a worktree is expensive: a folder
+// is not, and each window on the Scratchpad page, or one just reloaded, holds one.
+const maxStandaloneTaskPreparations = 8
+
+// taskPreparation is the daemon-owned speculative workspace behind one opaque
 // modal token. The session row reserves the final id and stays hidden until a
 // spawn claims it.
 type taskPreparation struct {
@@ -33,12 +38,16 @@ type taskPreparation struct {
 	cleaning         bool
 }
 
-// PrepareTaskWorkspace reserves the final session id and starts only the Git
-// worktree work. Provider startup and project post-create commands still wait
-// for an explicit Start Task action.
+// PrepareTaskWorkspace reserves the final session id and starts only the
+// workspace work: a Git worktree for a project, or an empty scratch folder for
+// a standalone task, which is named by the zero ProjectRecord. Provider startup
+// and project post-create commands still wait for an explicit Start Task action.
 func (m *Manager) PrepareTaskWorkspace(ctx context.Context, project domain.ProjectRecord) (domain.TaskPreparationToken, error) {
+	limit := maxTaskPreparationsPerProject
+	projectKind := project.Kind.WithDefault()
 	if project.ID == "" {
-		return "", nil
+		limit = maxStandaloneTaskPreparations
+		projectKind = domain.ProjectKindScratch
 	}
 	m.taskPreparationsMu.Lock()
 	active := 0
@@ -47,7 +56,7 @@ func (m *Manager) PrepareTaskWorkspace(ctx context.Context, project domain.Proje
 			active++
 		}
 	}
-	if active >= maxTaskPreparationsPerProject {
+	if active >= limit {
 		m.taskPreparationsMu.Unlock()
 		return "", nil // ordinary Start Task remains available without speculation
 	}
@@ -61,7 +70,7 @@ func (m *Manager) PrepareTaskWorkspace(ctx context.Context, project domain.Proje
 		m.taskPreparationsMu.Unlock()
 		return "", fmt.Errorf("prepare task workspace: reserve session: %w", err)
 	}
-	branch := DefaultSpawnBranch(rec.ID, domain.KindWorker, sessionPrefix(project), project.Kind.WithDefault(), m.dataDir)
+	branch := DefaultSpawnBranch(rec.ID, domain.KindWorker, sessionPrefix(project), projectKind, m.dataDir)
 	rec.Metadata.Branch = branch
 	if err := m.store.UpdateSession(ctx, rec); err != nil {
 		m.rollbackSpawnSeedRowAfterFailure(ctx, rec.ID)
@@ -178,6 +187,22 @@ func (m *Manager) awaitTaskPreparation(ctx context.Context, prep *taskPreparatio
 	return prep.workspace, prep.workspaceProject, prep.err
 }
 
+// RenewTaskPreparation restarts an unclaimed preparation's expiry and reports
+// whether the token is still held, so its holder learns when the workspace is
+// gone. Expiry only reclaims what an abandoned composer left behind; a Scratchpad
+// page can stay open far longer than the TTL, with files staged into its folder.
+func (m *Manager) RenewTaskPreparation(token domain.TaskPreparationToken) bool {
+	token = domain.TaskPreparationToken(strings.TrimSpace(string(token)))
+	m.taskPreparationsMu.Lock()
+	defer m.taskPreparationsMu.Unlock()
+	prep := m.taskPreparations[token]
+	if prep == nil || prep.cancelled || prep.cleaning {
+		return false
+	}
+	prep.timer.Reset(m.taskPreparationTTL)
+	return true
+}
+
 // CancelTaskPreparation is idempotent. Once Spawn has claimed the token,
 // cancellation is deliberately ignored so closing the modal cannot delete the
 // newly-visible session's worktree.
@@ -234,6 +259,9 @@ func (m *Manager) cleanupTaskPreparation(ctx context.Context, prep *taskPreparat
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if err := m.clearPreparedAttachments(ctx, prep.record.ID, domain.ProjectID(prep.project.ID), prep.project, prep.workspace.Path); err != nil {
+		return err
+	}
 	if prep.workspace.Path != "" || prep.workspaceProject != nil && len(prep.workspaceProject.Worktrees) > 0 {
 		if err := m.destroyPreparedWorkspace(ctx, prep.workspace, prep.workspaceProject); err != nil {
 			return err
@@ -258,11 +286,34 @@ func (m *Manager) cleanupTaskPreparation(ctx context.Context, prep *taskPreparat
 			m.rollbackSpawnSeedRow(ctx, prep.record.ID)
 		}
 	} else {
-		if _, err := m.store.DeleteTaskPreparation(ctx, prep.record.ID); err != nil {
-			return err
-		}
+		return m.deleteTaskPreparationRow(ctx, prep.record.ID)
 	}
 	return nil
+}
+
+// deleteTaskPreparationRow drops the hidden row and the files staged under its
+// id. Those files have no history to outlive: no message was ever sent with them.
+func (m *Manager) deleteTaskPreparationRow(ctx context.Context, id domain.SessionID) error {
+	deleted, err := m.store.DeleteTaskPreparation(ctx, id)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		m.cleanupAttachments(ctx, id)
+	}
+	return nil
+}
+
+// clearPreparedAttachments takes staged files out of a scratch preparation
+// before it is destroyed. The scratch adapter preserves any non-empty directory
+// as user work, but nothing has run in a preparation, so the files AO staged
+// there are not that work. Anything else still present keeps the folder.
+// Git worktrees need none of this: their attachments are excluded from status.
+func (m *Manager) clearPreparedAttachments(ctx context.Context, id domain.SessionID, projectID domain.ProjectID, project domain.ProjectRecord, workspacePath string) error {
+	if workspacePath == "" || (projectID != "" && project.Kind.WithDefault() != domain.ProjectKindScratch) {
+		return nil
+	}
+	return m.attachments.RemoveWorkspaceProjection(ctx, id, workspacePath)
 }
 
 func (m *Manager) discardClaimedTaskPreparation(ctx context.Context, prep *taskPreparation) {
@@ -318,6 +369,9 @@ func (m *Manager) cleanupTaskPreparationRecord(ctx context.Context, rec domain.S
 			return err
 		}
 	}
+	if err := m.clearPreparedAttachments(ctx, rec.ID, rec.ProjectID, project, ws.Path); err != nil {
+		return err
+	}
 	if len(rows) > 0 {
 		infos, err := m.sessionWorktreeRowsToRepoInfos(ctx, project, rec, rows)
 		if err != nil {
@@ -340,8 +394,7 @@ func (m *Manager) cleanupTaskPreparationRecord(ctx context.Context, rec domain.S
 	} else if err := m.deletePreparedBranches(ctx, ws, nil); err != nil {
 		return err
 	}
-	_, err = m.store.DeleteTaskPreparation(ctx, rec.ID)
-	return err
+	return m.deleteTaskPreparationRow(ctx, rec.ID)
 }
 
 func (m *Manager) requireCompletePreparedWorkspaceProject(ctx context.Context, project domain.ProjectRecord, rows []domain.SessionWorktreeRecord) error {

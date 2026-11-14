@@ -21,6 +21,7 @@ var (
 	ErrAgentAccountUnshared         = errors.New("the account's folder cannot link to this computer's history")
 	ErrAgentAccountInUse            = errors.New("an agent that uses the account could not be stopped")
 	ErrAgentAccountDefaultUnusable  = errors.New("the default account is signed out or now holds another login")
+	ErrAgentAccountNoHeadroom       = errors.New("no other signed-in account has usage left")
 )
 
 // AgentAccountProviderCLI reads and prepares one provider's CLI config

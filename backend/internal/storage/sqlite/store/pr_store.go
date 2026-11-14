@@ -493,6 +493,23 @@ func (s *Store) GetPRByNumber(ctx context.Context, number int) (domain.PullReque
 	return prRowFromGen(p), true, nil
 }
 
+// ListPRsByNumber returns every tracked PR with a provider number, active rows
+// first, across all repositories; callers scope it to one project.
+func (s *Store) ListPRsByNumber(ctx context.Context, number int) ([]domain.PullRequest, error) {
+	if number <= 0 {
+		return nil, nil
+	}
+	rows, err := s.qr.ListPRsByNumber(ctx, int64(number))
+	if err != nil {
+		return nil, fmt.Errorf("list prs by number %d: %w", number, err)
+	}
+	out := make([]domain.PullRequest, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, prRowFromGen(p))
+	}
+	return out, nil
+}
+
 // CountActivePRsByNumber reports whether a numeric resolve path is ambiguous
 // across simultaneously tracked repositories.
 func (s *Store) CountActivePRsByNumber(ctx context.Context, number int) (int, error) {

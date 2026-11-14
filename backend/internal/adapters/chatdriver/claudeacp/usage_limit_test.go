@@ -44,6 +44,9 @@ func TestClaudeNativeQuotaMetadata(t *testing.T) {
 			if (failure != nil) != tc.failure || errors.Is(failure, ports.ErrChatAuthRequired) {
 				t.Fatalf("native failure = %v, want failure=%v without login", failure, tc.failure)
 			}
+			if errors.Is(failure, ports.ErrChatUsageLimit) != tc.quota {
+				t.Fatalf("native failure %v typed as a usage limit = %v, want %v", failure, !tc.quota, tc.quota)
+			}
 			if failure != nil {
 				meta := claudeNestedMap(claudeNestedMap(response.Meta, "jetbrains"), "air")
 				if title := claudeNestedMap(meta, "sessionFailure")["title"]; failure.Error() != title {
@@ -56,6 +59,14 @@ func TestClaudeNativeQuotaMetadata(t *testing.T) {
 			}
 		})
 	}
+}
+
+func claudeNestedMap(meta map[string]any, key string) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	value, _ := meta[key].(map[string]any)
+	return value
 }
 
 type quotaFixtureClaudePlugin struct{ binary string }

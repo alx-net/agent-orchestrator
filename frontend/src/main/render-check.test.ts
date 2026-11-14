@@ -11,6 +11,9 @@ vi.mock("./render-check-proxy", () => ({
 const url = "http://127.0.0.1:3001/api/v1/sessions/p-1/renders/check-id-001";
 
 type FakeOptions = {
+	paintFrame?: boolean;
+	/** capturePage() rejects with UnknownVizError this many times first, as Electron 44 does before its first frame. */
+	vizErrors?: number;
 	loadError?: Error;
 	measureNeverReturns?: boolean;
 	emptyImage?: boolean;
@@ -34,11 +37,14 @@ type FakeOptions = {
 function fakes(options: FakeOptions = {}) {
 	const events: string[] = [];
 	const listeners = new Map<string, (...args: unknown[]) => void>();
-	const paintListeners: Array<() => void> = [];
+	const paintListeners: Array<(...args: unknown[]) => void> = [];
 	const paint = () => {
 		events.push("paint");
-		for (const listener of paintListeners.splice(0)) listener();
+		// A real offscreen page passes (event, dirty, image) with the whole frame.
+		const frame = options.paintFrame ? image(target) : undefined;
+		for (const listener of paintListeners.splice(0)) listener({}, {}, frame);
 	};
+	let vizErrors = options.vizErrors ?? 0;
 	const permissionRequest = vi.fn();
 	const cancelled: Record<string, boolean> = {};
 	const contents = {
@@ -52,7 +58,7 @@ function fakes(options: FakeOptions = {}) {
 		setWindowOpenHandler: vi.fn(),
 		setWebRTCIPHandlingPolicy: vi.fn(),
 		on: (event: string, listener: (...args: unknown[]) => void) => listeners.set(event, listener),
-		once: (event: string, listener: () => void) => {
+		once: (event: string, listener: (...args: unknown[]) => void) => {
 			if (event === "paint") paintListeners.push(listener);
 		},
 		loadURL: vi.fn(async () => {
@@ -88,6 +94,10 @@ function fakes(options: FakeOptions = {}) {
 		}),
 		capturePage: vi.fn(async () => {
 			events.push("capture");
+			if (vizErrors > 0) {
+				vizErrors--;
+				throw new Error("UnknownVizError");
+			}
 			const stale = options.staleFirstCapture && contents.capturePage.mock.calls.length === 1;
 			return image(stale ? created : options.emptyImage ? [0, 0] : target);
 		}),
@@ -223,6 +233,26 @@ describe("checkRender", () => {
 		f.paint();
 		await expect(result).resolves.toMatchObject({ data: png, height: 412 });
 		expect(f.events).toEqual(["resize 390x412", "invalidate", "paint", "capture"]);
+	});
+
+	it("uses the painted offscreen frame instead of capturePage, which Electron 44 rejects", async () => {
+		const f = fakes({ paintFrame: true });
+		await expect(checkRender(f as never, { url, width: 390 })).resolves.toMatchObject({ data: png, height: 412 });
+		expect(f.contents.capturePage).not.toHaveBeenCalled();
+		expect(f.events).toEqual(["resize 390x412", "invalidate", "paint"]);
+	});
+
+	it("retries a capture Electron refuses with UnknownVizError before its first frame", async () => {
+		const f = fakes({ vizErrors: 2 });
+		await expect(checkRender(f as never, { url, width: 390 })).resolves.toMatchObject({ data: png, height: 412 });
+		expect(f.contents.capturePage).toHaveBeenCalledTimes(3);
+	});
+
+	it("still fails on other capture errors", async () => {
+		const f = fakes();
+		f.contents.capturePage.mockRejectedValueOnce(new Error("GPU process crashed"));
+		await expect(checkRender(f as never, { url, width: 390 })).rejects.toThrow();
+		expect(f.contents.capturePage).toHaveBeenCalledTimes(1);
 	});
 
 	it("caps the captured height at 2000 px", async () => {

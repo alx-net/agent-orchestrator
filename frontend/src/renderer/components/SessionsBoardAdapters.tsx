@@ -32,6 +32,7 @@ import {
 } from "../hooks/useTerminateSession";
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
+import { BoardAgentContext, BoardAgentSubagents } from "./BoardAgentContext";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { SessionArchiveDialog, type SessionArchiveChoice } from "./SessionArchiveDialog";
 import { ArtifactPreviewCard } from "./SessionLinkPreviewCard";
@@ -207,6 +208,7 @@ function DesktopSessionCard({
 	const keepTerminateVisible = session.status === "merged";
 	const resourcePresentation = toResourcePresentation(memory, session.activity?.state === "active", memoryTone, t);
 	const translate: ProductUITranslator = (key, values) => t(key as MessageKey, values);
+	const agentContext = interactive && hasAgentContext(session);
 
 	const terminationOverlay = showTerminate ? (
 		<Tooltip>
@@ -269,6 +271,9 @@ function DesktopSessionCard({
 			branchAction={branchAction}
 			branchLabel={sessionBranchPresentation(session).naming ? <BranchNamingLabel /> : undefined}
 			branchIcon={<GitBranch aria-hidden="true" className="size-icon-2xs shrink-0" />}
+			// Their own subscriptions, so a streaming agent redraws these lines, not the card.
+			context={agentContext ? <BoardAgentContext sessionId={session.id} /> : undefined}
+			meta={agentContext ? <BoardAgentSubagents sessionId={session.id} /> : undefined}
 			error={termination.error ?? undefined}
 			externalLink={ProductExternalLink}
 			footer={
@@ -310,6 +315,11 @@ function DesktopSessionCard({
 			translate={translate}
 		/>
 	);
+}
+
+/** A live local chat session, whose conversation carries its agent's context. Terminal cards stay as they are. */
+function hasAgentContext(session: WorkspaceSession): boolean {
+	return session.mode === "chat" && !session.hostId && !session.cloud && session.isTerminated !== true;
 }
 
 const BOARD_ARTIFACT_LIMIT = 2;

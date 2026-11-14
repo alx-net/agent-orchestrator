@@ -167,7 +167,9 @@ vi.mock("./ChatWorkspace", async () => {
 			shellTarget,
 			onSend,
 			composerNotice,
+			pullRequestFileBase,
 		}: {
+			pullRequestFileBase?: string;
 			onSend: typeof sideMocks.workspaceSend;
 			composerNotice?: ReactNode;
 			agentSwitch?: AgentSwitchProps;
@@ -222,6 +224,7 @@ vi.mock("./ChatWorkspace", async () => {
 						Open report link
 					</button>
 					{shellTarget ? <div data-testid="shell-target">{shellTarget.handleId}</div> : null}
+					<div data-testid="pr-file-base">{pullRequestFileBase}</div>
 				</div>
 			);
 		},
@@ -904,6 +907,50 @@ describe("SessionChatSurface link routing", () => {
 			</Wrapper>,
 		);
 		expect(openInBrowser).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves a completed response's GitHub links for the user to open", async () => {
+		const localSession = { ...session, id: "session-github-link" };
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		const openInBrowser = vi.fn().mockResolvedValue(undefined);
+		const view = render(<Wrapper client={queryClient}><SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
+		conversationState.snapshot = {
+			capabilities: [],
+			items: [{
+				kind: "message", id: "assistant-github", sequence: 1, revision: 1, role: "assistant", origin: "provider",
+				text: "Opened [#5449](https://github.com/Kugelaudio/KugelAudio/pull/5449); preview at http://localhost:5173/",
+				streaming: false, createdAt: "2026-08-08T00:00:01Z",
+			}],
+		};
+		view.rerender(<Wrapper client={queryClient}><SessionChatSurface session={localSession} onOpenLinkInBrowser={openInBrowser} /></Wrapper>);
+
+		await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith("http://localhost:5173/"));
+		expect(openInBrowser).toHaveBeenCalledTimes(1);
+	});
+
+	it("roots files the worktree lacks at the open PR's head branch", async () => {
+		const prSession = {
+			...session,
+			id: "session-open-pr",
+			prs: [{ url: "https://github.com/Kugelaudio/KugelAudio/pull/5449", number: 5449, state: "open", ci: "passing", review: "none", mergeability: "mergeable", reviewComments: false, updatedAt: "2026-08-08T00:00:00Z" }],
+		} satisfies WorkspaceSession;
+		getMock.mockImplementation(async (path: string) => path === "/api/v1/sessions/{sessionId}/pr"
+			? { data: { prs: [{ url: "https://github.com/Kugelaudio/KugelAudio/pull/5449", htmlUrl: "https://github.com/Kugelaudio/KugelAudio/pull/5449", number: 5449, state: "open", provider: "github", sourceBranch: "ao/kugelaudio-3/cloud-workspace-spec", mergeability: { state: "mergeable", reasons: [], prUrl: "" } }], linkedPrs: [] }, error: undefined }
+			: { data: {}, error: undefined, response: { status: 200 } });
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+		render(<Wrapper client={queryClient}><SessionChatSurface session={prSession} /></Wrapper>);
+
+		await waitFor(() => expect(screen.getByTestId("pr-file-base")).toHaveTextContent(
+			"https://github.com/Kugelaudio/KugelAudio/blob/ao/kugelaudio-3/cloud-workspace-spec/",
+		));
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr", { params: { path: { sessionId: "session-open-pr" } } });
+	});
+
+	it("asks for no PR summary when the session has no open PR", () => {
+		render(<Wrapper client={new QueryClient()}><SessionChatSurface session={session} /></Wrapper>);
+		expect(getMock).not.toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr", expect.anything());
+		expect(screen.getByTestId("pr-file-base")).toBeEmptyDOMElement();
 	});
 
 	it("does not reopen an old assistant link when an unrelated snapshot field changes", async () => {

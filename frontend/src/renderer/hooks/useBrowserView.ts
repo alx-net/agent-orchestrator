@@ -92,7 +92,8 @@ export type BrowserViewModel = {
 	viewId: string;
 	navState: BrowserNavState;
 	slotRef: (node: HTMLDivElement | null) => void;
-	navigate: (url: string) => Promise<void>;
+	/** `focusPage`: the person typed the address, so the keyboard moves to the page. */
+	navigate: (url: string, options?: { focusPage?: boolean }) => Promise<void>;
 	goBack: () => Promise<void>;
 	goForward: () => Promise<void>;
 	reload: () => Promise<void>;
@@ -949,7 +950,7 @@ export function useBrowserView({
 	}, [navState.url, setAnnotationMode]);
 
 	const navigate = useCallback(
-		(url: string) => {
+		(url: string, navigateOptions?: { focusPage?: boolean }) => {
 			if (!hasNativeBrowser) {
 				const normalized = url.trim();
 				setNavState((current) => ({
@@ -960,7 +961,7 @@ export function useBrowserView({
 				}));
 				return Promise.resolve();
 			}
-			return withView((id) => window.ao!.browser.navigate({ viewId: id, url }));
+			return withView((id) => window.ao!.browser.navigate({ viewId: id, url, ...(navigateOptions?.focusPage ? { focusPage: true } : {}) }));
 		},
 		[hasNativeBrowser, withView],
 	);

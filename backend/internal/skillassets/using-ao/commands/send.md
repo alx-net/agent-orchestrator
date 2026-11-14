@@ -5,7 +5,15 @@ Send a message to a running agent session without killing and respawning it.
 Plain `ao send` delivers a separate message. If a Chat session is busy with a
 running turn, the message is queued and delivered as its own turn after the
 current turn ends; it does not reach the running turn. To correct or redirect
-an agent mid-turn, use `--steer`.
+an agent mid-turn, use `--steer`. For information the recipient does not need
+to act on now, use `--fyi`: it does not wake the recipient.
+
+Every delivered message starts a full turn for the recipient, so send one only
+when it must act, and then include everything it needs: what to do, the
+evidence (failing output, file, PR, or commit references), and the expected
+result. Never send a message that only acknowledges, thanks, or confirms
+receipt, and do not relay CI or PR news: AO already delivers CI failures and
+review comments to the session that owns the PR.
 
 ## Syntax
 
@@ -20,8 +28,24 @@ ao send [flags]
 | `--message string` | Message body | Required unless `--recover-only` |
 | `--session string` | Session id | Required |
 | `--steer` | Add guidance to the active Chat turn, or start a normal turn when idle | Optional |
+| `--fyi` | Hold the message for the session's next turn instead of starting one | Optional; not with `--steer` |
 | `--client-message-id string` | Stable delivery handle for steering and safe retries | Generated automatically with `--steer` |
 | `--recover-only` | Recover the outcome for an existing delivery handle without resending | Requires `--steer` and `--client-message-id` |
+
+## Informational messages (`--fyi`)
+
+`--fyi` stores the message durably and never starts a turn. AO appends every
+waiting FYI, in arrival order, to the next turn the recipient starts, whatever
+starts it: a user message, a plain `ao send`, a worker report, or a CI or
+review event. Each one is labeled `[fyi]` with its sender and the time it was
+sent, and is delivered once. The command prints how many FYIs are waiting for
+that session.
+
+Use it for context the recipient should have before its next decision but
+need not act on now, such as "PR #88 merged; the API change is on main". An
+`[fyi]` entry you receive needs no reply; act on it only if it changes your
+work. If the recipient must act, or a blocker or decision cannot wait, send a
+normal message instead.
 
 ## Steering and recovery
 
@@ -65,4 +89,9 @@ ao send --session mer-3 --steer --message "The issue is in session_manager.go li
 ```bash
 # Send a separate message (queued behind a running Chat turn)
 ao send --session mer-3 --message "When you finish, also update the changelog."
+```
+
+```bash
+# Share context without waking the recipient; it arrives with its next turn
+ao send --session mer-orchestrator --fyi --message "Rebased onto main after #88 merged; no conflicts."
 ```

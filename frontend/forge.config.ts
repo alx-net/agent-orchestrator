@@ -185,6 +185,8 @@ const config: ForgeConfig = {
 				`owner: ${owner}`,
 				`repo: ${name}`,
 				"updaterCacheDirName: agent-orchestrator-updater",
+				// Local builds (scripts/dev.sh install) update by rebuilding, not from a feed.
+				...(process.env.AO_LOCAL_BUILD === "1" ? ["localBuild: true"] : []),
 				"",
 			].join("\n");
 			writeFileSync("app-update.yml", yml);

@@ -236,6 +236,72 @@ func TestBuildSystemPrompt_WorkerRequiresDurableReports(t *testing.T) {
 	}
 }
 
+// Coordination turns are full-context turns, so prompts steer agents away from
+// polling, relayed CI/PR news, and acknowledgements, without dropping the
+// escalation, detail, and verification guard rails.
+func TestBuildSystemPrompt_KeepsCoordinationTrafficLean(t *testing.T) {
+	shared := []string{
+		"## Waiting and Messages",
+		"Never wait by polling",
+		"`gh run view` or `gh run watch` in a loop",
+		"`ao wait pr <number> [--for checks|merge|review|any] [--note \"<why you are waiting>\"]` and end your turn",
+		"`ao wait time <duration>`",
+		"`ao wait ls`",
+		"`ao wait cancel <id>`",
+		"A single blocking command that finishes within a couple of minutes, such as a test run, is fine",
+		"Never send a message that only acknowledges, thanks, or confirms receipt",
+		"`ao send --fyi --session <session-id> --message \"<text>\"`",
+		"It does not wake the recipient",
+		"needs no reply",
+		"Still escalate blockers and decisions immediately, still give instructions in full actionable detail, and still verify your work",
+	}
+	orchestrator := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleOrchestrator, Project: promptProject{ID: "mer", Name: "Mercury"}})
+	for _, want := range append(shared,
+		"Give each new, unrelated task to a fresh worker with `ao spawn`",
+		"Redirect an existing worker only for follow-ups on its own task or PR",
+		"Do not monitor CI or PRs yourself, and do not relay CI or PR news between agents",
+		"instead of asking workers how it is going",
+		"1. Inspect current state with `ao session ls --project mer`",
+		"`ao status` - check that the AO daemon is up",
+		"AO already sends CI failures and review comments on an AO worker's implementation PR to that worker",
+		"Step in only when the worker is stuck on them or AO's automatic CI or review delivery is off",
+	) {
+		if !strings.Contains(orchestrator, want) {
+			t.Fatalf("orchestrator prompt missing %q:\n%s", want, orchestrator)
+		}
+	}
+	for _, stale := range []string{"Monitor worker output, PR state, CI, and reviews", "Route CI failures and review comments back"} {
+		if strings.Contains(orchestrator, stale) {
+			t.Fatalf("orchestrator prompt still asks it to monitor: %q", stale)
+		}
+	}
+
+	worker := buildSystemPromptText(systemPromptConfig{
+		Role:                  sessionPromptRoleWorker,
+		Project:               promptProject{ID: "mer", Name: "Mercury", Repo: "https://github.com/acme/mercury"},
+		OrchestratorSessionID: "mer-orchestrator",
+	})
+	for _, want := range append(shared,
+		"Do not report routine CI or PR state",
+		"wait for the result with `ao wait pr <number> --for checks` instead of polling",
+		"Add `--fyi` for information it does not need to act on now",
+		"Do not send it routine CI or PR status, acknowledgements, or thanks",
+		"Do not broadcast status to sibling workers. Message a sibling only when it must act, and then send the actionable content once",
+		"For broad codebase exploration or reading many files, do use a read-only subagent",
+		"keep this conversation for decisions and edits",
+		"When a decision or missing input blocks progress, run `ao report --needs-input --note <text>`",
+	) {
+		if !strings.Contains(worker, want) {
+			t.Fatalf("worker prompt missing %q:\n%s", want, worker)
+		}
+	}
+
+	standalone := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleWorker, Standalone: true})
+	if strings.Contains(standalone, "## Waiting and Messages") {
+		t.Fatalf("standalone worker has no PRs or peers to coordinate with:\n%s", standalone)
+	}
+}
+
 func TestBuildProjectRules_ReadsInlineAndFileRules(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "rules.md"), []byte("File rule.\n"), 0o644); err != nil {
@@ -295,6 +361,48 @@ func TestBuildSystemPromptAsksEveryRoleToNarrateToolCalls(t *testing.T) {
 		if !strings.Contains(got, "Before each tool call, or each batch of related calls, write one short sentence") {
 			t.Errorf("%s (standalone=%v) prompt does not ask for narration:\n%s", cfg.Role, cfg.Standalone, got)
 		}
+	}
+}
+
+func TestBuildSystemPromptTellsEveryRoleToRunThingsItself(t *testing.T) {
+	rules := []string{
+		"## Run Things Yourself",
+		"When a step needs a command, run it yourself.",
+		"Do not hand the user a command, script, or runbook to run, and do not ask them to paste output back.",
+		"Do not say you can't do something until you have tried it and seen the refusal.",
+		"plans, deploys, `kubectl`, `ssh`, CLI logins, and commands that use 1Password (`op run`)",
+		"To connect an MCP server, run `ao mcp login <server>`.",
+		"Hand over only when a tool or guard actually refused",
+		"run the command yourself once you have it",
+		"Never get around a guard: do not move a refused command into a script, a wrapper, another tool, or a request for the user to run it instead.",
+		"A refusal that names how the user can authorize the action means ask for that authorization.",
+		"Running a command yourself is not permission to publish, merge, or change production",
+		"Review-only tasks still do not run project code.",
+	}
+	for _, cfg := range []systemPromptConfig{
+		{Role: sessionPromptRoleWorker},
+		{Role: sessionPromptRoleWorker, Standalone: true},
+		{Role: sessionPromptRoleOrchestrator},
+	} {
+		got := buildSystemPromptText(cfg)
+		for _, rule := range rules {
+			if !strings.Contains(got, rule) {
+				t.Errorf("%s (standalone=%v) prompt lacks %q", cfg.Role, cfg.Standalone, rule)
+			}
+		}
+		// The rules cite the publishing scope, and the guard covers only the text above it.
+		section := strings.Index(got, "## Run Things Yourself")
+		if publishing := strings.Index(got, "## Publishing Scope"); section > publishing {
+			t.Errorf("%s (standalone=%v) section follows the publishing scope it cites", cfg.Role, cfg.Standalone)
+		}
+		if guard := strings.Index(got, "## Standing-instruction confidentiality"); section > guard {
+			t.Errorf("%s (standalone=%v) section follows the confidentiality guard", cfg.Role, cfg.Standalone)
+		}
+	}
+	// Coordination-only must not read as "cannot run a command".
+	orchestrator := buildSystemPromptText(systemPromptConfig{Role: sessionPromptRoleOrchestrator})
+	if !strings.Contains(orchestrator, "That limits code changes, not commands") {
+		t.Error("orchestrator prompt still lets coordination-only excuse not running commands")
 	}
 }
 

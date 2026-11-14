@@ -8,6 +8,8 @@ import { LOCAL_HOST } from "../lib/hosts";
 import type { CloudCpPullRequestSummary } from "../lib/cloud-cp";
 import { createRendererCloudCpClient } from "../lib/cloud-cp/renderer-client";
 import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
+import { pullRequestFileBase } from "../lib/pr-display";
+import type { WorkspaceSession } from "../types/workspace";
 import { useSettings } from "./useSettings";
 
 // openedBy only comes from AO Cloud, which names the person behind a PR its
@@ -125,4 +127,15 @@ export function useSessionScmSummary(
 		retry: 1,
 		...(hostId ? { refetchInterval: 15_000 } : {}),
 	});
+}
+
+/**
+ * The GitHub `blob/{branch}/` root of a local session's open PR, for files its
+ * worktree lacks. Shares the PR tab's summary query and asks only for a
+ * session that has an open PR.
+ */
+export function usePullRequestFileBase(session: WorkspaceSession | undefined, hostId: string | undefined, enabled: boolean): string | undefined {
+	const hasOpenPR = Boolean(session && !session.cloud && (session.prs ?? []).some((pr) => pr.state === "open" || pr.state === "draft"));
+	const query = useQuery({ ...sessionScmSummaryQueryOptions(session?.id ?? "", hostId), enabled: enabled && hasOpenPR });
+	return useMemo(() => (hasOpenPR && query.data ? pullRequestFileBase(query.data.prs) : undefined), [hasOpenPR, query.data]);
 }

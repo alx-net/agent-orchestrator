@@ -161,6 +161,8 @@ ao send --session ao-123 --message "Please address the failing test"
 
 `--session` and `--message` are required for ordinary sends. When called from a session with `AO_SESSION_ID`, Orchestrator prefixes the sender identity.
 
+Add `--fyi` for information the session does not need to act on now. It does not start a turn: AO holds it and adds it, labeled with sender and time, to the next turn the session starts, whatever starts it. `--fyi` cannot be combined with `--steer`.
+
 Use `--steer` to steer an active supported Chat turn or submit a normal turn when idle. `--client-message-id` supplies a stable delivery handle. If delivery is uncertain, recover the recorded result without resending:
 
 ```bash

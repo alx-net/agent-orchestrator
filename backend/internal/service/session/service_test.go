@@ -82,6 +82,7 @@ type fakeStore struct {
 	num                 int
 	conversations       map[domain.SessionID]domain.ConversationRecord
 	activities          []domain.ConversationActivity
+	titleAreaCalls      []titleAreaCall
 
 	// getCleanupFactsCalls counts single-session reads; listCleanupFactsCalls
 	// counts batched ones, and cleanupFactsRequested records the ids they asked for.
@@ -245,6 +246,32 @@ func TestTaskPreparationsStayOutOfSessionReads(t *testing.T) {
 	}
 	if first, err := svc.isFirstSession(context.Background()); err != nil || !first {
 		t.Fatalf("isFirstSession = %v, %v", first, err)
+	}
+}
+
+func TestHiddenStandalonePreparationListsItsFolder(t *testing.T) {
+	st := newFakeStore()
+	folder := t.TempDir()
+	st.sessions["standalone-1"] = domain.SessionRecord{
+		ID:                "standalone-1",
+		Kind:              domain.KindWorker,
+		IsTaskPreparation: true,
+		Metadata:          domain.SessionMetadata{WorkspacePath: folder},
+	}
+	svc := &Service{store: st}
+
+	files, err := svc.ListWorkspaceFiles(context.Background(), "standalone-1")
+	if err != nil || len(files.Files) != 0 {
+		t.Fatalf("empty folder = %+v, %v", files, err)
+	}
+	if err := os.MkdirAll(filepath.Join(folder, ".ao", "attachments"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, ".ao", "attachments", "attachment-1.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ListWorkspaceFiles(context.Background(), "standalone-1"); err != nil {
+		t.Fatalf("folder with a staged file: %v", err)
 	}
 }
 
@@ -412,6 +439,23 @@ func (f *fakeStore) RenameSessionIfDisplayName(_ context.Context, id domain.Sess
 		return false, nil
 	}
 	r.DisplayName = displayName
+	r.UpdatedAt = updatedAt
+	f.sessions[id] = r
+	return true, nil
+}
+
+// SetSessionTitleArea mirrors the store: the area is recorded once and only the
+// provisional display name takes its prefix.
+func (f *fakeStore) SetSessionTitleArea(_ context.Context, id domain.SessionID, area, provisional string, updatedAt time.Time) (bool, error) {
+	f.titleAreaCalls = append(f.titleAreaCalls, titleAreaCall{id: id, area: area, provisional: provisional})
+	r, ok := f.sessions[id]
+	if !ok || area == "" || r.TitleArea != "" {
+		return false, nil
+	}
+	r.TitleArea = area
+	if r.DisplayName != "" && r.DisplayName == provisional {
+		r.DisplayName = domain.PrefixSessionTitle(area, r.DisplayName)
+	}
 	r.UpdatedAt = updatedAt
 	f.sessions[id] = r
 	return true, nil
@@ -2689,6 +2733,7 @@ func (f *fakeCommander) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domai
 func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
 	return "", nil
 }
+func (*fakeCommander) RenewTaskPreparation(domain.TaskPreparationToken) bool { return false }
 func (*fakeCommander) CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error {
 	return nil
 }

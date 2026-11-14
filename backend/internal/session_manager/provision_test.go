@@ -770,7 +770,7 @@ func TestSpawnPermissionPrecedence(t *testing.T) {
 			name                    string
 			base, role, spawn, want domain.PermissionMode
 		}{
-			{"unset", "", "", "", domain.PermissionModeAuto},
+			{"unset", "", "", "", domain.PermissionModeBypassPermissions},
 			{"project", domain.PermissionModeDefault, "", "", domain.PermissionModeDefault},
 			{"role", domain.PermissionModeAuto, domain.PermissionModeAcceptEdits, "", domain.PermissionModeAcceptEdits},
 			{"spawn", domain.PermissionModeAuto, domain.PermissionModeAcceptEdits, domain.PermissionModeDefault, domain.PermissionModeDefault},

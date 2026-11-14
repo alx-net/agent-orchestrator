@@ -1,7 +1,7 @@
 import { BrowserIcon } from "./icons";
 import { useState } from "react";
 import { cn } from "../lib/utils";
-import { openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { openLinkInSystemBrowser, opensInSystemBrowser } from "../lib/external-link-policy";
 import type { LinkPreview } from "../hooks/useLinkPreview";
 import { Skeleton } from "./ui/skeleton";
 
@@ -53,7 +53,7 @@ export function LinkPreviewCard({ url, preview, onBrowserOpen }: {
 		href: url,
 		onClick: (event: React.MouseEvent<HTMLAnchorElement>) => {
 			event.preventDefault();
-			if (onBrowserOpen && !event.ctrlKey && !event.metaKey && !event.altKey) onBrowserOpen(url);
+			if (onBrowserOpen && !opensInSystemBrowser(url) && !event.ctrlKey && !event.metaKey && !event.altKey) onBrowserOpen(url);
 			else void openLinkInSystemBrowser(url);
 		},
 	};

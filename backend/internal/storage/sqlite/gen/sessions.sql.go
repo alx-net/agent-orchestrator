@@ -227,7 +227,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE id = ?
 `
 
@@ -310,6 +310,8 @@ type GetSessionRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -394,6 +396,8 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.ClientRequestHash,
 		&i.ClientRequestCommitted,
 		&i.RuntimeReleasedLaunchID,
+		&i.ParentSessionID,
+		&i.TitleArea,
 	)
 	return i, err
 }
@@ -417,7 +421,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE automation_run_id = ?
 `
 
@@ -500,6 +504,8 @@ type GetSessionByAutomationRunIDRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
 }
 
 func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRunID *domain.AutomationRunID) (GetSessionByAutomationRunIDRow, error) {
@@ -584,7 +590,26 @@ func (q *Queries) GetSessionByAutomationRunID(ctx context.Context, automationRun
 		&i.ClientRequestHash,
 		&i.ClientRequestCommitted,
 		&i.RuntimeReleasedLaunchID,
+		&i.ParentSessionID,
+		&i.TitleArea,
 	)
+	return i, err
+}
+
+const getSessionTitleState = `-- name: GetSessionTitleState :one
+SELECT display_name, title_area, auto_title FROM sessions WHERE id = ?
+`
+
+type GetSessionTitleStateRow struct {
+	DisplayName string
+	TitleArea   sql.NullString
+	AutoTitle   string
+}
+
+func (q *Queries) GetSessionTitleState(ctx context.Context, id domain.SessionID) (GetSessionTitleStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getSessionTitleState, id)
+	var i GetSessionTitleStateRow
+	err := row.Scan(&i.DisplayName, &i.TitleArea, &i.AutoTitle)
 	return i, err
 }
 
@@ -604,7 +629,7 @@ INSERT INTO sessions (
     requested_output,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
     provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
-    client_request_id, client_request_hash
+    client_request_id, client_request_hash, parent_session_id
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -612,7 +637,7 @@ INSERT INTO sessions (
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    ?, ?, ?
+    ?, ?, ?, ?
 )
 `
 
@@ -680,6 +705,7 @@ type InsertSessionParams struct {
 	AutomationLaunchCompleted        bool
 	ClientRequestID                  string
 	ClientRequestHash                string
+	ParentSessionID                  sql.NullString
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -747,6 +773,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.AutomationLaunchCompleted,
 		arg.ClientRequestID,
 		arg.ClientRequestHash,
+		arg.ParentSessionID,
 	)
 	return err
 }
@@ -770,7 +797,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions ORDER BY project_id, num
 `
 
@@ -853,6 +880,8 @@ type ListAllSessionsRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -943,6 +972,8 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.ClientRequestHash,
 			&i.ClientRequestCommitted,
 			&i.RuntimeReleasedLaunchID,
+			&i.ParentSessionID,
+			&i.TitleArea,
 		); err != nil {
 			return nil, err
 		}
@@ -1009,7 +1040,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE is_terminated = 0 ORDER BY project_id, num
 `
 
@@ -1092,6 +1123,8 @@ type ListLiveSessionsRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
 }
 
 // ListAllSessions without terminated sessions, for frequent pollers that only
@@ -1184,6 +1217,8 @@ func (q *Queries) ListLiveSessions(ctx context.Context) ([]ListLiveSessionsRow, 
 			&i.ClientRequestHash,
 			&i.ClientRequestCommitted,
 			&i.RuntimeReleasedLaunchID,
+			&i.ParentSessionID,
+			&i.TitleArea,
 		); err != nil {
 			return nil, err
 		}
@@ -1217,7 +1252,7 @@ SELECT id, project_id, num, issue_id, kind, harness,
     claude_activity_facts, codex_activity_facts,
     hibernated_at, stale_binary_since, stale_binary_version, stale_binary_launch, stale_binary_switch_failed_at,
     client_request_id, client_request_hash, client_request_committed,
-    runtime_released_launch_id
+    runtime_released_launch_id, parent_session_id, title_area
 FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
@@ -1300,6 +1335,8 @@ type ListSessionsByProjectRow struct {
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
 	RuntimeReleasedLaunchID          string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -1390,6 +1427,8 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.ClientRequestHash,
 			&i.ClientRequestCommitted,
 			&i.RuntimeReleasedLaunchID,
+			&i.ParentSessionID,
+			&i.TitleArea,
 		); err != nil {
 			return nil, err
 		}
@@ -1605,8 +1644,9 @@ UPDATE sessions SET
     provision_error = '',
     client_request_id = ?18,
     client_request_hash = ?19,
+    parent_session_id = ?20,
     is_task_preparation = 0
-WHERE id = ?20 AND is_task_preparation = 1
+WHERE id = ?21 AND is_task_preparation = 1
 `
 
 type PromoteTaskPreparationParams struct {
@@ -1629,6 +1669,7 @@ type PromoteTaskPreparationParams struct {
 	ProvisionState     domain.SessionProvisionState
 	ClientRequestID    string
 	ClientRequestHash  string
+	ParentSessionID    sql.NullString
 	ID                 domain.SessionID
 }
 
@@ -1655,6 +1696,7 @@ func (q *Queries) PromoteTaskPreparation(ctx context.Context, arg PromoteTaskPre
 		arg.ProvisionState,
 		arg.ClientRequestID,
 		arg.ClientRequestHash,
+		arg.ParentSessionID,
 		arg.ID,
 	)
 	if err != nil {
@@ -1744,22 +1786,25 @@ func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) (i
 
 const renameSessionIfDisplayName = `-- name: RenameSessionIfDisplayName :execrows
 UPDATE sessions
-SET display_name = ?1, updated_at = ?2
-WHERE id = ?3
-  AND display_name = ?4
+SET display_name = ?1, auto_title = ?2, updated_at = ?3
+WHERE id = ?4
+  AND display_name = ?5
   AND is_terminated = 0
 `
 
 type RenameSessionIfDisplayNameParams struct {
 	DisplayName        string
+	AutoTitle          string
 	UpdatedAt          time.Time
 	ID                 domain.SessionID
 	CurrentDisplayName string
 }
 
+// Only AO's automatic titles use this; auto_title remembers the name it wrote.
 func (q *Queries) RenameSessionIfDisplayName(ctx context.Context, arg RenameSessionIfDisplayNameParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, renameSessionIfDisplayName,
 		arg.DisplayName,
+		arg.AutoTitle,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.CurrentDisplayName,
@@ -2223,6 +2268,41 @@ type SetSessionTerminateOnPRMergeParams struct {
 
 func (q *Queries) SetSessionTerminateOnPRMerge(ctx context.Context, arg SetSessionTerminateOnPRMergeParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setSessionTerminateOnPRMerge, arg.TerminateOnPRMerge, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionTitleArea = `-- name: SetSessionTitleArea :execrows
+UPDATE sessions
+SET title_area = ?1, display_name = ?2,
+    auto_title = ?3, updated_at = ?4
+WHERE id = ?5
+  AND title_area IS NULL
+  AND display_name = ?6
+`
+
+type SetSessionTitleAreaParams struct {
+	TitleArea          sql.NullString
+	DisplayName        string
+	AutoTitle          string
+	UpdatedAt          time.Time
+	ID                 domain.SessionID
+	CurrentDisplayName string
+}
+
+// The area is chosen once. display_name is the compare-and-set witness, so a
+// rename landing after the caller's read keeps the user's name.
+func (q *Queries) SetSessionTitleArea(ctx context.Context, arg SetSessionTitleAreaParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionTitleArea,
+		arg.TitleArea,
+		arg.DisplayName,
+		arg.AutoTitle,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.CurrentDisplayName,
+	)
 	if err != nil {
 		return 0, err
 	}

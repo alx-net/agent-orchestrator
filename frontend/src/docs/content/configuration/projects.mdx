@@ -57,6 +57,7 @@ ao project rm <project-id>
 | `reviewers` | Harnesses used for Orchestrator review runs. |
 | `trackerIntake` | Opt-in, read-only issue intake that can start workers. Also requires `AO_TRACKER_INTAKE=on` in the daemon environment. |
 | `containerReap` | Project-wide opt-out from Orchestrator's session-container cleanup. |
+| `titleAreas` | Product areas as `{"name":"S2S","hint":"S2S v1, speech-to-speech"}` (up to 20, names up to 32 characters). A new session's task is matched to at most one, and its titles read `S2S: <title>`. A session you rename keeps your name. CLI: repeat `--title-area "NAME[=HINT]"`. |
 
 `symlinks` and `agentRulesFile` must stay inside the repository. Orchestrator rejects absolute paths and paths that traverse outside it. Scratch projects do not support Git-only fields such as `defaultBranch` or `symlinks`.
 

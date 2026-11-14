@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build a ref of the fork and install it as the everyday app.
 #
-#   ao-app-update            # origin/main
-#   ao-app-update my-branch  # origin/my-branch (or any commit-ish)
+#   ao-app-update            # the ref used last time (origin/main at first)
+#   ao-app-update my-branch  # origin/my-branch (or any commit-ish); remembered
 #
 # Builds in a dedicated checkout (~/.ao/build-src), never in a workspace, so
 # work in progress is untouched. `scripts/dev.sh link-updater` puts this script
@@ -11,7 +11,8 @@
 set -euo pipefail
 
 main() {
-  local ref="${1:-main}"
+  local ref_file="${HOME}/.ao/app-update-ref"
+  local ref="${1:-$(cat "${ref_file}" 2>/dev/null || echo main)}"
   local self repo src target
   self="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
   repo="${AO_APP_REPO:-$(cd "${self}" && cd "$(git rev-parse --git-common-dir)/.." && pwd)}"
@@ -24,6 +25,12 @@ main() {
   else
     target="${ref}"
   fi
+  # A ref without the installer would leave the build checkout (and this
+  # command, which links into it) broken.
+  if ! git -C "${repo}" cat-file -e "${target}:scripts/dev.sh" 2>/dev/null; then
+    printf 'error: %s has no scripts/dev.sh; nothing was changed\n' "${target}" >&2
+    exit 1
+  fi
   if [[ ! -e "${src}/.git" ]]; then
     git -C "${repo}" worktree add --quiet --detach "${src}" "${target}"
   else
@@ -34,6 +41,7 @@ main() {
     git -C "${src}" checkout --quiet --detach "${target}"
   fi
   printf '\033[1;34m==>\033[0m building %s (%s)\n' "${target}" "$(git -C "${src}" log -1 --format='%h %s')"
+  printf '%s\n' "${ref}" > "${ref_file}"
   AO_REOPEN=1 bash "${src}/scripts/dev.sh" install
 }
 

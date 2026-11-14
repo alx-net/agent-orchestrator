@@ -7,6 +7,8 @@ import {
 	prDiffSummary,
 	prStatusRows,
 	prSummaryParts,
+	pullRequestFileBase,
+	pullRequestFileUrl,
 	sessionPRDisplaySummaries,
 } from "./pr-display";
 
@@ -414,6 +416,51 @@ describe("prCardPresentation", () => {
 
 		expect(presentation.primary.detail).toBe("GitLab currently reports this pull request can't be merged.");
 		expect(presentation.readiness?.detail).toBe("GitLab currently reports this pull request can't be merged.");
+	});
+});
+
+describe("pull request file links", () => {
+	const base = "https://github.com/Kugelaudio/KugelAudio/blob/ao/kugelaudio-3/cloud-workspace-spec/";
+
+	it("roots files at the head branch of the first open GitHub PR", () => {
+		const open = summary({
+			number: 5449,
+			url: "https://github.com/Kugelaudio/KugelAudio/pull/5449",
+			htmlUrl: "https://github.com/Kugelaudio/KugelAudio/pull/5449",
+			sourceBranch: "ao/kugelaudio-3/cloud-workspace-spec",
+		});
+		expect(pullRequestFileBase([summary({ number: 1, state: "merged", sourceBranch: "old" }), open])).toBe(base);
+		expect(pullRequestFileBase([summary({ state: "draft", sourceBranch: "wip #2" })])).toBe("https://github.com/acme/repo/blob/wip%20%232/");
+	});
+
+	it("has no root without an open GitHub PR whose head branch is known", () => {
+		expect(pullRequestFileBase([])).toBeUndefined();
+		expect(pullRequestFileBase([summary({ state: "closed" })])).toBeUndefined();
+		expect(pullRequestFileBase([summary({ sourceBranch: "" })])).toBeUndefined();
+		const gitlab = "https://gitlab.com/acme/repo/-/merge_requests/7";
+		expect(pullRequestFileBase([summary({ provider: "gitlab", url: gitlab, htmlUrl: gitlab, mergeability: { state: "mergeable", reasons: [], prUrl: gitlab } })])).toBeUndefined();
+	});
+
+	it("links a relative file on that branch, at its line", () => {
+		expect(pullRequestFileUrl(base, "products/platform/docs/22-workspaces.md")).toBe(`${base}products/platform/docs/22-workspaces.md`);
+		expect(pullRequestFileUrl(base, "./src/app.ts:42")).toBe(`${base}src/app.ts#L42`);
+		expect(pullRequestFileUrl(base, "docs/plan.md:7:2")).toBe(`${base}docs/plan.md?plain=1#L7`);
+		expect(pullRequestFileUrl(base, "config/.env.local")).toBe(`${base}config/.env.local`);
+	});
+
+	it("does not guess at branches, directories, absolute paths or URLs", () => {
+		for (const reference of [
+			"ao/kugelaudio-3/cloud-workspace-spec",
+			"infrastructure/hetzner-agents/scripts/apply",
+			"README.md",
+			"/Users/ada/repo/docs/plan.md",
+			"~/notes/plan.md",
+			"../outside/plan.md",
+			"https://example.com/docs/plan.md",
+			"docs/plan.md#intro",
+		]) {
+			expect(pullRequestFileUrl(base, reference), reference).toBeUndefined();
+		}
 	});
 });
 

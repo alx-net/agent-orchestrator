@@ -86,6 +86,11 @@ type ProjectConfig struct {
 	// the feature but check with the user or orchestrator before using it.
 	// Read at spawn, when the worker prompt is built.
 	WorkersRequestReview bool `json:"workersRequestReview,omitempty"`
+
+	// TitleAreas are the project's product areas. A new session's task is
+	// matched to at most one of them, and AO's automatic titles for that
+	// session then read "<Name>: <title>". Empty keeps titles unprefixed.
+	TitleAreas []TitleArea `json:"titleAreas,omitempty"`
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker
@@ -270,6 +275,9 @@ func (c ProjectConfig) Validate() error {
 		}
 	}
 	if err := c.TrackerIntake.Validate(); err != nil {
+		return err
+	}
+	if err := validateTitleAreas(c.TitleAreas); err != nil {
 		return err
 	}
 	return nil

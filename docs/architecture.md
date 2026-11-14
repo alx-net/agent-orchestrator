@@ -1208,7 +1208,7 @@ Electron attaches its debugger directly to the selected session's
 AO renderer or a different session. The loopback `/api/v1/browser` surface is
 blocked entirely on the opt-in LAN listener.
 
-Temporary browser profiles isolate sessions by default. Named persistent profiles can be reused across sessions, sharing their cookies/storage deliberately. Browser import reads supported source profiles without modifying them and stores results under AO data.
+A session without its own profile choice uses the default browser profile. On an untouched registry (no profiles, no default) AO creates a shared Default profile once and makes it the default, so sign-ins carry across sessions. Temporary browser profiles isolate a session that opts into them; temporary partitions a crash leaves behind are swept on the next launch. Named persistent profiles can be reused across sessions, sharing their cookies/storage deliberately. Browser import reads supported source profiles without modifying them and stores results under AO data.
 
 Request observation is an explicit, temporary browser command rather than a
 standing debugger feature. Capture is off by default, bound to the active tab

@@ -176,3 +176,54 @@ describe("side composer slash menu", () => {
 		expect(onSend).toHaveBeenCalledWith("");
 	});
 });
+
+describe("side composer focus", () => {
+	it("takes focus when asked, not each time a side reply finishes", async () => {
+		const user = userEvent.setup();
+		const ui = (ready: boolean, focusKey: number) => (
+			<>
+				<input aria-label="Main composer" />
+				<SideComposer
+					draft={emptySideChatDraft()}
+					onChange={vi.fn()}
+					onSend={vi.fn()}
+					onInterrupt={vi.fn()}
+					onAttach={vi.fn()}
+					files={[]}
+					onRemoveFile={vi.fn()}
+					ready={ready}
+					running={!ready}
+					sending={false}
+					models={[]}
+					skills={[]}
+					side={side}
+					onSettings={vi.fn()}
+					onRemoveReference={vi.fn()}
+					onRemoveAllReferences={vi.fn()}
+					onCompact={vi.fn()}
+					focusKey={focusKey}
+				/>
+			</>
+		);
+		const { rerender } = render(ui(false, 1));
+		const field = screen.getByLabelText("Side chat question");
+		// The person asked for the side chat before it was ready: it focuses once it is.
+		rerender(ui(true, 1));
+		await waitFor(() => expect(document.activeElement).toBe(field));
+
+		const main = screen.getByLabelText("Main composer");
+		await user.click(main);
+		await user.keyboard("still ");
+		// The side chat answers, goes busy again and settles, several times over.
+		for (const ready of [false, true, false, true]) {
+			rerender(ui(ready, 1));
+			expect(document.activeElement).toBe(main);
+		}
+		await user.keyboard("mine");
+		expect(main).toHaveValue("still mine");
+
+		// A new request is still honoured.
+		rerender(ui(true, 2));
+		await waitFor(() => expect(document.activeElement).toBe(field));
+	});
+});

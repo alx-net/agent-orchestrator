@@ -341,6 +341,33 @@ func (s *Store) RemoveSession(ctx context.Context, id domain.SessionID) error {
 	return ctx.Err()
 }
 
+// RemoveWorkspaceProjection deletes the agent-visible copies from a workspace,
+// and the .ao directory if nothing else lives there. Canonical bytes keep their
+// own lifecycle. It is for a workspace no agent has opened, whose copies nothing
+// else can claim.
+func (s *Store) RemoveWorkspaceProjection(ctx context.Context, id domain.SessionID, workspacePath string) error {
+	lock := s.projectionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(workspacePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open attachment workspace: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.RemoveAll(filepath.FromSlash(WorkspaceDir)); err != nil {
+		return fmt.Errorf("remove attachment projection: %w", err)
+	}
+	// Refused while .ao holds something else, which is exactly when it stays.
+	_ = root.Remove(filepath.Dir(filepath.FromSlash(WorkspaceDir)))
+	return nil
+}
+
 // NameFromWorkspacePath recognizes a direct file in the attachment projection.
 // Nested paths and traversal are deliberately rejected.
 func NameFromWorkspacePath(raw string) (string, bool) {

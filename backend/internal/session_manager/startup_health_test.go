@@ -279,6 +279,82 @@ func TestStartupChatCheckRetryGivesUpAfterSchedule(t *testing.T) {
 	}
 }
 
+// unattachableHostLauncher has a live provider host that no reattach can
+// adopt. Once that host is stopped, a launch resumes the conversation natively.
+type unattachableHostLauncher struct {
+	recordingLauncher
+	mu          sync.Mutex
+	hostStopped bool
+	attempts    []ChatStart
+	attached    bool
+}
+
+func (l *unattachableHostLauncher) StartChat(_ context.Context, cfg ChatStart) (ChatStarted, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = append(l.attempts, cfg)
+	if !l.hostStopped {
+		return ChatStarted{}, fmt.Errorf("persistent ACP host: %w", ports.ErrChatRecoveryInconclusive)
+	}
+	if cfg.ReconnectOnly {
+		return ChatStarted{}, ports.ErrChatHostNotRunning
+	}
+	l.attached = true
+	return ChatStarted{}, nil
+}
+
+func (l *unattachableHostLauncher) StopChat(_ context.Context, id domain.SessionID) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.hostStopped = true
+	l.stopped = append(l.stopped, id)
+	return nil
+}
+
+func (l *unattachableHostLauncher) HasLiveChatController(domain.SessionID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.attached
+}
+
+func TestResumeAgentReplacesAChatHostStartupCouldNotReattach(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m, st, _, _ := newLifecycleManager()
+	launcher := &unattachableHostLauncher{}
+	m.chat = launcher
+	m.startupChatRetryDelays = []time.Duration{time.Millisecond}
+	rec := startupChatRecord()
+	st.sessions[rec.ID] = rec
+	if err := m.ReconcileBackground(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the retry budget to run out", func() bool {
+		return m.SessionStatusReadiness(st.sessions[rec.ID]) == "unavailable"
+	})
+	launcher.mu.Lock()
+	stoppedAtStartup := len(launcher.stopped)
+	launcher.mu.Unlock()
+	if stoppedAtStartup != 0 {
+		t.Fatal("startup stopped a live host it could not reattach")
+	}
+
+	if _, err := m.ResumeAgentWithMode(ctx, rec.ID); err != nil {
+		t.Fatalf("resume after failed reattach: %v", err)
+	}
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	if !launcher.attached || len(launcher.stopped) != 1 || launcher.stopped[0] != rec.ID {
+		t.Fatalf("resume did not replace the host: attached=%v stopped=%v", launcher.attached, launcher.stopped)
+	}
+	if last := launcher.attempts[len(launcher.attempts)-1]; last.ReconnectOnly || last.ProviderConversationID != "thread-1" {
+		t.Fatalf("replacement did not resume the provider conversation natively: %+v", last)
+	}
+	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
+		t.Fatalf("readiness = %s, want ready", got)
+	}
+}
+
 // Builds before background branch naming left this state; it is still rolled back.
 func TestStartupHealthCleansOnlyUncommittedSetup(t *testing.T) {
 	for _, scenario := range []string{"clean", "dirty", "committed", "runtime", "provider", "setup-done"} {

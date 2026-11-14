@@ -57,6 +57,21 @@ func (s *Service) PrepareTask(ctx context.Context, projectID domain.ProjectID) (
 	return string(token), err
 }
 
+// PrepareStandaloneTask is PrepareTask for Scratchpad: it reserves a projectless
+// session and its empty folder, so a first message can carry staged files.
+func (s *Service) PrepareStandaloneTask(ctx context.Context) (string, error) {
+	token, err := s.manager.PrepareTaskWorkspace(ctx, domain.ProjectRecord{})
+	return string(token), err
+}
+
+// RenewTaskPreparation keeps an open composer's unclaimed workspace from expiring.
+func (s *Service) RenewTaskPreparation(_ context.Context, token string) error {
+	if !s.manager.RenewTaskPreparation(domain.TaskPreparationToken(token)) {
+		return apierr.NotFound("TASK_PREPARATION_NOT_FOUND", "Unknown task preparation")
+	}
+	return nil
+}
+
 // CancelTaskPreparation releases an unclaimed speculative worktree. Unknown or
 // already-claimed tokens are intentionally idempotent.
 func (s *Service) CancelTaskPreparation(ctx context.Context, token string) error {
@@ -88,6 +103,7 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	}
 
 	effort, effortOverride := optionalTuningValue(in.Effort)
+	scratch := project.Kind.WithDefault() == domain.ProjectKindScratch
 	worker, _, _, err := s.spawnWithTelemetry(ctx, ports.SpawnConfig{
 		ClientRequestID:   in.ClientRequestID,
 		ClientRequestHash: in.ClientRequestHash,
@@ -96,7 +112,7 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		Harness:           in.RequestedAgent,
 		Prompt:            prompt,
 		DisplayName:       delegatedTaskDisplayName(in.Brief),
-		NameFromPrompt:    prompt != "" && project.Kind.WithDefault() != domain.ProjectKindScratch,
+		NameFromPrompt:    prompt != "" && !scratch,
 		AgentConfig: ports.AgentConfig{
 			Model:       strings.TrimSpace(in.Model),
 			Effort:      effort,
@@ -118,8 +134,14 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	// The worker spawn is the commit point. Background title
 	// generation must never hold the new-task response open. A promptless worker
 	// stays idle with its provisional title until the user supplies instructions.
-	if prompt != "" && project.Kind.WithDefault() == domain.ProjectKindScratch && !worker.ClientRequestCommitted {
-		s.refineDelegatedTaskTitleInBackground(worker.ID, in)
+	if !worker.ClientRequestCommitted {
+		s.titleSessionInBackground(worker.ID, sessionTitleWork{
+			projectID:   in.ProjectID,
+			brief:       prompt,
+			provisional: delegatedTaskDisplayName(in.Brief),
+			areas:       project.Config.TitleAreas,
+			refine:      scratch,
+		})
 	}
 	return DelegateTaskOutcome{WorkerID: worker.ID}, nil
 }
@@ -131,13 +153,30 @@ func optionalTuningValue(value *string) (string, bool) {
 	return strings.TrimSpace(*value), true
 }
 
-func (s *Service) refineDelegatedTaskTitleInBackground(workerID domain.SessionID, in DelegateTaskInput) {
+// sessionTitleWork is the cosmetic model work a new worker gets after spawn:
+// the delegated title refinement when refine is set, and the title-area choice
+// when its project defines areas.
+type sessionTitleWork struct {
+	projectID domain.ProjectID
+	brief     string
+	// provisional is the display name the session was created with.
+	provisional string
+	areas       []domain.TitleArea
+	refine      bool
+}
+
+// titleSessionInBackground runs a worker's title work in one capacity slot,
+// one model call at a time, each under its own timeout. Kill cancels it.
+func (s *Service) titleSessionInBackground(workerID domain.SessionID, work sessionTitleWork) {
+	if strings.TrimSpace(work.brief) == "" || (!work.refine && len(work.areas) == 0) {
+		return
+	}
 	if s.titleRefinementSlots != nil {
 		select {
 		case s.titleRefinementSlots <- struct{}{}:
 		default:
 			if s.logger != nil {
-				s.logger.Warn("delegated task title refinement skipped: capacity reached", "workerID", workerID)
+				s.logger.Warn("session title work skipped: capacity reached", "workerID", workerID)
 			}
 			return
 		}
@@ -146,9 +185,9 @@ func (s *Service) refineDelegatedTaskTitleInBackground(workerID domain.SessionID
 	if base == nil {
 		base = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(base, delegatedTaskTitleRefinementTimeout)
+	ctx, cancel := context.WithCancel(base)
 	s.trackTitleRefinement(workerID, cancel)
-	work := func() {
+	run := func() {
 		defer func() {
 			cancel()
 			s.untrackTitleRefinement(workerID)
@@ -157,23 +196,36 @@ func (s *Service) refineDelegatedTaskTitleInBackground(workerID domain.SessionID
 			}
 		}()
 
-		if err := s.refineDelegatedTaskTitle(ctx, workerID, in); err != nil && s.logger != nil {
-			s.logger.Warn("delegated task title refinement failed",
-				"projectID", in.ProjectID,
-				"workerID", workerID,
-				"error", err,
-			)
+		if work.refine {
+			if err := s.refineDelegatedTaskTitle(ctx, workerID, work); err != nil && s.logger != nil {
+				s.logger.Warn("delegated task title refinement failed",
+					"projectID", work.projectID,
+					"workerID", workerID,
+					"error", err,
+				)
+			}
+		}
+		if len(work.areas) > 0 {
+			if err := s.chooseTitleArea(ctx, workerID, work); err != nil && s.logger != nil {
+				s.logger.Warn("session title area choice failed",
+					"projectID", work.projectID,
+					"workerID", workerID,
+					"error", err,
+				)
+			}
 		}
 	}
 	if s.runBackground != nil {
-		s.runBackground(work)
+		s.runBackground(run)
 		return
 	}
-	go work()
+	go run()
 }
 
-func (s *Service) refineDelegatedTaskTitle(ctx context.Context, workerID domain.SessionID, in DelegateTaskInput) error {
-	raw, err := s.manager.RunBackgroundTask(ctx, workerID, delegatedTaskTitleSystemPrompt, in.Brief)
+func (s *Service) refineDelegatedTaskTitle(ctx context.Context, workerID domain.SessionID, work sessionTitleWork) error {
+	ctx, cancel := context.WithTimeout(ctx, delegatedTaskTitleRefinementTimeout)
+	defer cancel()
+	raw, err := s.manager.RunBackgroundTask(ctx, workerID, delegatedTaskTitleSystemPrompt, work.brief)
 	if err != nil {
 		return fmt.Errorf("generate title with worker harness: %w", err)
 	}
@@ -181,9 +233,7 @@ func (s *Service) refineDelegatedTaskTitle(ctx context.Context, workerID domain.
 	if title == "" {
 		return errors.New("worker harness returned an empty title")
 	}
-	_, err = s.store.RenameSessionIfDisplayName(
-		ctx, workerID, delegatedTaskDisplayName(in.Brief), title, s.now(),
-	)
+	_, err = s.store.RenameSessionIfDisplayName(ctx, workerID, work.provisional, title, s.now())
 	if err != nil {
 		return fmt.Errorf("apply generated title to %s: %w", workerID, err)
 	}

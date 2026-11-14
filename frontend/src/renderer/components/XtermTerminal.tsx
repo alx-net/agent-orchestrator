@@ -35,7 +35,7 @@ import type {
 import { aoBridge } from "../lib/bridge";
 import { isDialogOrMenuOpenOutside } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
-import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { isWebLink, openLinkInSystemBrowser, opensInSystemBrowser } from "../lib/external-link-policy";
 import { findSessionLinks } from "../lib/session-links";
 import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
@@ -673,9 +673,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// parent decides how). Non-web schemes (mailto:, etc.) still go to the OS
 			// via the main process's window-open handler. Right-click to open a web
 			// link in the system browser instead — see the context menu below. Cmd-click
-			// follows the same escape hatch as links in the Chat surface.
+			// follows the same escape hatch as links in the Chat surface, and GitHub
+			// links always take it (the panel is not signed in to GitHub).
 			if (isWebLink(uri)) {
-				if (event.altKey || event.metaKey) {
+				if (event.altKey || event.metaKey || opensInSystemBrowser(uri)) {
 					void openLinkInSystemBrowser(uri);
 					return;
 				}

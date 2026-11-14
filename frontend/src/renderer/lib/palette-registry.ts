@@ -80,6 +80,8 @@ const SETTINGS_ENTRIES: SettingsEntry[] = [
 	{ id: "render-math", section: "general", label: "settings.renderMath", keywords: ["latex", "katex", "equations", "formulas", "tex"] },
 	{ id: "session-interface", section: "general", label: "settings.sessionInterface.label", keywords: ["chat or terminal", "default view"] },
 	{ id: "version-refresh", section: "general", label: "settings.versionRefresh.label", keywords: ["auto upgrade sessions", "version refresh"] },
+	{ id: "account-auto-switch", section: "general", label: "settings.accountAutoSwitch.label", keywords: ["usage limit", "switch account", "subscription", "rate limit"] },
+	{ id: "compact-at", section: "general", label: "settings.compactAt.label", keywords: ["compaction", "auto compact", "context window", "tokens", "summary"] },
 	{ id: "terminal-shell", section: "general", label: "settings.terminalShell.label", keywords: ["zsh", "bash", "fish", "powershell", "shell path"] },
 	{ id: "copy-on-select", section: "general", label: "settings.terminalCopyOnSelect", keywords: ["terminal copy", "selection", "clipboard"] },
 	{ id: "sound", section: "general", label: "settings.soundNotifications", keywords: ["sounds", "chime", "alert sound"] },

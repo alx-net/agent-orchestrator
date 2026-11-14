@@ -6,11 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 )
 
-const maxACPFrameSize = 10 * 1024 * 1024
+// maxACPFrameSize bounds one frame while it is read. Oversized session updates
+// are slimmed right after, so the JSON-RPC layer behind this reader never sees
+// them; the bound matches the most a host can journal for a turn.
+const maxACPFrameSize = 256 * 1024 * 1024
 
-var errACPFrameTooLarge = errors.New("ACP frame exceeds 10 MiB limit")
+var errACPFrameTooLarge = errors.New("ACP frame exceeds 256 MiB limit")
 
 // extensionMethodReader aliases explicitly configured legacy method names into
 // ACP's underscore extension namespace. The SDK owns JSON-RPC requests and
@@ -24,9 +29,6 @@ type extensionMethodReader struct {
 }
 
 func newExtensionMethodReader(reader io.Reader, aliases map[string]string) io.Reader {
-	if len(aliases) == 0 {
-		return reader
-	}
 	cloned := make(map[string]string, len(aliases))
 	for method, alias := range aliases {
 		cloned[method] = alias
@@ -42,7 +44,9 @@ func (r *extensionMethodReader) Read(dst []byte) (int, error) {
 		if len(line) == 0 {
 			return 0, err
 		}
-		r.buffered = r.rewrite(line)
+		// Here as well as in the host: a host started before an update keeps
+		// sending, and replaying, the frames it journaled whole.
+		r.buffered = r.rewrite(persistenthost.SlimACPFrame(line))
 		r.pendingErr = err
 	}
 	n := copy(dst, r.buffered)

@@ -717,7 +717,7 @@ func (s *Store) commitChatSpawn(
 		return errors.New("commit Chat spawn: incomplete or mismatched provider boundary ownership")
 	}
 
-	s.writeMu.Lock()
+	s.writeMu.lockFor("Chat spawn of session " + string(rec.ID))
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "commit Chat spawn", func(q *gen.Queries) error {
 		owner, err := q.GetSession(ctx, rec.ID)
@@ -2946,6 +2946,32 @@ func (s *Store) UpsertActivity(
 			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
 		}
 	}
+	if activity.RequestID != "" {
+		// A reattached controller receives the host's replay of a request that
+		// is still pending, such as a question with no provider item id.
+		exists, err := q.ConversationActivityExistsForRequest(ctx,
+			gen.ConversationActivityExistsForRequestParams{
+				ConversationID: conversationID,
+				RequestID:      activity.RequestID,
+			})
+		if err != nil {
+			return fmt.Errorf("lookup activity request %s: %w", activity.RequestID, err)
+		}
+		if exists {
+			if err := q.SettleConversationActivityByRequest(ctx,
+				gen.SettleConversationActivityByRequestParams{
+					Status:         activity.Status,
+					Summary:        activity.Summary,
+					DetailJson:     detail,
+					UpdatedAt:      now,
+					ConversationID: conversationID,
+					RequestID:      activity.RequestID,
+				}); err != nil {
+				return fmt.Errorf("settle activity request %s: %w", activity.RequestID, err)
+			}
+			return nil
+		}
+	}
 
 	turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
 	return s.inTx(ctx, "insert activity", func(q *gen.Queries) error {
@@ -3166,7 +3192,9 @@ func (s *Store) projectProviderEvent(
 			providerEventID, method, payloadJSON, now, project,
 		)
 	}
-	s.writeMu.Lock()
+	// The projection runs controller code under the writer; name it for the
+	// stuck-writer watchdog.
+	s.writeMu.lockFor("provider event projection " + method + " in conversation " + conversationID)
 	defer s.writeMu.Unlock()
 
 	tx, err := s.writeDB.BeginTx(ctx, nil)
@@ -3493,13 +3521,27 @@ func (s *Store) ApplyProviderTitle(
 
 	var applied bool
 	err = s.inTx(ctx, "apply provider title", func(q *gen.Queries) error {
+		state, readErr := q.GetSessionTitleState(ctx, session)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("read session %s title: %w", session, readErr)
+		}
+		// A session with a title area carries its prefix on every automatic title.
+		area := state.TitleArea.String
+		label := domain.PrefixSessionTitle(area, title)
 		rows, updateErr := q.ApplyConversationTitleToSession(ctx,
 			gen.ApplyConversationTitleToSessionParams{
-				DisplayName: title,
+				DisplayName: label,
+				AutoTitle:   label,
 				UpdatedAt:   now,
 				ID:          session,
-				// The witness: only a label AO itself last wrote may be replaced.
-				DisplayName_2: conversation.AppliedTitle,
+				TitleArea:   state.TitleArea,
+				// The witness: only a label AO itself last wrote may be replaced,
+				// including one that an area chosen later has since prefixed.
+				AppliedTitle:         conversation.AppliedTitle,
+				PrefixedAppliedTitle: domain.PrefixSessionTitle(area, conversation.AppliedTitle),
 			})
 		if updateErr != nil {
 			return fmt.Errorf("apply title to session %s: %w", session, updateErr)
@@ -3509,7 +3551,7 @@ func (s *Store) ApplyProviderTitle(
 		}
 		applied = true
 		return q.UpdateConversationAppliedTitle(ctx, gen.UpdateConversationAppliedTitleParams{
-			AppliedTitle: title,
+			AppliedTitle: label,
 			UpdatedAt:    now,
 			ID:           conversationID,
 		})

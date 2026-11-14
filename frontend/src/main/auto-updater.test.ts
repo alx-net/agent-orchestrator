@@ -693,6 +693,35 @@ describe("startAutoUpdates", () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
   });
 
+  it("a local build skips update checks and names the command that updates it", async () => {
+    const resourcesPath = mkdtempSync(nodePath.join(os.tmpdir(), "ao-local-build-"));
+    writeFileSync(
+      nodePath.join(resourcesPath, "app-update.yml"),
+      "provider: github\nowner: alx-net\nrepo: agent-orchestrator\nlocalBuild: true\n",
+    );
+    const originalResourcesPath = Object.getOwnPropertyDescriptor(process, "resourcesPath");
+    Object.defineProperty(process, "resourcesPath", { configurable: true, value: resourcesPath });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { module, autoUpdater } = await importAutoUpdater();
+
+      await module.startAutoUpdates(stateDir);
+      expect(module.getUpdateStatus()).toMatchObject({
+        state: "unsupported",
+        message: expect.stringContaining("ao-app-update"),
+      });
+
+      await module.checkForUpdatesNow(stateDir);
+      expect(module.getUpdateStatus()).toMatchObject({ state: "unsupported" });
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (originalResourcesPath) Object.defineProperty(process, "resourcesPath", originalResourcesPath);
+      else delete (process as { resourcesPath?: string }).resourcesPath;
+    }
+  });
+
   it("manual nightly checks resolve the newest completed release without the Atom feed", async () => {
     const platformManifest =
       process.platform === "darwin"

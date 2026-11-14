@@ -1,12 +1,15 @@
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { agentAccountName, agentAccountProviderFor, useAgentAccountActions, useAgentAccountLabel, useAgentAccounts, useSessionAgentAccounts } from "../hooks/useAgentAccounts";
+import { AgentAccountError, agentAccountOptionName, agentAccountProviderFor, useAgentAccountActions, useAgentAccountLabel, useAgentAccounts, useSessionAgentAccounts } from "../hooks/useAgentAccounts";
 import { interfaceTransitionIsActive, useSessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
+import { cn } from "../lib/utils";
 import type { WorkspaceSession } from "../types/workspace";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AccountLimits } from "./settings/AgentAccountsSection";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+
+type Note = { text: string; error: boolean };
 
 /** The account the session's agent runs under, its limits, and the move to
  * another account. A move is the session's durable controller handoff: the
@@ -20,7 +23,8 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 	const actions = useAgentAccountActions();
 	const label = useAgentAccountLabel();
 	const { transition } = useSessionInterfaceTransitionStatus(provider ? session.id : undefined);
-	const [message, setMessage] = useState("");
+	// The answer to the user's own pick; it wins over an older move's status.
+	const [note, setNote] = useState<Note | null>(null);
 	const [confirming, setConfirming] = useState<string | null>(null);
 	const accountMove = transition?.targetAccountId ? transition : undefined;
 	const moving = interfaceTransitionIsActive(accountMove);
@@ -31,6 +35,10 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 		if (settledPhase) void actions.refreshSession(session.id);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [settledPhase, accountMove?.id, session.id]);
+	// A new move, the user's or AO's after a usage limit, makes an earlier note stale.
+	useEffect(() => {
+		if (accountMove?.id) setNote(null);
+	}, [accountMove?.id]);
 
 	if (!provider || session.cloud || session.isTerminated) return null;
 	const options = (accounts.data ?? []).filter((account) => account.provider === provider);
@@ -42,7 +50,10 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 		Date.parse(session.lastUserMessageAt) > Date.parse(accountMove.updatedAt));
 
 	const move = async (accountId: string, stopTurn = false) => {
-		if (accountId === currentId) return;
+		if (accountId === currentId) {
+			setNote({ text: t("settings.agentAccounts.alreadyOn", { email: label(accountId) }), error: false });
+			return;
+		}
 		// A working agent may only be waiting on the old account's limit; moving
 		// stops that turn, so ask first.
 		if (working && !stopTurn) {
@@ -50,21 +61,35 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 			return;
 		}
 		setConfirming(null);
-		setMessage("");
+		setNote(null);
 		try {
 			await actions.switchSession(session.id, accountId, stopTurn);
 		} catch (err) {
-			setMessage(err instanceof Error ? err.message : String(err));
+			if (err instanceof AgentAccountError && err.code === "AGENT_ACCOUNT_UNCHANGED") {
+				// The account shown was out of date: the session is already there.
+				await actions.refreshSession(session.id);
+				setNote({ text: t("settings.agentAccounts.alreadyOn", { email: label(accountId) }), error: false });
+				return;
+			}
+			setNote({ text: err instanceof Error ? err.message : String(err), error: true });
 		}
 	};
 
-	const status = moving
-		? t("settings.agentAccounts.switching", { email: label(accountMove?.targetAccountId) })
-		: settledPhase === "completed" && accountMove?.targetAccountId === currentId && !messagedSinceMove
-			? t("settings.agentAccounts.moved", { from: label(accountMove?.sourceAccountId), to: label(currentId) })
-			: settledPhase === "failed" || settledPhase === "recovery_required"
-				? accountMove?.errorDetail || t("settings.agentAccounts.switchFailed")
-				: message;
+	const restart = accountMove?.sourceAccountId === accountMove?.targetAccountId;
+	const status: Note | null = note
+		?? (moving
+			? { text: t("settings.agentAccounts.switching", { email: label(accountMove?.targetAccountId) }), error: false }
+			: settledPhase === "completed" && accountMove?.targetAccountId === currentId && !messagedSinceMove
+				? {
+					text: restart
+						? t("settings.agentAccounts.restarted", { email: label(currentId) })
+						: t("settings.agentAccounts.moved", { from: label(accountMove?.sourceAccountId), to: label(currentId) }),
+					error: false,
+				}
+				: settledPhase === "failed" || settledPhase === "recovery_required"
+					? { text: accountMove?.errorDetail || t("settings.agentAccounts.switchFailed"), error: true }
+					: null);
+	const missingServers = account?.mcpNeedsAuth ?? [];
 
 	return <section className="mt-3 border-t border-(--color-border-settings-input) pt-3" data-testid="session-account-summary">
 		<div className="flex items-center justify-between gap-3">
@@ -74,12 +99,21 @@ export function SessionAccountSummary({ session }: { session: WorkspaceSession }
 				<Select value={currentId ?? ""} disabled={moving || options.length < 2} onValueChange={(value) => void move(value)}>
 					<SelectTrigger size="sm" className="max-w-56" aria-label={t("settings.agentAccounts.sessionAccount")}><SelectValue /></SelectTrigger>
 					<SelectContent align="end">
-						{options.map((option) => <SelectItem key={option.id} value={option.id} disabled={!option.signedIn}>{agentAccountName(option, t)}</SelectItem>)}
+						{options.map((option) => <SelectItem key={option.id} value={option.id} disabled={!option.signedIn}>{agentAccountOptionName(option, options, t)}</SelectItem>)}
 					</SelectContent>
 				</Select>
 			</div>
 		</div>
-		{status ? <p className="mt-2 text-xs text-muted-foreground" role="status">{status}</p> : null}
+		{status ? (
+			<p className={cn("mt-2 text-xs", status.error ? "text-destructive" : "text-muted-foreground")} role={status.error ? "alert" : "status"}>
+				{status.text}
+			</p>
+		) : null}
+		{missingServers.length ? (
+			<p className="mt-2 text-xs text-warning" data-testid="session-account-mcp-needs-auth">
+				{t("settings.agentAccounts.mcpNeedsAuth", { servers: missingServers.join(", ") })}
+			</p>
+		) : null}
 		{account ? <AccountLimits account={account} /> : null}
 		{confirming ? <ConfirmDialog open
 			title={t("settings.agentAccounts.stopAndMoveTitle")}

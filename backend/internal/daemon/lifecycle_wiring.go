@@ -708,6 +708,7 @@ var _ sessionmanager.ChatLauncher = chatLauncher{}
 // forward compiles but silently turns the feature off.
 var _ sessionmanager.ChatVersionRefresher = chatLauncher{}
 var _ sessionmanager.ChatUpdateHibernator = chatLauncher{}
+var _ sessionmanager.ChatToolServerRestarter = chatLauncher{}
 var _ interface {
 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
 	RunPromptSuggestionTask(context.Context, domain.SessionID, string, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
@@ -835,6 +836,10 @@ func (c chatLauncher) SwitchToInstalledRelease(ctx context.Context, id domain.Se
 	return c.svc.SwitchToInstalledRelease(ctx, id, minIdle)
 }
 
+func (c chatLauncher) RestartChatForToolServers(ctx context.Context, id domain.SessionID) (bool, error) {
+	return c.svc.RestartChatForToolServers(ctx, id)
+}
+
 func (c chatLauncher) HibernateChatForUpdate(ctx context.Context, id domain.SessionID) (bool, error) {
 	return c.svc.HibernateChatForUpdate(ctx, id)
 }
@@ -870,6 +875,24 @@ func (c chatLauncher) ArmChatHandoff(
 // the switch instead of a failure.
 func (c chatLauncher) MarkAccountSwitch(ctx context.Context, id domain.SessionID, accountID string) error {
 	return c.svc.MarkAccountSwitch(ctx, id, accountID)
+}
+
+// Session Manager finds this by assertion; a missing method would turn the
+// move after a usage limit off without a word.
+var _ sessionmanager.UsageLimitChat = chatLauncher{}
+
+// UsageLimitedTurn, RecordUsageLimitSwitch and ContinueAfterAccountSwitch are
+// Chat's part in moving a session off an account that ran out of usage.
+func (c chatLauncher) UsageLimitedTurn(ctx context.Context, id domain.SessionID, providerTurnID string) (domain.ConversationTurn, error) {
+	return c.svc.UsageLimitedTurn(ctx, id, providerTurnID)
+}
+
+func (c chatLauncher) RecordUsageLimitSwitch(ctx context.Context, id domain.SessionID, turnID string, sw domain.UsageLimitSwitch) error {
+	return c.svc.RecordUsageLimitSwitch(ctx, id, turnID, sw)
+}
+
+func (c chatLauncher) ContinueAfterAccountSwitch(ctx context.Context, id domain.SessionID, turnID string) (domain.ConversationTurn, error) {
+	return c.svc.ContinueAfterAccountSwitch(ctx, id, turnID)
 }
 
 func (c chatLauncher) PrepareChatHandoff(

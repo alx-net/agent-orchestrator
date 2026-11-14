@@ -98,6 +98,7 @@ import { inspectorIsOpen, sidebarOccupiesLayout, useUiStore } from "../../stores
 import type { TerminalTarget } from "../../types/terminal";
 import {
 	isOrchestratorSession,
+	sessionIsActive,
 	type SessionKind,
 	type WorkspaceSession,
 	type SessionProvisionStep,
@@ -145,6 +146,7 @@ import {
 import { AutomationMessage } from "./AutomationMessage";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider, ChatOpeningRef } from "./ChatMarkdown";
+import { RunCommandProvider } from "./RunCommand";
 import { ChatImageSourceProvider } from "./chat-image-source";
 import type { AgentSwitchProps } from "./AgentSwitchPicker";
 import type { ComposerPromptSuggestion } from "./ComposerEditor";
@@ -163,12 +165,13 @@ import { isOrdinaryActivity } from "./activity-action";
 import { TurnPlan } from "./TurnPlan";
 import { ComposerModeItems, TurnSettingsBar, type ApprovalModeLimits } from "./TurnSettingsBar";
 import { ElicitationDock, ElicitationHistory } from "./ElicitationDock";
-import { McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
+import { McpConnectBanner, McpServerBanner, ReauthBanner, ThreadStateBanner, VersionSwitchBanner } from "./ChatStatusBanners";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 import {
 	activeTurn,
 	activityPlan,
 	brokenMcpServers,
+	signInMcpServers,
 	can,
 	isCompaction,
 	isSteer,
@@ -191,6 +194,7 @@ import {
 	type ConversationUsageLimit,
 	type TurnDiff,
 	type TurnSettings,
+	type UsageLimitSwitch,
 } from "../../types/conversation";
 
 const EMPTY_CHAT_PLACEHOLDERS = [
@@ -546,6 +550,8 @@ export interface ChatWorkspaceProps {
 	filePaths?: string[];
 	/** The path list was capped by the daemon rather than being all of them. */
 	filePathsTruncated?: boolean;
+	/** GitHub `blob/{branch}/` root of the session's open PR, for named files the worktree lacks. */
+	pullRequestFileBase?: string;
 	/** Renderer-only human messages awaiting their exact durable counterpart. */
 	localEchos?: ConversationLocalEcho[];
 	/**
@@ -777,6 +783,7 @@ function ChatWorkspaceContent({
 	skills,
 	filePaths,
 	filePathsTruncated,
+	pullRequestFileBase,
 	localEchos,
 	onStageAttachments,
 	nativeImages,
@@ -824,6 +831,7 @@ function ChatWorkspaceContent({
 		!snapshot.turns.some((entry) => entry.retryOfTurnId === latestSettledTurn.id) &&
 		latestSettledTurn.hasHumanPrompt
 		? latestSettledTurn : undefined;
+	const limitedTurnSwitch = limitedTurn ? usageLimitSwitchOf(snapshot.items, limitedTurn.id) : undefined;
 	// The primary Chat view wakes a sleeping provider in the background. Its
 	// marker clears before the new controller is ready, so an intermediate
 	// "stopped" snapshot is still part of that wake, not a crashed agent.
@@ -1476,6 +1484,7 @@ function ChatWorkspaceContent({
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
+	const signInServers = useMemo(() => signInMcpServers(snapshot), [snapshot]);
 	const editHumanMessage = onEditMessage;
 	const pendingApproval = useMemo(
 		() => latestPendingInteraction(snapshot.items, "approval", turn),
@@ -1694,7 +1703,7 @@ function ChatWorkspaceContent({
 		hostId: activeRemoteHostId,
 		steer: onSteer && turn?.state === "running" ? steer : undefined,
 		cards: subagentCards,
-		mainSent: mainAgent.sent,
+		main: mainAgent,
 	});
 	const subagentBoardControls = useMemo(
 		() => newWorkDisabled || openingStarting ? { states: boardControls.states } : boardControls,
@@ -1903,7 +1912,7 @@ function ChatWorkspaceContent({
 				>
 					{snapshot.account ? (
 						<ReauthBanner key={`${snapshot.sessionId}:${snapshot.conversationId}`} account={snapshot.account} harness={snapshot.harness}
-							hostId={activeRemoteHostId} cloud={Boolean(session?.cloud)} />
+							hostId={activeRemoteHostId} cloud={Boolean(session?.cloud)} sessionId={snapshot.sessionId} />
 					) : null}
 					{!draftPersistenceAvailable ? (
 						<div role="status" className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-4 py-2 text-xs text-muted-foreground">
@@ -1926,6 +1935,7 @@ function ChatWorkspaceContent({
 						shellError={shellError}
 					/>
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
+					{activeRemoteHostId || session?.cloud ? null : <McpConnectBanner sessionId={snapshot.sessionId} servers={signInServers} />}
 					<VersionSwitchBanner
 						staleBinary={session?.staleBinary}
 						hostId={activeRemoteHostId}
@@ -1936,6 +1946,8 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center", conversationEmpty && centerInWindow && "pb-inspector-tabs", arrivingWithHistory && snapshot.items.length === 0 && "justify-end")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
+						{/* Run opens a shell on this machine: local, live sessions only. */}
+						<RunCommandProvider sessionId={!activeRemoteHostId && session && !session.cloud && sessionIsActive(session) ? snapshot.sessionId : undefined}>
 						<ChatLinkProvider
 							onLinkOpen={onLinkOpen}
 							onFileOpen={onOpenFile}
@@ -1944,6 +1956,8 @@ function ChatWorkspaceContent({
 							sessionLinkHostId={activeRemoteHostId}
 							sessionLinkSourceKind={session?.cloud ? "cloud" : undefined}
 							workspacePaths={filePaths}
+							pullRequestFileBase={pullRequestFileBase}
+							sessionId={snapshot.sessionId}
 						>
 							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)} artifacts={session?.artifactFiles}>
 							<ChatHostId.Provider value={activeRemoteHostId}>
@@ -2020,6 +2034,7 @@ function ChatWorkspaceContent({
 							</ChatHostId.Provider>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
+						</RunCommandProvider>
 
 						<div ref={composerDockRef} className="cursor-chat-composer-dock shrink-0 px-4 pb-3">
 							<div aria-hidden="true" className="chat-composer-fade" />
@@ -2032,6 +2047,7 @@ function ChatWorkspaceContent({
 									<UsageLimitNotice
 										key={limitedTurn.id}
 										usageLimit={limitedTurn.usageLimit}
+										accountSwitch={limitedTurnSwitch}
 										onResume={() => { void Promise.resolve(retryControl.retry(limitedTurn.id)).catch(() => undefined); }}
 										onAutoResumeChange={retryControl.setAutoResume
 											? (enabled) => { void Promise.resolve(retryControl.setAutoResume?.(limitedTurn.id, enabled)).catch(() => undefined); }
@@ -4856,6 +4872,15 @@ const TurnGroup = memo(function TurnGroup({
 	);
 });
 
+/** The latest move AO made on a usage-limited turn, from its account.limit_switch row. */
+function usageLimitSwitchOf(items: ConversationItem[], turnId: string): UsageLimitSwitch | undefined {
+	const row = items.findLast((item): item is ConversationActivity =>
+		item.kind === "activity" && item.turnId === turnId && item.detail?.event === "account.limit_switch");
+	const detail = row?.detail;
+	if (!detail?.phase) return undefined;
+	return { phase: detail.phase, accountId: detail.accountId, fromAccountId: detail.fromAccountId, error: detail.error, mcpNeedsAuth: detail.mcpNeedsAuth };
+}
+
 function TurnLiveStatus({
 	blocked,
 	providerFailure,
@@ -5465,7 +5490,11 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 			);
 		if (turn.state === "running" || turn.state === "queued" || turn.state === "cancelled") continue;
 		group.rollbackable = Boolean(turn.providerTurnId);
-		group.accountSwitched = group.items.some((item) => item.kind === "activity" && item.detail?.event === "account.switched");
+		// A move after a usage limit stands in for the turn's outcome, unless it failed
+		// and the turn waits for the reset as before.
+		group.accountSwitched = group.items.some((item) => item.kind === "activity" &&
+			(item.detail?.event === "account.switched" ||
+				(item.detail?.event === "account.limit_switch" && Boolean(item.detail.phase) && item.detail.phase !== "failed")));
 		group.outcome = {
 			state: turn.state,
 			usageLimit: turn.usageLimit,

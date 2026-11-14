@@ -6,15 +6,223 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 )
+
+func newStandalonePreparationManager(t *testing.T) (*Manager, *fakeStore, string) {
+	t.Helper()
+	dataDir := t.TempDir()
+	ws, err := scratch.New(scratch.Options{ManagedRoot: filepath.Join(dataDir, "worktrees")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, st, _, _ := newManager()
+	m.workspace = ws
+	m.attachments = attachmentstore.New(dataDir)
+	m.runBackground = func(work func()) { work() }
+	return m, st, dataDir
+}
+
+// stagePreparedImage prepares a Scratchpad task and stages one image into it the
+// way the composer does, returning the token, the folder and the staged file.
+func stagePreparedImage(t *testing.T, m *Manager, st *fakeStore) (domain.TaskPreparationToken, string, string) {
+	t.Helper()
+	token, err := m.PrepareTaskWorkspace(context.Background(), domain.ProjectRecord{})
+	if err != nil || token == "" {
+		t.Fatalf("prepare = %q, %v", token, err)
+	}
+	refs, err := m.StageAttachments(context.Background(), domain.SessionID(token), []ports.SpawnAttachment{{Ext: ".png", Data: []byte("png-bytes")}})
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("stage = %v, %v", refs, err)
+	}
+	workspace := st.sessions[domain.SessionID(token)].Metadata.WorkspacePath
+	return token, workspace, filepath.Join(workspace, filepath.FromSlash(refs[0]))
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("%s still exists: %v", path, err)
+	}
+}
+
+func TestStandalonePreparationIsAnEmptyFolderThatBecomesTheSession(t *testing.T) {
+	m, st, dataDir := newStandalonePreparationManager(t)
+
+	token, err := m.PrepareTaskWorkspace(context.Background(), domain.ProjectRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := st.sessions[domain.SessionID(token)]
+	if !prepared.IsTaskPreparation || !prepared.IsStandalone() || prepared.Metadata.Branch != "" || prepared.Metadata.WorkspaceRepoPath != "" {
+		t.Fatalf("prepared row = %+v, want a hidden branchless standalone row", prepared)
+	}
+	if want := filepath.Join("standalone", "sessions", string(token)); !strings.HasSuffix(prepared.Metadata.WorkspacePath, want) {
+		t.Fatalf("workspace = %q, want .../%s", prepared.Metadata.WorkspacePath, want)
+	}
+	entries, err := os.ReadDir(prepared.Metadata.WorkspacePath)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("prepared folder = %v, %v; want empty", entries, err)
+	}
+
+	refs, err := m.StageAttachments(context.Background(), prepared.ID, []ports.SpawnAttachment{{Ext: ".png", Data: []byte("png-bytes")}})
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("stage = %v, %v", refs, err)
+	}
+	spawned, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{
+		Kind:            domain.KindWorker,
+		Harness:         domain.HarnessClaudeCode,
+		Prompt:          "What is in " + refs[0] + "?",
+		TaskPreparation: token,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.ID != prepared.ID || st.sessions[spawned.ID].IsTaskPreparation {
+		t.Fatalf("spawned = %q (hidden %v), want visible %q", spawned.ID, st.sessions[spawned.ID].IsTaskPreparation, prepared.ID)
+	}
+	if got := st.sessions[spawned.ID].Metadata.WorkspacePath; got != prepared.Metadata.WorkspacePath {
+		t.Fatalf("session workspace = %q, want the prepared %q", got, prepared.Metadata.WorkspacePath)
+	}
+	if data, err := os.ReadFile(filepath.Join(prepared.Metadata.WorkspacePath, filepath.FromSlash(refs[0]))); err != nil || string(data) != "png-bytes" {
+		t.Fatalf("staged file in session workspace = %q, %v", data, err)
+	}
+	if err := m.CancelTaskPreparation(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "attachments", string(spawned.ID), filepath.Base(refs[0]))); err != nil {
+		t.Fatalf("a claimed session's canonical file was removed: %v", err)
+	}
+}
+
+func TestCancelStandalonePreparationRemovesStagedFiles(t *testing.T) {
+	m, st, dataDir := newStandalonePreparationManager(t)
+	token, workspace, _ := stagePreparedImage(t, m, st)
+
+	if err := m.CancelTaskPreparation(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	assertPathAbsent(t, workspace)
+	assertPathAbsent(t, filepath.Join(dataDir, "attachments", string(token)))
+	if _, ok := st.sessions[domain.SessionID(token)]; ok {
+		t.Fatal("canceled preparation row still exists")
+	}
+}
+
+func TestStandalonePreparationExpiresWithStagedFilesUnlessRenewed(t *testing.T) {
+	m, st, _ := newStandalonePreparationManager(t)
+	m.taskPreparationTTL = 40 * time.Millisecond
+	token, workspace, staged := stagePreparedImage(t, m, st)
+
+	// Renewing keeps it past several TTLs, as an open page does.
+	for range 5 {
+		time.Sleep(m.taskPreparationTTL / 2)
+		if !m.RenewTaskPreparation(token) {
+			t.Fatal("renew reported a live preparation as gone")
+		}
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("renewed preparation lost its file: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok, _ := st.GetSession(context.Background(), domain.SessionID(token)); !ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	assertPathAbsent(t, workspace)
+	if m.RenewTaskPreparation(token) {
+		t.Fatal("renew reported an expired preparation as held")
+	}
+}
+
+func TestStartupCleansInterruptedStandalonePreparationWithStagedFiles(t *testing.T) {
+	m, st, dataDir := newStandalonePreparationManager(t)
+	token, workspace, _ := stagePreparedImage(t, m, st)
+
+	// A new daemon knows only the durable row: the in-memory token died with the old one.
+	restarted, _, _, _ := newManager()
+	restarted.store = st
+	restarted.workspace = m.workspace
+	restarted.attachments = m.attachments
+	if err := restarted.CleanupInterruptedTaskPreparations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertPathAbsent(t, workspace)
+	assertPathAbsent(t, filepath.Join(dataDir, "attachments", string(token)))
+	if _, ok := st.sessions[domain.SessionID(token)]; ok {
+		t.Fatal("interrupted preparation row still exists")
+	}
+}
+
+func TestCancelStandalonePreparationPreservesForeignFiles(t *testing.T) {
+	m, st, _ := newStandalonePreparationManager(t)
+	token, workspace, staged := stagePreparedImage(t, m, st)
+	foreign := filepath.Join(workspace, "notes.txt")
+	if err := os.WriteFile(foreign, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.CancelTaskPreparation(context.Background(), token); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("cancel = %v, want the folder preserved as dirty", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("foreign file removed: %v", err)
+	}
+	assertPathAbsent(t, staged)
+	if _, ok := st.sessions[domain.SessionID(token)]; !ok {
+		t.Fatal("row dropped while its folder survives; nothing could retry the cleanup")
+	}
+}
+
+func TestStandalonePreparationsHaveTheirOwnCap(t *testing.T) {
+	m, st, _ := newStandalonePreparationManager(t)
+	for i := range maxStandaloneTaskPreparations {
+		token, err := m.PrepareTaskWorkspace(context.Background(), domain.ProjectRecord{})
+		if err != nil || token == "" {
+			t.Fatalf("preparation %d = %q, %v", i+1, token, err)
+		}
+	}
+	token, err := m.PrepareTaskWorkspace(context.Background(), domain.ProjectRecord{})
+	if err != nil || token != "" {
+		t.Fatalf("over-cap preparation = %q, %v; want none", token, err)
+	}
+	if len(st.sessions) != maxStandaloneTaskPreparations {
+		t.Fatalf("rows = %d, want %d", len(st.sessions), maxStandaloneTaskPreparations)
+	}
+}
+
+func TestCancelProjectPreparationRemovesStagedFiles(t *testing.T) {
+	m, st, _, _ := newGitTaskPreparationManager(t)
+	dataDir := t.TempDir()
+	m.attachments = attachmentstore.New(dataDir)
+	token, err := m.PrepareTaskWorkspace(context.Background(), st.projects["mer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StageAttachments(context.Background(), domain.SessionID(token), []ports.SpawnAttachment{{Ext: ".png", Data: []byte("png-bytes")}}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := st.sessions[domain.SessionID(token)].Metadata.WorkspacePath
+
+	if err := m.CancelTaskPreparation(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	assertPathAbsent(t, workspace)
+	assertPathAbsent(t, filepath.Join(dataDir, "attachments", string(token)))
+}
 
 func TestTaskPreparationIsClaimedWithoutCreatingAnotherWorktree(t *testing.T) {
 	m, st, _, ws := newManager()

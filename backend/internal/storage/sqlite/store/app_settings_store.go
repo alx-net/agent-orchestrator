@@ -30,7 +30,13 @@ type AppSettings struct {
 	// VersionRefresh moves idle open sessions to a harness release installed
 	// while they ran.
 	VersionRefresh bool
-	UpdatedAt      time.Time
+	// AccountAutoSwitch moves a chat whose turn hit its account usage limit to
+	// another account with usage left.
+	AccountAutoSwitch bool
+	// CompactAt is the token count at which Claude Code agents AO launches
+	// compact their conversation; 0 leaves it to Claude Code's own settings.
+	CompactAt int
+	UpdatedAt time.Time
 }
 
 // GetAppSettings reads the preference row.
@@ -50,6 +56,8 @@ func (s *Store) GetAppSettings(ctx context.Context) (AppSettings, error) {
 		DefaultSessionMode: domain.NormalizeSessionMode(row.DefaultSessionMode),
 		CloudOffering:      row.CloudOffering,
 		VersionRefresh:     row.VersionRefresh,
+		AccountAutoSwitch:  row.AccountAutoSwitch,
+		CompactAt:          int(row.CompactAt),
 		UpdatedAt:          row.UpdatedAt,
 	}, nil
 }
@@ -92,6 +100,33 @@ func (s *Store) SetVersionRefresh(ctx context.Context, enabled bool, now time.Ti
 		UpdatedAt:      now,
 	}); err != nil {
 		return fmt.Errorf("set version refresh: %w", err)
+	}
+	return nil
+}
+
+// SetAccountAutoSwitch persists whether a usage-limited chat moves to another account.
+func (s *Store) SetAccountAutoSwitch(ctx context.Context, enabled bool, now time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.SetAccountAutoSwitch(ctx, gen.SetAccountAutoSwitchParams{
+		AccountAutoSwitch: enabled,
+		UpdatedAt:         now,
+	}); err != nil {
+		return fmt.Errorf("set account auto-switch: %w", err)
+	}
+	return nil
+}
+
+// SetCompactAt persists the token count at which AO-launched Claude Code
+// agents compact their conversation. 0 leaves it to Claude Code's settings.
+func (s *Store) SetCompactAt(ctx context.Context, tokens int, now time.Time) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.qw.SetCompactAt(ctx, gen.SetCompactAtParams{
+		CompactAt: int64(tokens),
+		UpdatedAt: now,
+	}); err != nil {
+		return fmt.Errorf("set compact-at: %w", err)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ import (
 
 const getAppSettings = `-- name: GetAppSettings :one
 
-SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh FROM app_settings WHERE id = 1
+SELECT id, default_session_mode, updated_at, cloud_offering, harness_defaults, version_refresh, account_auto_switch, compact_at FROM app_settings WHERE id = 1
 `
 
 // Daemon-owned user preferences. One row, seeded by migration 0042, so a read
@@ -29,6 +29,8 @@ func (q *Queries) GetAppSettings(ctx context.Context) (AppSetting, error) {
 		&i.CloudOffering,
 		&i.HarnessDefaults,
 		&i.VersionRefresh,
+		&i.AccountAutoSwitch,
+		&i.CompactAt,
 	)
 	return i, err
 }
@@ -50,6 +52,20 @@ func (q *Queries) ResetHarnessDefault(ctx context.Context, arg ResetHarnessDefau
 	return err
 }
 
+const setAccountAutoSwitch = `-- name: SetAccountAutoSwitch :exec
+UPDATE app_settings SET account_auto_switch = ?, updated_at = ? WHERE id = 1
+`
+
+type SetAccountAutoSwitchParams struct {
+	AccountAutoSwitch bool
+	UpdatedAt         time.Time
+}
+
+func (q *Queries) SetAccountAutoSwitch(ctx context.Context, arg SetAccountAutoSwitchParams) error {
+	_, err := q.db.ExecContext(ctx, setAccountAutoSwitch, arg.AccountAutoSwitch, arg.UpdatedAt)
+	return err
+}
+
 const setCloudOffering = `-- name: SetCloudOffering :exec
 UPDATE app_settings SET cloud_offering = ?, updated_at = ? WHERE id = 1
 `
@@ -61,6 +77,20 @@ type SetCloudOfferingParams struct {
 
 func (q *Queries) SetCloudOffering(ctx context.Context, arg SetCloudOfferingParams) error {
 	_, err := q.db.ExecContext(ctx, setCloudOffering, arg.CloudOffering, arg.UpdatedAt)
+	return err
+}
+
+const setCompactAt = `-- name: SetCompactAt :exec
+UPDATE app_settings SET compact_at = ?, updated_at = ? WHERE id = 1
+`
+
+type SetCompactAtParams struct {
+	CompactAt int64
+	UpdatedAt time.Time
+}
+
+func (q *Queries) SetCompactAt(ctx context.Context, arg SetCompactAtParams) error {
+	_, err := q.db.ExecContext(ctx, setCompactAt, arg.CompactAt, arg.UpdatedAt)
 	return err
 }
 

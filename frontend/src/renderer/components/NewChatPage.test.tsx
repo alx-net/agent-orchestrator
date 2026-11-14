@@ -11,6 +11,14 @@ const h = vi.hoisted(() => ({
 	launchFallback: vi.fn(),
 	fallbackAction: undefined as string | undefined,
 	workspace: undefined as ChatWorkspaceProps | undefined,
+	preparedSessionId: "",
+	get: vi.fn(),
+	post: vi.fn(),
+}));
+
+vi.mock("../lib/api-client", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/api-client")>()),
+	apiClient: { GET: h.get, POST: h.post },
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -31,6 +39,7 @@ vi.mock("./TaskComposer", () => ({
 		launchFallback: h.launchFallback,
 		fallbackAction: h.fallbackAction,
 		fallbackLabel: "Create as Terminal UI",
+		preparedSessionId: h.preparedSessionId,
 		submitMode: undefined,
 		isCloudProject: false,
 		canSubmit: true,
@@ -57,10 +66,10 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 
 const draftScope = { sessionId: "new-chat:local", incarnation: "new-chat:local" };
 
-function renderPage() {
+function renderPage(initialProject = "proj-1") {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	const page = (projectId: string) => <QueryClientProvider client={queryClient}><NewChatPage projectId={projectId} /></QueryClientProvider>;
-	const { rerender } = render(page("proj-1"));
+	const { rerender } = render(page(initialProject));
 	return Object.assign(queryClient, { showProject: (projectId: string) => rerender(page(projectId)) });
 }
 
@@ -71,10 +80,46 @@ beforeEach(() => {
 	h.launchFallback.mockReset();
 	h.fallbackAction = undefined;
 	h.workspace = undefined;
+	h.preparedSessionId = "";
+	h.get.mockReset();
+	h.post.mockReset();
 	window.localStorage.clear();
 });
 
 describe("NewChatPage", () => {
+	it("takes files on Scratchpad's first message once its folder is prepared", async () => {
+		h.preparedSessionId = "standalone-7";
+		h.get.mockResolvedValue({ data: { files: [] } });
+		h.post.mockResolvedValue({ data: { paths: [".ao/attachments/attachment-1.png"] } });
+		renderPage("__standalone__");
+
+		await waitFor(() => expect(h.workspace?.onStageAttachments).toBeTypeOf("function"));
+		expect(h.workspace?.attachLater).toBe(false);
+		// The opening message's images are served from the prepared session.
+		expect(h.workspace?.snapshot.sessionId).toBe("standalone-7");
+		await expect(h.workspace?.onStageAttachments?.([{ mimeType: "image/png", data: "AQID" }])).resolves.toEqual([".ao/attachments/attachment-1.png"]);
+		expect(h.post).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/attachments", {
+			params: { path: { sessionId: "standalone-7" } },
+			body: { attachments: [{ mimeType: "image/png", data: "AQID" }] },
+		});
+	});
+
+	it("leaves attachments for after the send when Scratchpad could not be prepared", () => {
+		renderPage("__standalone__");
+		expect(h.workspace?.attachLater).toBe(true);
+		expect(h.workspace?.onStageAttachments).toBeUndefined();
+		expect(h.get).not.toHaveBeenCalled();
+	});
+
+	it("does not offer files until the prepared folder answers", async () => {
+		h.preparedSessionId = "standalone-7";
+		h.get.mockResolvedValue({ error: { code: "SESSION_WORKSPACE_NOT_FOUND" } });
+		renderPage("__standalone__");
+		await waitFor(() => expect(h.get).toHaveBeenCalled());
+		expect(h.workspace?.attachLater).toBe(true);
+		expect(h.workspace?.onStageAttachments).toBeUndefined();
+	});
+
 	it("creates the session on first send and hands its brief to the session chat", async () => {
 		let resolve!: (sessionId: string) => void;
 		h.launch.mockReturnValue(new Promise<string>((done) => { resolve = done; }));

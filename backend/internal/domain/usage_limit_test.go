@@ -20,6 +20,8 @@ func TestParseConversationUsageLimit(t *testing.T) {
 		{"unknown deadline", "Usage limit reached\n\nResets tomorrow.", "", true},
 		{"Claude individual spend", "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit", "", true},
 		{"Claude no quota", "The Claude account has no available quota.", "", true},
+		{"model limit", "You've reached your Fable limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.", "", true},
+		{"versioned model limit", "You've hit your Opus 4.6 limit · resets 10:20pm (Asia/Kolkata)", "2026-10-14T16:50:00Z", true},
 		{"no timezone", "You've hit your session limit · resets 10:20pm", "", true},
 		{"unknown timezone", "You've hit your limit · resets 10:20pm (Mars/Olympus)", "", true},
 		{"ambient timezone", "You've hit your limit · resets 10:20pm (Local)", "", true},
@@ -27,6 +29,8 @@ func TestParseConversationUsageLimit(t *testing.T) {
 		{"transport error", "Connection lost", "", false},
 		{"ordinary rate limiting", "Too many requests. Retry after 30 seconds.", "", false},
 		{"quoted prose", "The tool says You've hit your session limit · resets 10:20pm (Asia/Calcutta)", "", false},
+		{"quoted model limit", "The tool says You've reached your Fable limit.", "", false},
+		{"AO's own title", UsageLimitReachedTitle + "\n\nYour seat type doesn't include usage · resets 10:20pm (Asia/Kolkata)", "2026-10-14T16:50:00Z", true},
 		{"quoted Claude quota", "The tool says The Claude account has no available quota.", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

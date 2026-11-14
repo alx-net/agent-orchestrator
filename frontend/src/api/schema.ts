@@ -1322,6 +1322,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mcp/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve a repo's .mcp.json server for a subscription in that project */
+        post: operations["approveMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a browser sign-in to a server for a subscription or a session's account */
+        post: operations["connectMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a sign-in's state */
+        get: operations["getMcpConnectOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/connect/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop a sign-in still waiting for the browser */
+        post: operations["cancelMcpConnectOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List MCP servers and their state on each Claude Code subscription; poll while checking is true */
+        get: operations["listMcpServers"];
+        put?: never;
+        /** Add a server to the user's global Claude Code config and bring it to running agents */
+        post: operations["addMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mcp/servers/{serverName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a server from the user's global Claude Code config and from running agents */
+        delete: operations["removeMcpServer"];
+        options?: never;
+        head?: never;
+        /** Replace the headers of a global server whose config holds its key */
+        patch: operations["updateMcpServerKey"];
+        trace?: never;
+    };
+    "/api/v1/mcp/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Really connect to one server and list its tools, and report pass or fail */
+        post: operations["testMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mobile/browser-control": {
         parameters: {
             query?: never;
@@ -2373,6 +2494,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/checkouts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetch a project and create or refresh the session's detached worktree of it under <workspace>/repos/<project-id> */
+        post: operations["createSessionCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation": {
         parameters: {
             query?: never;
@@ -3160,6 +3298,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read what MCP servers a session's running agent actually has right now */
+        get: operations["getSessionMcpServers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/mcp-servers/{serverName}/reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Have a session's running agent connect to one server again */
+        post: operations["reconnectSessionMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/merge-policy": {
         parameters: {
             query?: never;
@@ -3689,9 +3861,61 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a message to a running session's agent */
+        /** Send a message to a running session's agent, or hold an FYI for its next turn */
         post: operations["sendSessionMessage"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/terminal-commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run a command from an agent's reply in a new shell tab */
+        post: operations["runSessionCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/waits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a session's pending waits */
+        get: operations["listSessionWaits"];
+        put?: never;
+        /** Register a wait that wakes the session once a PR's CI, merge or review lands, or a timer elapses */
+        post: operations["createSessionWait"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/waits/{waitId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel one of a session's pending waits without waking it */
+        delete: operations["cancelSessionWait"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3970,6 +4194,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/account-auto-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Choose whether a chat that reaches its account's usage limit moves to another account */
+        patch: operations["updateAccountAutoSwitch"];
+        trace?: never;
+    };
     "/api/v1/settings/chat-hibernation": {
         parameters: {
             query?: never;
@@ -4002,6 +4243,23 @@ export interface paths {
         head?: never;
         /** Turn the cloud offering on or off for this machine */
         patch: operations["updateCloudOffering"];
+        trace?: never;
+    };
+    "/api/v1/settings/compact-at": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Choose the token count at which Claude Code agents AO launches compact their conversation */
+        patch: operations["updateCompactAt"];
         trace?: never;
     };
     "/api/v1/settings/harness-defaults/{agent}": {
@@ -4139,6 +4397,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/standalone/tasks/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Speculatively create the next Scratchpad task's empty folder */
+        post: operations["prepareStandaloneTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/github-auth": {
         parameters: {
             query?: never;
@@ -4220,6 +4495,23 @@ export interface paths {
         post?: never;
         /** Cancel an unclaimed speculative task worktree */
         delete: operations["cancelTaskPreparation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/task-preparations/{token}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keep an open composer's unclaimed task workspace from expiring */
+        post: operations["renewTaskPreparation"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4333,6 +4625,23 @@ export interface components {
         ActivateConversationBranchResponse: {
             activeBranchId: string;
         };
+        AddMCPServerRequest: {
+            args?: string[];
+            command?: string;
+            env?: {
+                [key: string]: string;
+            };
+            headers?: {
+                [key: string]: string;
+            };
+            name: string;
+            /**
+             * @description For a URL; http by default.
+             * @enum {string}
+             */
+            transport?: "http" | "sse";
+            url?: string;
+        };
         AddProjectInput: {
             asWorkspace?: boolean;
             clonePreparationId?: string;
@@ -4391,6 +4700,8 @@ export interface components {
             email?: string;
             id: string;
             limits?: components["schemas"]["AgentAccountLimits"];
+            /** @description MCP servers the provider's CLI found not signed in for this account's folder. A session on the account runs without them. */
+            mcpNeedsAuth?: string[];
             plan?: string;
             problem?: string;
             /** @enum {string} */
@@ -4905,6 +5216,29 @@ export interface components {
         ChatPermissionModesResponse: {
             agents: components["schemas"]["ChatAgentPermissionModes"][];
         };
+        CheckoutResponse: {
+            /**
+             * @description kept: an existing checkout had local work and was left untouched.
+             * @enum {string}
+             */
+            action: "created" | "updated" | "unchanged" | "kept";
+            commit: string;
+            /** Format: date-time */
+            commitDate: string;
+            /** @description Set when fetching the remote failed and the last fetched refs were used. */
+            fetchWarning?: string;
+            /** @description Why a kept checkout was not moved. */
+            note?: string;
+            path: string;
+            projectId: string;
+            projectName: string;
+            /** @description What the checkout was resolved from, e.g. origin/master. */
+            ref: string;
+            shortCommit: string;
+            subject: string;
+            /** @description The repository declares submodules; they are not initialized. */
+            submodules?: boolean;
+        };
         ClaimPRRequest: {
             allowTakeover?: null | boolean;
             pr: string;
@@ -5215,6 +5549,12 @@ export interface components {
             /** @description The worker session this reviewer reviews, not the reviewer's own identity. */
             sessionId: string;
         };
+        ControllersRunSessionCommandRequest: {
+            /** @description Shell command the user chose to run, typed into a new shell tab in the session's worktree. Several lines run as one command list. */
+            command: string;
+            /** @description Windows shell selector, as for shell terminals. Ignored on macOS and Linux. */
+            shell?: string;
+        };
         ControllersSecurePairingStatus: {
             active: boolean;
             available: boolean;
@@ -5259,6 +5599,7 @@ export interface components {
             model?: string;
             /** @enum {string} */
             outputType: "none" | "pr" | "artifact" | "pr_artifact";
+            parentSessionId?: string;
             /** Format: date-time */
             pinnedAt?: null | string;
             /** Format: int64 */
@@ -5285,6 +5626,7 @@ export interface components {
             terminalGeneration?: string;
             terminalHandleId?: string;
             terminateOnPrMerge: boolean;
+            titleArea?: string;
             /** Format: date-time */
             updatedAt: string;
             /** @enum {string} */
@@ -5406,7 +5748,9 @@ export interface components {
             error?: string;
             failureReason?: string;
             name: string;
+            scope?: string;
             status: string;
+            toolCount?: null | number;
         };
         ConversationMessageResponse: {
             clientMessageId?: string;
@@ -5618,6 +5962,14 @@ export interface components {
             rrule?: string;
             timezone: string;
         };
+        CreateCheckoutRequest: {
+            /** @description Project id or name, case-insensitive. */
+            project: string;
+            /** @description Remote branch, tag, or commit SHA. Defaults to the project's default branch. */
+            ref?: string;
+            /** @description Fail with 409 instead of keeping an existing checkout that has local work. */
+            refresh?: boolean;
+        };
         CreateConversationSideChatRequest: {
             forceNew?: boolean;
             idempotencyKey: string;
@@ -5637,6 +5989,34 @@ export interface components {
         };
         CreateReportResponse: {
             id: string;
+        };
+        CreateWaitRequest: {
+            /**
+             * Format: int64
+             * @description Timer length for a time wait.
+             */
+            durationSeconds?: number;
+            /**
+             * @description PR event to wait for; defaults to checks. Every PR wait also resolves when the PR merges or closes.
+             * @enum {string}
+             */
+            for?: "checks" | "merge" | "review" | "any";
+            /** @enum {string} */
+            kind: "pr" | "time";
+            /** @description Why the agent is waiting; echoed back in the wake message. */
+            note?: string;
+            prNumber?: number;
+            /** @description Complete GitHub PR or GitLab MR URL. */
+            prUrl?: string;
+            /**
+             * Format: int64
+             * @description How long a PR wait may stay pending; defaults to 24 hours.
+             */
+            timeoutSeconds?: number;
+        };
+        CreateWaitResponse: {
+            existing?: boolean;
+            wait: components["schemas"]["WaitResponse"];
         };
         CueDefinitionRequest: {
             /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
@@ -6065,6 +6445,9 @@ export interface components {
         ListShellTerminalsResponse: {
             shellTerminals: components["schemas"]["ShellTerminalResponse"][];
         };
+        ListWaitsResponse: {
+            waits: components["schemas"]["WaitResponse"][];
+        };
         ListWorkspaceFilesResponse: {
             ahead?: null | number;
             behind?: null | number;
@@ -6091,6 +6474,128 @@ export interface components {
             /** @description True only when the tree was read from the requested immutable snapshot. */
             snapshot?: boolean;
             truncated: boolean;
+        };
+        MCPAccountRef: {
+            device?: boolean;
+            email?: string;
+            id: string;
+        };
+        MCPChangeResponse: {
+            applied: components["schemas"]["MCPPropagation"];
+        };
+        MCPConnectOperation: {
+            accountId: string;
+            applied: components["schemas"]["MCPPropagation"];
+            authUrl?: string;
+            error?: string;
+            /** Format: date-time */
+            finishedAt?: null | string;
+            id: string;
+            manageUrl?: string;
+            name: string;
+            sessionId?: string;
+            /** Format: date-time */
+            startedAt: string;
+            /** @enum {string} */
+            state: "waiting" | "waiting_external" | "connected" | "failed" | "timed_out" | "cancelled";
+        };
+        MCPConnectOperationResponse: {
+            operation: components["schemas"]["MCPConnectOperation"];
+        };
+        MCPLiveStatus: {
+            error?: string;
+            status: string;
+            toolCount?: null | number;
+        };
+        MCPPropagation: {
+            /** @description Sessions where the server itself failed, with the reason. */
+            failed?: {
+                [key: string]: string;
+            };
+            /** @description Sessions that have it now, with no restart. */
+            inPlace?: string[];
+            /** @description Sessions restarting once idle, conversation kept. */
+            restarting?: string[];
+        };
+        MCPServerAccountStatus: {
+            accountId: string;
+            /**
+             * @description What can fix or manage this server here.
+             * @enum {string}
+             */
+            action?: "connect" | "approve" | "edit_key" | "manage";
+            /** Format: date-time */
+            checkedAt?: null | string;
+            /** @description The last failure, in the server's or Claude Code's own words. */
+            error?: string;
+            /** @description A running agent reported this, rather than a separate check. */
+            live?: boolean;
+            /** @description Claude Code's own word for the state, shown for a state AO has no word for. */
+            rawStatus?: string;
+            /**
+             * @description The server's state in AO's words; rawStatus has Claude Code's own.
+             * @enum {string}
+             */
+            status: "connected" | "needs_sign_in" | "key_rejected" | "needs_approval" | "rejected" | "failed" | "starting" | "disabled" | "not_checked" | "unknown";
+            /** @description How many tools a connected server exposes, once known. */
+            toolCount?: null | number;
+        };
+        MCPServerPayload: {
+            accounts: components["schemas"]["MCPServerAccountStatus"][];
+            /**
+             * @description How the server authenticates.
+             * @enum {string}
+             */
+            auth: "oauth" | "api_key" | "helper" | "none" | "connector" | "unknown";
+            /** @description AO owns the config, so its key can be changed here. */
+            editable?: boolean;
+            headerNames?: string[];
+            /** @description Where it is managed, when that is outside AO. */
+            manageUrl?: string;
+            name: string;
+            projectId?: string;
+            projectName?: string;
+            /**
+             * @description Where the server is defined.
+             * @enum {string}
+             */
+            scope: "global" | "repo" | "local" | "connector" | "plugin" | "other";
+            /** @description URL or command, with anything credential-shaped removed. */
+            target?: string;
+            /** @description stdio, http, sse, or whatever else Claude Code reports. */
+            transport?: string;
+        };
+        MCPServerTargetRequest: {
+            /** @description Omitted is this computer's own account. */
+            accountId?: string;
+            name: string;
+            /** @description For a server in that project's .mcp.json. */
+            projectId?: string;
+            sessionId?: string;
+        };
+        MCPServerTestResponse: {
+            accountId: string;
+            action?: string;
+            auth?: string;
+            /** Format: date-time */
+            checkedAt: string;
+            error?: string;
+            /** @description What the session's running agent has now, for a session's test. */
+            live?: components["schemas"]["MCPLiveStatus"];
+            name: string;
+            ok: boolean;
+            rawStatus?: string;
+            /** @description Why it passed, or what is wrong, in plain words. */
+            reason: string;
+            status: string;
+            toolCount?: null | number;
+            tools?: string[];
+        };
+        MCPServersResponse: {
+            accounts: components["schemas"]["MCPAccountRef"][];
+            /** @description A check is running; poll and the list will fill in. */
+            checking: boolean;
+            servers: components["schemas"]["MCPServerPayload"][];
         };
         MarkAllNotificationsReadRequest: {
             /** @description Acknowledge exactly these notifications. Omit to acknowledge every unread notification; paginating clients should send the ids they actually rendered so later pages stay unread. */
@@ -6302,6 +6807,7 @@ export interface components {
             reviewers?: components["schemas"]["DomainReviewerConfig"][];
             sessionPrefix?: string;
             symlinks?: string[];
+            titleAreas?: components["schemas"]["TitleArea"][];
             trackerIntake?: components["schemas"]["TrackerIntakeConfig"];
             worker?: components["schemas"]["RoleOverride"];
             workersRequestReview?: boolean;
@@ -6600,6 +7106,7 @@ export interface components {
         };
         SendSessionMessageRequest: {
             attachment?: components["schemas"]["AttachmentInput"];
+            fyi?: boolean;
             message: string;
             senderSessionId?: string;
             userAuthored?: boolean;
@@ -6607,6 +7114,7 @@ export interface components {
         SendSessionMessageResponse: {
             message: string;
             ok: boolean;
+            pendingFyis?: number;
             sessionId: string;
         };
         SendSideQuestionRequest: {
@@ -6702,6 +7210,12 @@ export interface components {
             /** @enum {string} */
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
+        };
+        SessionMCPServersResponse: {
+            accountId: string;
+            /** @description A running agent reported this. Otherwise it is a check of what the session's account and folder would have. */
+            live: boolean;
+            servers: components["schemas"]["MCPServerPayload"][];
         };
         SessionMemoryProcessResponse: {
             command: string;
@@ -7064,12 +7578,16 @@ export interface components {
             enabled: null | boolean;
         };
         SettingsResponse: {
+            /** @description When a chat's turn reaches its account's usage limit, AO moves the session to another signed-in account of the same provider with usage left and runs the turn again there, instead of waiting for the reset. */
+            accountAutoSwitch: boolean;
             chatHarnesses: string[];
             chatHibernationEnabled: boolean;
             client: string;
             cloudControlPlaneUrl: string;
             cloudEnabled: boolean;
             cloudOffering: boolean;
+            /** @description Token count at which the Claude Code chat agents AO starts or resumes compact their conversation, overriding the repository's and the user's Claude Code settings. 0 leaves it to those settings. A conversation's own compaction choice, or a compaction variable in the project's AO environment, still wins. */
+            compactAt: number;
             /** @enum {string} */
             defaultSessionMode: "chat" | "tui";
             harnessDefaults?: {
@@ -7296,6 +7814,7 @@ export interface components {
             prompt?: string;
             /** @enum {string} */
             requestedOutput?: "artifact";
+            taskPreparation?: string;
             /** @enum {string} */
             trackerProvider?: "github" | "gitlab";
         };
@@ -7476,6 +7995,10 @@ export interface components {
             installId?: string;
             optedOut: boolean;
         };
+        TitleArea: {
+            hint?: string;
+            name: string;
+        };
         TrackerIntakeConfig: {
             assignee?: string;
             enabled?: boolean;
@@ -7524,6 +8047,9 @@ export interface components {
             deleted: boolean;
             token: string;
         };
+        UpdateAccountAutoSwitchRequest: {
+            enabled: null | boolean;
+        };
         UpdateArtifactFileRequest: {
             /** @description The file's new UTF-8 text content. */
             content: string;
@@ -7549,8 +8075,18 @@ export interface components {
         UpdateChatHibernationRequest: {
             enabled: null | boolean;
         };
+        UpdateCompactAtRequest: {
+            /** @description 0 for the repository default, or a token count from 100000 to 900000. */
+            tokens: null | number;
+        };
         UpdateHarnessDefaultRequest: {
             disabledModels: null | string[];
+        };
+        UpdateMCPServerKeyRequest: {
+            /** @description Header names and new values. An empty value keeps that header's current one. */
+            headers: {
+                [key: string]: string;
+            } | null;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -7610,6 +8146,31 @@ export interface components {
             account?: components["schemas"]["AgentAccountResponse"];
             /** @enum {string} */
             status: "waiting" | "complete" | "duplicate" | "mismatch";
+        };
+        WaitEnvelope: {
+            wait: components["schemas"]["WaitResponse"];
+        };
+        WaitResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            fireAt?: null | string;
+            /** @enum {string} */
+            for?: "checks" | "merge" | "review" | "any";
+            id: string;
+            /** @enum {string} */
+            kind: "pr" | "time";
+            note?: string;
+            outcome?: string;
+            prNumber?: number;
+            prUrl?: string;
+            /** Format: date-time */
+            resolvedAt?: null | string;
+            sessionId: string;
+            /** @enum {string} */
+            state: "pending" | "fired" | "expired" | "cancelled";
         };
         WorkspaceBranchResponse: {
             checkedOut: boolean;
@@ -12136,6 +12697,450 @@ export interface operations {
             };
         };
     };
+    approveMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    connectMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getMcpConnectOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP sign-in operation identifier. */
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelMcpConnectOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP sign-in operation identifier. */
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConnectOperationResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listMcpServers: {
+        parameters: {
+            query?: {
+                /** @description Run a new check even over a fresh one. */
+                refresh?: boolean;
+                /** @description Block until the check finishes. */
+                wait?: boolean;
+                /** @description Return only what is known, starting nothing. */
+                noCheck?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServersResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    addMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddMCPServerRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    removeMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateMcpServerKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMCPServerKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPChangeResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    testMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPServerTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPServerTestResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setMobileBrowserRemoteAccess: {
         parameters: {
             query?: never;
@@ -16089,6 +17094,87 @@ export interface operations {
             };
         };
     };
+    createSessionCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCheckoutRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getSessionConversation: {
         parameters: {
             query?: {
@@ -19049,6 +20135,111 @@ export interface operations {
             };
         };
     };
+    getSessionMcpServers: {
+        parameters: {
+            query?: {
+                /** @description For a session with no running agent, run a new check. */
+                refresh?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionMCPServersResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    reconnectSessionMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier. */
+                sessionId: string;
+                /** @description MCP server name. */
+                serverName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionMCPServersResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     setSessionMergePolicy: {
         parameters: {
             query?: never;
@@ -21441,6 +22632,288 @@ export interface operations {
             };
         };
     };
+    runSessionCommand: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersRunSessionCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShellTerminalEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionWaits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListWaitsResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createSessionWait: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWaitRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWaitResponse"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWaitResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    cancelSessionWait: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Wait identifier, e.g. w-1a2b3c4d. */
+                waitId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     listSessionWorkspaceBranches: {
         parameters: {
             query?: never;
@@ -22556,6 +24029,57 @@ export interface operations {
             };
         };
     };
+    updateAccountAutoSwitch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountAutoSwitchRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     updateChatHibernation: {
         parameters: {
             query?: never;
@@ -22617,6 +24141,57 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ControllersUpdateCloudOfferingRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateCompactAt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCompactAtRequest"];
             };
         };
         responses: {
@@ -23163,6 +24738,44 @@ export interface operations {
             };
         };
     };
+    prepareStandaloneTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrepareTaskResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getGitHubAuthRequirement: {
         parameters: {
             query?: never;
@@ -23404,6 +25017,54 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    renewTaskPreparation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque speculative task-worktree token. */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {

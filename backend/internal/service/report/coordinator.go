@@ -44,6 +44,14 @@ type DeliveryStore interface {
 	AcquireReportInterrupt(context.Context, domain.SessionID, time.Time, time.Duration) (bool, time.Time, error)
 }
 
+// FYIStore is the durable `ao send --fyi` outbox. It is optional: without it
+// no FYI is claimed and report delivery is unchanged.
+type FYIStore interface {
+	ClaimPendingFYIMessages(context.Context, domain.SessionID, string, time.Time) ([]domain.FYIMessage, error)
+	AcknowledgeFYIMessages(context.Context, domain.SessionID, string, time.Time) (int, error)
+	ReleaseFYIMessages(context.Context, domain.SessionID, string) (int, error)
+}
+
 // Delivery submits accepted semantic context and interrupts active work.
 type Delivery interface {
 	Submit(context.Context, domain.SessionID, string, string) error
@@ -53,6 +61,7 @@ type Delivery interface {
 // Coordinator delivers durable report batches to active orchestrators.
 type Coordinator struct {
 	store      DeliveryStore
+	fyis       FYIStore
 	delivery   Delivery
 	now        func() time.Time
 	newToken   func() string
@@ -63,7 +72,9 @@ type Coordinator struct {
 
 // CoordinatorDeps configures durable scheduling and delivery.
 type CoordinatorDeps struct {
-	Store      DeliveryStore
+	Store DeliveryStore
+	// FYIs holds `ao send --fyi` messages for each session's next turn.
+	FYIs       FYIStore
 	Delivery   Delivery
 	Now        func() time.Time
 	NewToken   func() string
@@ -81,7 +92,7 @@ func NewCoordinator(d CoordinatorDeps) *Coordinator {
 	if d.RetryDelay <= 0 {
 		d.RetryDelay = 5 * time.Second
 	}
-	return &Coordinator{store: d.Store, delivery: d.Delivery, now: d.Now, newToken: d.NewToken, retryDelay: d.RetryDelay, wake: make(chan struct{}, 1)}
+	return &Coordinator{store: d.Store, fyis: d.FYIs, delivery: d.Delivery, now: d.Now, newToken: d.NewToken, retryDelay: d.RetryDelay, wake: make(chan struct{}, 1)}
 }
 
 // Wake asks the coordinator to inspect durable scheduling state.
@@ -223,6 +234,10 @@ type PreparedBatch struct {
 	Token     string
 	ID        string
 	Reports   []domain.ReportRecord
+	// Target owns FYIs, the `ao send --fyi` messages claimed for its next turn
+	// under the same Token.
+	Target domain.SessionID
+	FYIs   []domain.FYIMessage
 }
 
 func (c *Coordinator) claim(ctx context.Context, projectID domain.ProjectID) (PreparedBatch, error) {
@@ -241,7 +256,8 @@ func (c *Coordinator) claim(ctx context.Context, projectID domain.ProjectID) (Pr
 	return PreparedBatch{ProjectID: projectID, Token: token, ID: batchID, Reports: reports}, err
 }
 
-// PreparePiggyback claims pending reports for the active Chat orchestrator.
+// PreparePiggyback claims pending reports for the active Chat orchestrator,
+// and the target's pending FYIs for any session.
 // The caller must acknowledge only after its user message is durably accepted.
 func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.SessionID) (PreparedBatch, error) {
 	if c == nil || c.store == nil {
@@ -252,26 +268,84 @@ func (c *Coordinator) PreparePiggyback(ctx context.Context, target domain.Sessio
 		return PreparedBatch{}, err
 	}
 	if rec.Kind != domain.KindOrchestrator || rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
-		return PreparedBatch{}, nil
+		return c.PrepareFYIs(ctx, target)
 	}
-	return c.claim(ctx, rec.ProjectID)
+	batch, err := c.claim(ctx, rec.ProjectID)
+	if err != nil {
+		return batch, err
+	}
+	fyis, err := c.claimFYIs(ctx, target, batch.Token)
+	if err != nil {
+		return PreparedBatch{}, errors.Join(err, c.ReleasePiggyback(ctx, batch, err))
+	}
+	batch.Target, batch.FYIs = target, fyis
+	return batch, nil
 }
 
-// AcceptPiggyback acknowledges reports after the combined user turn is accepted.
-func (c *Coordinator) AcceptPiggyback(ctx context.Context, batch PreparedBatch) error {
-	if len(batch.Reports) == 0 {
-		return nil
+// PrepareFYIs claims the `ao send --fyi` messages waiting for target's next
+// turn, whatever starts it. The caller appends the batch to that turn's message
+// and must acknowledge only after the turn is durably accepted.
+func (c *Coordinator) PrepareFYIs(ctx context.Context, target domain.SessionID) (PreparedBatch, error) {
+	if c == nil || c.fyis == nil {
+		return PreparedBatch{}, nil
 	}
-	_, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC())
-	return err
+	token := c.newToken()
+	fyis, err := c.claimFYIs(ctx, target, token)
+	if err != nil || len(fyis) == 0 {
+		return PreparedBatch{}, err
+	}
+	return PreparedBatch{Token: token, Target: target, FYIs: fyis}, nil
+}
+
+func (c *Coordinator) claimFYIs(ctx context.Context, target domain.SessionID, token string) ([]domain.FYIMessage, error) {
+	if c.fyis == nil || target == "" {
+		return nil, nil
+	}
+	fyis, err := c.fyis.ClaimPendingFYIMessages(ctx, target, token, c.now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("claim fyi messages: %w", err)
+	}
+	for i := range fyis {
+		if fyis[i].SenderSessionID == "" || c.store == nil {
+			continue
+		}
+		if sender, found, lookupErr := c.store.GetSession(ctx, fyis[i].SenderSessionID); lookupErr == nil && found {
+			fyis[i].SenderDisplayName = strings.TrimSpace(sender.DisplayName)
+			fyis[i].SenderProjectID = sender.ProjectID
+		}
+	}
+	return fyis, nil
+}
+
+// AcceptPiggyback acknowledges reports and FYIs after the combined user turn is accepted.
+func (c *Coordinator) AcceptPiggyback(ctx context.Context, batch PreparedBatch) error {
+	var errs []error
+	if len(batch.Reports) > 0 {
+		if _, err := c.store.AcknowledgeReportBatch(ctx, batch.ProjectID, batch.Token, c.now().UTC()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(batch.FYIs) > 0 && c.fyis != nil {
+		if _, err := c.fyis.AcknowledgeFYIMessages(ctx, batch.Target, batch.Token, c.now().UTC()); err != nil {
+			errs = append(errs, fmt.Errorf("acknowledge fyi messages: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ReleasePiggyback makes a batch retryable when the combined turn was refused.
+// Released FYIs wait for the target's next turn again.
 func (c *Coordinator) ReleasePiggyback(ctx context.Context, batch PreparedBatch, cause error) error {
-	if len(batch.Reports) == 0 {
-		return nil
+	var fyiErr error
+	if len(batch.FYIs) > 0 && c.fyis != nil {
+		if _, err := c.fyis.ReleaseFYIMessages(ctx, batch.Target, batch.Token); err != nil {
+			fyiErr = fmt.Errorf("release fyi messages: %w", err)
+		}
 	}
-	return c.release(ctx, batch, cause)
+	if len(batch.Reports) == 0 {
+		return fyiErr
+	}
+	return errors.Join(c.release(ctx, batch, cause), fyiErr)
 }
 
 func (c *Coordinator) release(ctx context.Context, batch PreparedBatch, cause error) error {
@@ -287,12 +361,20 @@ const (
 	chatReportClose = "</ao-worker-reports>"
 )
 
-// AppendToUserMessage places reports after the user's text in one semantic turn.
-// The envelope lets AO's Chat UI hide daemon-authored context while preserving
-// the exact prompt accepted by the provider for retry and recovery.
+// AppendToUserMessage places reports and FYIs after the user's text in one
+// semantic turn. The envelope lets AO's Chat UI hide daemon-authored context
+// while preserving the exact prompt accepted by the provider for retry and
+// recovery. A standalone report delivery already is that list, so its FYIs
+// join it as further entries.
 func (b PreparedBatch) AppendToUserMessage(message string) string {
-	if len(b.Reports) == 0 {
+	if len(b.Reports) == 0 && len(b.FYIs) == 0 {
 		return message
+	}
+	if len(b.Reports) == 0 && strings.HasPrefix(message, reportsHeader) {
+		var out strings.Builder
+		out.WriteString(message)
+		b.renderFYIs(&out)
+		return out.String()
 	}
 	return message + "\n\n" + chatReportOpen + "\n" + b.Render() + "\n" + chatReportClose
 }
@@ -311,10 +393,14 @@ func (b PreparedBatch) IdempotencyKey() string {
 	return "report-batch:" + hex.EncodeToString(sum[:16])
 }
 
-// Render formats compact attributed report context for an orchestrator.
+// reportsHeader opens every rendered batch. AO's Chat UI parses entries after it.
+const reportsHeader = "Reports since your previous turn:"
+
+// Render formats compact attributed report context for an orchestrator, then
+// any FYIs in arrival order.
 func (b PreparedBatch) Render() string {
 	var out strings.Builder
-	out.WriteString("Reports since your previous turn:")
+	out.WriteString(reportsHeader)
 	for _, report := range coalesceReports(b.Reports) {
 		state := string(report.State)
 		if state == "" {
@@ -336,7 +422,31 @@ func (b PreparedBatch) Render() string {
 			fmt.Fprintf(&out, "\n%s: %s", output.Kind, output.Reference)
 		}
 	}
+	b.renderFYIs(&out)
 	return out.String()
+}
+
+// renderFYIs writes each FYI as a `[fyi]` entry: sender and the time it was
+// sent, then its text. The label tells the recipient no reply is expected.
+func (b PreparedBatch) renderFYIs(out *strings.Builder) {
+	for _, fyi := range b.FYIs {
+		fmt.Fprintf(out, "\n\n[fyi] %s (sent %s; informational, no reply needed)\n%s",
+			fyiSenderLink(fyi), fyi.CreatedAt.UTC().Format("2006-01-02 15:04 UTC"), fyi.Message)
+	}
+}
+
+// fyiSenderLink attributes an FYI like a report: a session link when AO knows
+// the sender, otherwise its id, or the user when none was given.
+func fyiSenderLink(fyi domain.FYIMessage) string {
+	if fyi.SenderSessionID == "" {
+		return "the user"
+	}
+	if fyi.SenderProjectID == "" {
+		return string(fyi.SenderSessionID)
+	}
+	return reportSessionLink(domain.ReportRecord{
+		SessionID: fyi.SenderSessionID, ProjectID: fyi.SenderProjectID, SessionDisplayName: fyi.SenderDisplayName,
+	})
 }
 
 func reportDisplayNameOrID(r domain.ReportRecord) string {

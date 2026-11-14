@@ -55,7 +55,11 @@ func CLIActorType(actorType, commandPath string) string {
 	if _, ok := legacyActorlessUserCLICommands[normalized]; ok {
 		return "user"
 	}
-	if normalized == "ao hooks" || normalized == "ao report" {
+	// ao wait and ao checkout only run inside an agent session, like ao report.
+	// The subcommands of ao mcp are how an agent connects and checks its servers;
+	// bare ao mcp is the stdio tool server a harness spawns, which stays system.
+	if normalized == "ao hooks" || normalized == "ao report" || normalized == "ao checkout" || normalized == "ao wait" ||
+		strings.HasPrefix(normalized, "ao wait ") || strings.HasPrefix(normalized, "ao mcp ") {
 		return "agent"
 	}
 	return "system"
