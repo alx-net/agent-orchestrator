@@ -76,6 +76,15 @@ const checkFreshFor = 10 * time.Minute
 // maxConcurrentChecks bounds how many Claude Code processes a check runs at once.
 const maxConcurrentChecks = 2
 
+// checkLimit bounds one whole check: a folder's list and probe each have their
+// own limit, and this covers both with room to spare.
+const checkLimit = 4 * time.Minute
+
+// backgroundPropagateLimit bounds bringing a finished sign-in to running agents,
+// which runs off any request. Each agent's call has its own limit; this caps the
+// sum, so the sign-in still reports connected when many agents are slow.
+const backgroundPropagateLimit = 2 * time.Minute
+
 var (
 	// ErrUnknownServer is a server name Claude Code does not have.
 	ErrUnknownServer = errors.New("no MCP server with that name")
@@ -179,7 +188,9 @@ type Service struct {
 	restartPoll     time.Duration
 	restartPatience time.Duration
 
-	checkSlots chan struct{}
+	checkSlots     chan struct{}
+	checkLimit     time.Duration
+	propagateLimit time.Duration
 
 	mu       sync.Mutex
 	checks   map[checkKey]*check
@@ -204,8 +215,8 @@ func New(deps Deps) *Service {
 		now: func() time.Time { return time.Now().UTC() }, newID: uuid.NewString,
 		loginLimit: 5 * time.Minute, externalWait: 5 * time.Minute, externalPoll: 15 * time.Second,
 		restartPoll: 3 * time.Second, restartPatience: 24 * time.Hour,
-		checkSlots: make(chan struct{}, maxConcurrentChecks),
-		checks:     map[checkKey]*check{}, ops: map[string]*Operation{}, cancels: map[string]context.CancelFunc{},
+		checkSlots: make(chan struct{}, maxConcurrentChecks), checkLimit: checkLimit, propagateLimit: backgroundPropagateLimit,
+		checks: map[checkKey]*check{}, ops: map[string]*Operation{}, cancels: map[string]context.CancelFunc{},
 		restarts: map[domain.SessionID]bool{},
 	}
 }

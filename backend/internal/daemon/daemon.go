@@ -42,6 +42,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
 	"github.com/aoagents/agent-orchestrator/backend/internal/datadirlock"
+	"github.com/aoagents/agent-orchestrator/backend/internal/diagnostics"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
@@ -134,6 +135,10 @@ func Run(buildVersion string) error {
 	ignoreBrokenPipeSignal()
 
 	log := newLogger()
+	// Installed first: SIGUSR1's default action would kill the daemon.
+	dumper := diagnostics.NewDumper(cfg.DataDir)
+	stopDumpSignal := watchGoroutineDumpSignal(dumper, log)
+	defer stopDumpSignal()
 	var browserRuntimeToken string
 	if os.Getenv(browserruntime.RuntimeTokenStdinEnv) == "1" {
 		browserRuntimeToken, err = browserruntime.ReadRuntimeToken(os.Stdin)
@@ -201,6 +206,10 @@ func Run(buildVersion string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+	// Not the signal context: a shutdown can hang on a stuck writer too.
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	defer stopWatch()
+	startWriterWatchdog(watchCtx, store.WriterLockState, dumper, log)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
 	}

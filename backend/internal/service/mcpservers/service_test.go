@@ -40,6 +40,10 @@ type fakeCLI struct {
 	commandResult ports.MCPCommandResult
 	commandErr    error
 
+	// hang makes every list and probe in this account folder block until its
+	// context ends: a Claude Code that never answers.
+	hang map[string]bool
+
 	logins   []ports.MCPTarget
 	commands []fakeCommand
 	probed   []fakeProbe
@@ -67,7 +71,11 @@ func newFakeCLI() *fakeCLI {
 	}
 }
 
-func (f *fakeCLI) MCPCommand(_ context.Context, target ports.MCPTarget, args ...string) (ports.MCPCommandResult, error) {
+func (f *fakeCLI) MCPCommand(ctx context.Context, target ports.MCPTarget, args ...string) (ports.MCPCommandResult, error) {
+	if f.hangs(target) {
+		<-ctx.Done()
+		return ports.MCPCommandResult{}, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, fakeCommand{target, args})
@@ -77,7 +85,17 @@ func (f *fakeCLI) MCPCommand(_ context.Context, target ports.MCPTarget, args ...
 	return f.commandResult, f.commandErr
 }
 
-func (f *fakeCLI) MCPProbe(_ context.Context, target ports.MCPTarget, request ports.MCPProbeRequest) ([]ports.MCPProbeServer, error) {
+func (f *fakeCLI) hangs(target ports.MCPTarget) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hang[target.Home]
+}
+
+func (f *fakeCLI) MCPProbe(ctx context.Context, target ports.MCPTarget, request ports.MCPProbeRequest) ([]ports.MCPProbeServer, error) {
+	if f.hangs(target) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.probed = append(f.probed, fakeProbe{target, request})
@@ -197,6 +215,7 @@ type fakeLive struct {
 	afterSet   map[domain.SessionID][]domain.ConversationMCPServer
 	failures   map[string]string
 	err        error
+	hang       bool // calls block until their context ends
 	reconnects []string
 	applied    []ports.ChatMCPChange
 }
@@ -210,7 +229,14 @@ func (f *fakeLive) LiveMCPServers(_ context.Context, id domain.SessionID) ([]dom
 	return f.servers[id], nil
 }
 
-func (f *fakeLive) ReconnectMCPServer(_ context.Context, id domain.SessionID, name string) ([]domain.ConversationMCPServer, string, error) {
+func (f *fakeLive) ReconnectMCPServer(ctx context.Context, id domain.SessionID, name string) ([]domain.ConversationMCPServer, string, error) {
+	f.mu.Lock()
+	hang := f.hang
+	f.mu.Unlock()
+	if hang {
+		<-ctx.Done()
+		return nil, "", ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -556,6 +582,48 @@ func TestConnectUsesTheSessionsAccountAndFolderAndReachesItsAgent(t *testing.T) 
 	}
 	if r.restart.count() != 0 {
 		t.Fatal("a sign-in that reconnected in place must not restart anything")
+	}
+}
+
+// A Claude Code that never answers must not hold a check slot forever: with
+// every slot taken by hung checks, no later check could ever run.
+func TestAHungCheckGivesUpItsSlot(t *testing.T) {
+	r := newRig(t)
+	r.svc.checkLimit = 50 * time.Millisecond
+	r.svc.checkSlots = make(chan struct{}, 1)
+	r.cli.hang = map[string]bool{"": true} // the computer's own account
+	r.cli.probes["/acct|"] = []ports.MCPProbeServer{{Name: "linear", Status: "connected", Scope: "user"}}
+	r.cli.user[""] = map[string]json.RawMessage{"linear": raw(`{"type":"http","url":"https://mcp.linear.app/mcp"}`)}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	list, err := r.svc.List(ctx, ListInput{Wait: true})
+	if err != nil {
+		t.Fatalf("list waited behind a hung check: %v", err)
+	}
+	linear := findServer(t, list.Servers, "linear")
+	if got := statusOn(t, linear, accountID); got.Status != StatusConnected {
+		t.Fatalf("account = %+v", got)
+	}
+	if got := statusOn(t, linear, deviceID); got.Status != StatusUnknown || !strings.Contains(got.Error, "deadline") {
+		t.Fatalf("hung device check = %+v", got)
+	}
+}
+
+// A sign-in finishes even when a running agent never answers the reconnect
+// that brings the new token to it.
+func TestConnectFinishesWhenAnAgentNeverAnswers(t *testing.T) {
+	r := newRig(t)
+	r.svc.propagateLimit = 50 * time.Millisecond
+	r.sessions.running = []Session{r.sessions.sessions["s1"]}
+	r.live.hang = true
+	started, err := r.svc.Connect(context.Background(), TargetInput{Name: "linear", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := waitForState(t, r.svc, started.ID, OpConnected)
+	if !reflect.DeepEqual(op.Applied.Restarting, []string{"s1"}) {
+		t.Fatalf("applied = %+v, want the silent agent restarted", op.Applied)
 	}
 }
 

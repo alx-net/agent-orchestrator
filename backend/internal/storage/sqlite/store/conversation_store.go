@@ -717,7 +717,7 @@ func (s *Store) commitChatSpawn(
 		return errors.New("commit Chat spawn: incomplete or mismatched provider boundary ownership")
 	}
 
-	s.writeMu.Lock()
+	s.writeMu.lockFor("Chat spawn of session " + string(rec.ID))
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "commit Chat spawn", func(q *gen.Queries) error {
 		owner, err := q.GetSession(ctx, rec.ID)
@@ -3192,7 +3192,9 @@ func (s *Store) projectProviderEvent(
 			providerEventID, method, payloadJSON, now, project,
 		)
 	}
-	s.writeMu.Lock()
+	// The projection runs controller code under the writer; name it for the
+	// stuck-writer watchdog.
+	s.writeMu.lockFor("provider event projection " + method + " in conversation " + conversationID)
 	defer s.writeMu.Unlock()
 
 	tx, err := s.writeDB.BeginTx(ctx, nil)
