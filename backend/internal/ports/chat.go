@@ -874,6 +874,10 @@ type (
 // ChatTurnRef identifies a turn the provider accepted.
 type ChatTurnRef struct {
 	ProviderTurnID string
+	// Model is the provider's own id for the turn's model when the driver had to
+	// translate the requested one, such as Claude Code's "fable" alias for
+	// claude-fable-5-2. AO saves it in place of the alias.
+	Model string
 }
 
 // ChatDeferredTurnStarter is implemented by protocols whose prompt call is the

@@ -126,6 +126,8 @@ type conversation struct {
 	// requireAdvertised refuses a config option the session did not advertise
 	// instead of sending it. See Config.RequireAdvertisedOptions.
 	requireAdvertised bool
+	// modelAlias: see Config.ModelAlias.
+	modelAlias        func(string, []ports.ChatConfigOptionChoice) string
 	permissionMode    ports.PermissionMode
 	permissionFor     PermissionPolicy
 	initialPermission ports.PermissionMode
@@ -474,7 +476,8 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	if busy {
 		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
 	}
-	if err := c.applyTurnSettings(ctx, msg.Settings); err != nil {
+	model, err := c.applyTurnSettings(ctx, msg.Settings)
+	if err != nil {
 		if msg.Settings.Model == "" || !accountRefusedModelCheck(err) {
 			return ports.ChatTurnRef{}, err
 		}
@@ -485,7 +488,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		// meets the same refusal as a turn failure AO handles.
 		rest := msg.Settings
 		rest.Model = ""
-		if err := c.applyTurnSettings(ctx, rest); err != nil {
+		if _, err := c.applyTurnSettings(ctx, rest); err != nil {
 			return ports.ChatTurnRef{}, err
 		}
 	}
@@ -499,7 +502,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 	}
 	id := uuid.NewString()
 	c.prepared = &preparedTurn{id: id, clientMessageID: msg.ClientMessageID, prompt: prompt}
-	return ports.ChatTurnRef{ProviderTurnID: id}, nil
+	return ports.ChatTurnRef{ProviderTurnID: id, Model: model}, nil
 }
 
 func (c *conversation) DiscardDeferredTurn(providerTurnID string) {
@@ -510,7 +513,10 @@ func (c *conversation) DiscardDeferredTurn(providerTurnID string) {
 	c.mu.Unlock()
 }
 
-func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.ChatTurnSettings) error {
+// applyTurnSettings brings the session to the turn's settings. It returns the
+// session's own value for settings.Model when the binding translated an alias
+// the session does not list ("fable" for claude-fable-5-2), so AO can save it.
+func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.ChatTurnSettings) (string, error) {
 	c.mu.Lock()
 	sessionID := c.sessionID
 	modeFor := c.modeFor
@@ -519,14 +525,15 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	validateSettings := c.validateSettings
 	legacyModel := c.legacyModel
 	legacyMode := c.legacyMode
+	modelAlias := c.modelAlias
 	configOptions := cloneConfigOptions(c.configOptions)
 	c.mu.Unlock()
 	if sessionID == "" {
-		return errors.New("ACP session is not open")
+		return "", errors.New("ACP session is not open")
 	}
 	if validateSettings != nil {
 		if err := validateSettings(initialPermission, settings); err != nil {
-			return err
+			return "", err
 		}
 	}
 	var options []SessionOption
@@ -536,6 +543,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	// A setting the session already has is skipped (some agents take seconds
 	// per change) unless session/set_model made the list stale.
 	catalogStale := false
+	resolvedModel := ""
 	if legacyModel && settings.Model != "" {
 		// A binding may name the model differently from the turn settings.
 		model := settings.Model
@@ -552,20 +560,24 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 			modelOptionFound = true
 			resolved, ok := resolveLegacyModelChoice(option.Choices, model)
 			if !ok {
-				return fmt.Errorf("%w: ACP session model does not offer %q", ports.ErrChatConfigOptionInvalid, model)
+				resolved = aliasOfCurrent(modelAlias, option, model)
+				if resolved == "" {
+					return "", fmt.Errorf("%w: ACP session model does not offer %q", ports.ErrChatConfigOptionInvalid, model)
+				}
+				resolvedModel = resolved
 			}
 			model = resolved
 			break
 		}
 		if !modelOptionFound {
-			return fmt.Errorf("%w: ACP session does not advertise a model option", ports.ErrChatConfigOptionInvalid)
+			return "", fmt.Errorf("%w: ACP session does not advertise a model option", ports.ErrChatConfigOptionInvalid)
 		}
 		if c.configOptionCurrent("model") != model {
 			if err := c.legacyWire.setModel(ctx, sessionID, model); err != nil {
 				if isACPMethodNotFound(err) {
-					return fmt.Errorf("%w: session/set_model %q", ErrACPSetterUnsupported, model)
+					return "", fmt.Errorf("%w: session/set_model %q", ErrACPSetterUnsupported, model)
 				}
-				return fmt.Errorf("set ACP session model %q: %w", model, err)
+				return "", fmt.Errorf("set ACP session model %q: %w", model, err)
 			}
 			catalogStale = true
 		}
@@ -583,6 +595,15 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 				option.Value = value
 			}
 		}
+		// Sent as is, an alias the session does not list never equals the current
+		// model, so even one that names it would be changed again on every turn,
+		// and Claude Code checks each change against the API.
+		if option.ID == "model" {
+			if value := c.modelAliasChoice(option.Value); value != "" {
+				option.Value = value
+				resolvedModel = value
+			}
+		}
 		if !catalogStale && c.configOptionCurrent(option.ID) == option.Value {
 			return nil
 		}
@@ -598,7 +619,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 	for _, option := range options {
 		if option.ID == "model" {
 			if err := applyOption(option); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}
@@ -621,16 +642,16 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 				SessionId: acpsdk.SessionId(sessionID), ModeId: acpsdk.SessionModeId(mode),
 			}); err != nil {
 				if isACPMethodNotFound(err) {
-					return fmt.Errorf("%w: session/set_mode %q", ErrACPSetterUnsupported, mode)
+					return "", fmt.Errorf("%w: session/set_mode %q", ErrACPSetterUnsupported, mode)
 				}
-				return fmt.Errorf("set ACP session mode %q: %w", mode, err)
+				return "", fmt.Errorf("set ACP session mode %q: %w", mode, err)
 			}
 		}
 	}
 	for _, option := range options {
 		if option.ID != "model" {
 			if err := applyOption(option); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}
@@ -639,7 +660,7 @@ func (c *conversation) applyTurnSettings(ctx context.Context, settings ports.Cha
 		c.permissionMode = ports.NormalizePermissionMode(effectiveApproval)
 		c.mu.Unlock()
 	}
-	return nil
+	return resolvedModel, nil
 }
 
 // applySessionOptions sets config options that are fixed for the whole session

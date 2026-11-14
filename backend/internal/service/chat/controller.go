@@ -1762,6 +1762,27 @@ func (c *Controller) SetSettings(ctx context.Context, settings domain.Conversati
 	return nil
 }
 
+// adoptProviderModel saves the provider's own id for a model alias a turn was
+// just sent with ("fable" for claude-fable-5-2), so the saved choice converges
+// on full ids and the next send has nothing to translate. A choice the user
+// made or is making meanwhile wins: a queued turn can dispatch from the event
+// loop, which must not wait on a provider settings change. A skipped or failed
+// save only means translating again on the next send.
+func (c *Controller) adoptProviderModel(ctx context.Context, requested, model string) {
+	if !c.configMu.TryLock() {
+		return
+	}
+	defer c.configMu.Unlock()
+	settings := c.Settings()
+	if settings.Model != requested {
+		return
+	}
+	settings.Model = model
+	if err := c.SetSettings(ctx, settings); err != nil {
+		c.log.Warn("chat: could not save the provider's id for the model", "session", c.sessionID, "model", model, "error", err)
+	}
+}
+
 // turnSettings converts the stored choices into what a driver takes per turn.
 func (c *Controller) turnSettings() ports.ChatTurnSettings {
 	current := c.Settings()
@@ -1929,6 +1950,9 @@ func (c *Controller) dispatch(
 			}
 			return domain.ConversationTurn{}, fmt.Errorf("start turn: %w", err)
 		}
+	}
+	if ref.Model != "" && ref.Model != msg.Settings.Model {
+		c.adoptProviderModel(ctx, msg.Settings.Model, ref.Model)
 	}
 
 	return domain.ConversationTurn{

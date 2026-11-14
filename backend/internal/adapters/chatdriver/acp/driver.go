@@ -97,6 +97,14 @@ type Config struct {
 	SessionMode func(ports.PermissionMode) string
 	// SessionOptions maps AO's per-turn choices onto ACP config option ids.
 	SessionOptions func(ports.ChatTurnSettings) []SessionOption
+	// ModelAlias returns the offered model choice that a model the session does
+	// not list stands for, such as Claude Code's "fable" once it lists that model
+	// as claude-fable-5-2, or "" when no single choice is certain. When that is
+	// the current model, no change is sent and the turn reports the id. Any other
+	// answer leaves the agent to resolve the name itself. Without this, an alias
+	// of the current model is sent every turn, and Claude Code checks every model
+	// change against the API.
+	ModelAlias func(model string, choices []ports.ChatConfigOptionChoice) string
 	// LaunchSessionOptions returns config options whose value is fixed for the
 	// whole session and known only from the launch, such as a persona the agent
 	// lets AO select by id but not by launch flag. They are set once after
@@ -380,7 +388,7 @@ func (d *Driver) openNewSession(
 		return fmt.Errorf("configure ACP session: %w", err)
 	}
 	settingsStarted := time.Now()
-	err = conv.applyTurnSettings(ctx, settings)
+	_, err = conv.applyTurnSettings(ctx, settings)
 	d.logStartStage(launchCfg.SessionID, "initial_settings", settingsStarted, err)
 	if err != nil {
 		// Initial model and permission mode may have been applied via launch-time
@@ -613,7 +621,7 @@ func (d *Driver) resumeSession(
 	// reports the real error in the chat. Failing here instead threw away a
 	// conversation that had loaded and left the session impossible to resume.
 	settingsStarted := time.Now()
-	err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
+	_, err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
 	d.logStartStage(launchCfg.SessionID, "resume_settings", settingsStarted, err)
 	if err != nil && !errors.Is(err, ErrACPSetterUnsupported) {
 		d.log.Warn("chat: resumed ACP session kept its previous settings", "sessionID", launchCfg.SessionID, "error", err)
@@ -743,6 +751,7 @@ func (d *Driver) initialize(
 	conv.historyUserChunkIsMessage = d.cfg.HistoryUserChunkIsMessage
 	conv.plansSpanTurns = d.cfg.PlansSpanTurns
 	conv.requireAdvertised = d.cfg.RequireAdvertisedOptions
+	conv.modelAlias = d.cfg.ModelAlias
 	if proc.reconnected {
 		state := proc.acpState
 		if state == nil || state.SessionID == "" {
