@@ -202,6 +202,7 @@ import type {
 	BrowserRemoteTabAction,
 } from "./main/browser-live-types";
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
+import { attachedDaemonCrashed, createDaemonAutoRestart, isUnexpectedDaemonExit } from "./main/daemon-auto-restart";
 import { readProcessStartMs } from "./main/process-start";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
@@ -388,6 +389,17 @@ const browserCleanupPromises = new Set<Promise<void>>();
 let browserQuitCleanupPromise: Promise<void> | null = null;
 let browserCleanupComplete = false;
 let browserQuitRequested = false;
+// A daemon that crashes is started again, with backoff; one stopped on purpose
+// is not. Never while the app quits or installs an update.
+const daemonAutoRestart = createDaemonAutoRestart({
+	canRestart: () => !browserQuitRequested && !isUpdateRestartRequested(),
+	restart: () => {
+		void startDaemonForRestart();
+	},
+});
+// Whether the daemon started after a crash keeps running past the app, as the
+// crashed one did. Consumed by the next spawn.
+let restartKeepAlive: boolean | undefined;
 let createWindowPromise: Promise<void> | null = null;
 const desktopQuit = createDesktopQuitController({
 	platform: process.platform,
@@ -693,6 +705,7 @@ function rememberSideLaunchState(state: { appRunId: string; sides: unknown[]; nu
 function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state !== "ready" || daemonStatus.state !== "ready" || nextStatus.port !== daemonStatus.port || nextStatus.pid !== daemonStatus.pid) daemonAttachmentGeneration++;
 	if (nextStatus.state !== "ready") disposeBrowserRuntimeLink();
+	if (nextStatus.state === "ready") daemonAutoRestart.ready();
 	if (nextStatus.state !== "ready") {
 		sideClaimedDaemonPID = undefined;
 		if (sideStateTimer) clearInterval(sideStateTimer);
@@ -1942,13 +1955,35 @@ async function refreshDaemonStatus(): Promise<DaemonStatus> {
 		daemonStatus.state === "ready" ||
 		(daemonStatus.state === "error" && (daemonStatus.pid || daemonStatus.port))
 	) {
+		// An attached daemon has no exit event. If it crashed (its run file still
+		// names its dead process), start one again as for a spawned daemon's crash.
+		const lostPid = daemonStatus.pid;
+		const runFile = await readRunFileSnapshot();
+		const crashed =
+			runFile !== null && (!lostPid || runFile.pid === lostPid) && attachedDaemonCrashed(runFile, processAlive);
+		const delay = crashed ? daemonAutoRestart.unexpectedExit() : null;
+		if (delay !== null) restartKeepAlive = runFile?.owner === "persistent";
 		setDaemonStatus({
 			state: "stopped",
-			message: "AO daemon is no longer reachable.",
+			message:
+				delay !== null
+					? `AO daemon stopped unexpectedly. Restarting it in ${Math.round(delay / 1000)}s.`
+					: "AO daemon is no longer reachable.",
 			code: "daemon_unreachable",
 		});
 	}
 	return daemonStatus;
+}
+
+async function readRunFileSnapshot(): Promise<{ pid: number; owner?: string } | null> {
+	const rfp = runFilePath();
+	if (!rfp) return null;
+	try {
+		const info = parseRunFile(await readFile(rfp, "utf8"));
+		return info ? { pid: info.pid, owner: info.owner } : null;
+	} catch {
+		return null;
+	}
 }
 
 async function startDaemon(options: { forceReplaceAdopted?: boolean } = {}): Promise<DaemonStatus> {
@@ -2298,7 +2333,8 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	// defeating the keep-alive. Redirect stdio to ~/.ao/daemon.log and unref the
 	// child so the parent does not wait on it. Port discovery then relies on the
 	// running.json handshake (the log pipe scan is skipped).
-	const keep = replacementKeepAlive ?? keepDaemonAlive(process.env);
+	const keep = replacementKeepAlive ?? restartKeepAlive ?? keepDaemonAlive(process.env);
+	restartKeepAlive = undefined;
 	// We are about to own the daemon and hand it this launch's runtime token, so
 	// any forced replacement has been honored and must not leak into a later
 	// startup in this process.
@@ -2495,9 +2531,13 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			setDaemonStatus({ state: "stopped" });
 			return;
 		}
+		const exitMessage = signal ? `Daemon exited with ${signal}` : `Daemon exited with code ${code ?? "unknown"}`;
+		// Exit 0 is a stop someone asked for (ao stop, /shutdown, SIGTERM).
+		const delay = isUnexpectedDaemonExit({ code, signal }) ? daemonAutoRestart.unexpectedExit() : null;
+		if (delay !== null) restartKeepAlive = keep;
 		setDaemonStatus({
 			state: "stopped",
-			message: signal ? `Daemon exited with ${signal}` : `Daemon exited with code ${code ?? "unknown"}`,
+			message: delay !== null ? `${exitMessage}. Restarting it in ${Math.round(delay / 1000)}s.` : exitMessage,
 			details: daemonOutput.trim() || undefined,
 			code: "exited",
 			exitCode: code,
@@ -2525,8 +2565,9 @@ function stopDaemon(): DaemonStatus {
 	daemonStartEpoch += 1;
 	daemonStartPromise = null;
 	// An explicit stop (or a newer restart request) cancels any deferred restart
-	// left waiting for a previously slow child to exit.
+	// left waiting for a previously slow child to exit, and any crash restart.
 	daemonRestartAfterExitProcess = null;
+	daemonAutoRestart.cancel();
 	if (!daemonProcess) {
 		setDaemonStatus({ state: "stopped" });
 		return daemonStatus;
@@ -2564,6 +2605,8 @@ async function startDaemonForRestart(): Promise<DaemonStatus> {
 
 async function restartDaemon(): Promise<DaemonStatus> {
 	const child = daemonProcess;
+	// A manual restart starts the crash backoff over, also after it gave up.
+	daemonAutoRestart.cancel();
 	if (!child) return startDaemonForRestart();
 	await captureSideChatState().catch((error) => console.warn("AO: pre-restart side snapshot failed", error));
 
