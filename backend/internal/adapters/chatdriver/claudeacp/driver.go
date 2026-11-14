@@ -172,6 +172,7 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		SessionMeta:    driver.sessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
+		ModelAlias:     claudeModelAlias,
 	}, log)
 	return driver
 }
@@ -426,6 +427,52 @@ func claudeModelName(id string) string {
 		name += "." + match[3]
 	}
 	return name
+}
+
+// claudeFamilyAlias matches a Claude Code family alias such as "fable" or
+// "opus[1m]", capturing its family and context size.
+var claudeFamilyAlias = regexp.MustCompile(`^(opus|sonnet|haiku|fable)(\[1m\])?$`)
+
+// claudeModelAlias finds the choice a family alias names when the session no
+// longer lists the alias. Claude Code lists a family's alias once, and moves it
+// to the full id when the session runs that model: on claude-fable-5-2 its
+// "fable" choice becomes "claude-fable-5-2". An alias runs the newest model of
+// its family, so only the one newest listed id of that family and context size
+// matches. Two ids of that version, such as a dated snapshot beside its
+// undated id, could be different models, so neither is chosen. The ACP driver
+// uses the answer only when it is the model the session runs.
+func claudeModelAlias(model string, choices []ports.ChatConfigOptionChoice) string {
+	alias := claudeFamilyAlias.FindStringSubmatch(strings.ToLower(strings.TrimSpace(model)))
+	if alias == nil {
+		return ""
+	}
+	newest, newestVersion, tied := "", [2]int{-1, -1}, false
+	for _, choice := range choices {
+		id, size := strings.ToLower(choice.Value), ""
+		if base, found := strings.CutSuffix(id, "[1m]"); found {
+			id, size = base, "[1m]"
+		}
+		match := claudeModelFamily.FindStringSubmatch(id)
+		if match == nil || match[1] != alias[1] || size != alias[2] {
+			continue
+		}
+		major, _ := strconv.Atoi(match[2])
+		minor := 0
+		if match[3] != "" {
+			minor, _ = strconv.Atoi(match[3])
+		}
+		version := [2]int{major, minor}
+		switch {
+		case version[0] > newestVersion[0] || (version[0] == newestVersion[0] && version[1] > newestVersion[1]):
+			newest, newestVersion, tied = choice.Value, version, false
+		case version == newestVersion:
+			tied = true
+		}
+	}
+	if tied {
+		return ""
+	}
+	return newest
 }
 
 func claudeSessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {

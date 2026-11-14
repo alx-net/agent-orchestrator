@@ -208,6 +208,40 @@ func (c *conversation) configOptionValueNamed(id, name string) string {
 	return ""
 }
 
+// modelAliasChoice is the session's current model when the binding says an
+// unlisted model names it, so AO need not ask for a change to it. Any other
+// answer is "": the agent resolves the name itself, with what it knows about
+// its aliases, rather than AO switching to a model it inferred.
+func (c *conversation) modelAliasChoice(model string) string {
+	c.mu.Lock()
+	resolve := c.modelAlias
+	var option ports.ChatConfigOption
+	for i := range c.configOptions {
+		if c.configOptions[i].ID == "model" && c.configOptions[i].Type == ports.ChatConfigOptionSelect {
+			option = c.configOptions[i]
+			option.Choices = slices.Clone(option.Choices)
+			break
+		}
+	}
+	c.mu.Unlock()
+	return aliasOfCurrent(resolve, option, model)
+}
+
+func aliasOfCurrent(
+	resolve func(string, []ports.ChatConfigOptionChoice) string,
+	option ports.ChatConfigOption,
+	model string,
+) string {
+	current := option.Current.Select
+	if resolve == nil || model == "" || current == "" || choiceOffered(option.Choices, model) {
+		return ""
+	}
+	if resolve(model, option.Choices) == current && choiceOffered(option.Choices, current) {
+		return current
+	}
+	return ""
+}
+
 // configOptionCurrent is a select option's current value, or "" when the
 // session does not list it.
 func (c *conversation) configOptionCurrent(id string) string {

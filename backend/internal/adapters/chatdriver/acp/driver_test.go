@@ -918,6 +918,7 @@ type fakeAgent struct {
 	options             map[string]string
 	newConfig           []acpsdk.SessionConfigOption
 	setConfig           []acpsdk.SessionConfigOption
+	resumeConfig        []acpsdk.SessionConfigOption
 	setCalls            int
 	steering            bool
 	steerText           string
@@ -1194,8 +1195,9 @@ func (a *fakeAgent) ResumeSession(_ context.Context, params acpsdk.ResumeSession
 	a.mu.Lock()
 	a.resumeParams = params
 	a.resumeCalls++
+	resumed := append([]acpsdk.SessionConfigOption(nil), a.resumeConfig...)
 	a.mu.Unlock()
-	return acpsdk.ResumeSessionResponse{}, nil
+	return acpsdk.ResumeSessionResponse{ConfigOptions: resumed}, nil
 }
 func (a *fakeAgent) UnstableForkSession(ctx context.Context, params acpsdk.UnstableForkSessionRequest) (acpsdk.UnstableForkSessionResponse, error) {
 	a.mu.Lock()
@@ -2592,7 +2594,7 @@ func TestACPDriverUsesProviderPermissionPolicyBeforeParking(t *testing.T) {
 	}
 
 	conv := opened.(*conversation)
-	if err := conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{}); err != nil {
+	if _, err := conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{}); err != nil {
 		t.Fatalf("apply empty settings: %v", err)
 	}
 	conv.mu.Lock()
@@ -2647,7 +2649,7 @@ func TestACPDriverKeepsPermissionPolicyWhenLaterTurnSettingFails(t *testing.T) {
 	agent.configErr = errors.New("set model failed")
 	agent.mu.Unlock()
 	conv := opened.(*conversation)
-	err = conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{
+	_, err = conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{
 		Approval: ports.PermissionModeAcceptEdits,
 		Model:    "cursor-model",
 	})
@@ -5571,7 +5573,7 @@ func TestACPDriverResumeKeepsSessionWhenTurnSettingIsRefused(t *testing.T) {
 	if calls == 0 {
 		t.Fatal("Resume never asked the agent for the saved model")
 	}
-	if err := resumed.(*conversation).applyTurnSettings(context.Background(), ports.ChatTurnSettings{Model: "fable"}); err == nil || !strings.Contains(err.Error(), "429") {
+	if _, err := resumed.(*conversation).applyTurnSettings(context.Background(), ports.ChatTurnSettings{Model: "fable"}); err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("next send's settings error = %v, want the agent's refusal", err)
 	}
 }
