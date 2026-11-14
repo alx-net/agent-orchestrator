@@ -25,40 +25,6 @@ type Store struct {
 	writeMu *contextMutex
 }
 
-type contextMutex struct {
-	token chan struct{}
-}
-
-func newContextMutex() *contextMutex {
-	mutex := &contextMutex{token: make(chan struct{}, 1)}
-	mutex.token <- struct{}{}
-	return mutex
-}
-
-func (m *contextMutex) Lock() {
-	<-m.token
-}
-
-func (m *contextMutex) LockContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-m.token:
-		if err := ctx.Err(); err != nil {
-			m.token <- struct{}{}
-			return err
-		}
-		return nil
-	}
-}
-
-func (m *contextMutex) Unlock() {
-	m.token <- struct{}{}
-}
-
 type conversationProjectionTxKey struct{}
 
 // conversationWriter returns the transaction-bound query set when a provider
