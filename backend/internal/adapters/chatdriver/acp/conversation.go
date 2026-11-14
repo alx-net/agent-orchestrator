@@ -475,7 +475,19 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage) 
 		return ports.ChatTurnRef{}, errors.New("ACP conversation already has a turn in flight")
 	}
 	if err := c.applyTurnSettings(ctx, msg.Settings); err != nil {
-		return ports.ChatTurnRef{}, err
+		if msg.Settings.Model == "" || !accountRefusedModelCheck(err) {
+			return ports.ChatTurnRef{}, err
+		}
+		// Claude Code checks a model change against the API, and an account at its
+		// usage limit or signed out refuses the check. Failing the send here left
+		// no turn for AO to act on, so the account never switched and the sign-in
+		// prompt never showed. Send with the current model instead: the prompt
+		// meets the same refusal as a turn failure AO handles.
+		rest := msg.Settings
+		rest.Model = ""
+		if err := c.applyTurnSettings(ctx, rest); err != nil {
+			return ports.ChatTurnRef{}, err
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

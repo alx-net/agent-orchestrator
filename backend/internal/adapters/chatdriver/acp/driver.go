@@ -971,8 +971,36 @@ func isACPAuthRequired(err error) bool {
 	return requestErr.Code == -32000 || acpErrorKind(requestErr.Data) == "authentication_failed"
 }
 
+// accountRefusedModelCheck reports a model change the agent could not check
+// because its account cannot make API calls now: at its usage limit or signed
+// out. The model itself is fine.
+func accountRefusedModelCheck(err error) bool {
+	var requestErr *acpsdk.RequestError
+	if !errors.As(err, &requestErr) {
+		return false
+	}
+	if acpErrorKind(requestErr.Data) == "authentication_failed" {
+		return true
+	}
+	details := strings.ToLower(acpErrorField(requestErr.Data, "details"))
+	if !strings.Contains(details, "model") {
+		return false
+	}
+	for _, refusal := range []string{"api error: 429", "rate limit", "oauth", "/login"} {
+		if strings.Contains(details, refusal) {
+			return true
+		}
+	}
+	return false
+}
+
 // acpErrorKind is the errorKind an agent put in a JSON-RPC error's data.
 func acpErrorKind(data any) string {
+	return acpErrorField(data, "errorKind")
+}
+
+// acpErrorField is a string field of a JSON-RPC error's data.
+func acpErrorField(data any, name string) string {
 	var fields map[string]any
 	switch value := data.(type) {
 	case map[string]any:
@@ -982,8 +1010,8 @@ func acpErrorKind(data any) string {
 	case []byte:
 		_ = json.Unmarshal(value, &fields)
 	}
-	kind, _ := fields["errorKind"].(string)
-	return kind
+	field, _ := fields[name].(string)
+	return field
 }
 
 // acpResourceNotFound is ACP's JSON-RPC "Resource not found" error code. A

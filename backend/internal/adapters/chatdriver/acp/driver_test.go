@@ -5575,3 +5575,58 @@ func TestACPDriverResumeKeepsSessionWhenTurnSettingIsRefused(t *testing.T) {
 		t.Fatalf("next send's settings error = %v, want the agent's refusal", err)
 	}
 }
+
+// Claude Code checks a model change against the API. An account at its usage
+// limit or signed out refuses that check, and failing the send left no turn for
+// AO's account switch or sign-in prompt to act on. The message goes out with the
+// current model instead; any other refusal still stops it.
+func TestACPSendTurnGoesOutWhenTheAccountRefusesTheModelCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantSent bool
+	}{
+		{"usage limit", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed",
+		}}, true},
+		{"signed out", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "Unable to validate model: OAuth refresh token is no longer valid; run /login to re-authenticate",
+		}}, true},
+		{"model refused", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "model not available for this organization",
+		}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			driver := New(Config{
+				Harness: domain.HarnessCursor,
+				Probe:   func(context.Context) error { return nil },
+				Launch:  func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+				SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+					if settings.Model == "" {
+						return nil
+					}
+					return []SessionOption{{ID: "model", Value: settings.Model}}
+				},
+			}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			driver.useTestProcess(fakeSpawn(agent))
+			opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer opened.Close()
+			_ = nextEvent(t, opened.Events())
+			agent.mu.Lock()
+			agent.configErr = tt.err
+			agent.mu.Unlock()
+
+			_, err = opened.(*conversation).SendTurn(context.Background(), ports.ChatUserMessage{
+				Text: "hi", Settings: ports.ChatTurnSettings{Model: "fable"},
+			})
+			if sent := err == nil; sent != tt.wantSent {
+				t.Fatalf("SendTurn err = %v, want sent %v", err, tt.wantSent)
+			}
+		})
+	}
+}
