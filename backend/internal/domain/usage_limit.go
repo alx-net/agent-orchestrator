@@ -45,12 +45,13 @@ type UsageLimitSwitch struct {
 	MCPNeedsAuth []string
 }
 
-var usageLimitMessage = regexp.MustCompile(`(?i)^(?:you(?:'ve| have) (?:hit|reached) your (?:session |weekly |daily |usage |individual spend )?limit\b|usage limit (?:reached|exceeded)\b|(?:session|weekly|daily) usage limit (?:reached|exceeded)\b|the Claude account has no available quota\b)`)
+var usageLimitMessage = regexp.MustCompile(`(?i)^(?:you(?:'ve| have) (?:hit|reached) your (?:[\w.-]+ ){0,3}limit\b|usage limit (?:reached|exceeded)\b|(?:session|weekly|daily) usage limit (?:reached|exceeded)\b|the Claude account has no available quota\b)`)
 var usageLimitResetClock = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:(tomorrow)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)`)
 var usageLimitResetISO = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))`)
 
 // ParseConversationUsageLimit recognizes only known quota refusals, never
-// assistant prose. Clock-only deadlines require the provider's explicit IANA
+// assistant prose. "your … limit" also covers a model's own limit ("You've
+// reached your Fable limit"), which another account's quota lifts as well. Clock-only deadlines require the provider's explicit IANA
 // zone and are anchored to the failure, so rereading history cannot move them.
 func ParseConversationUsageLimit(message string, failedAt *time.Time) *ConversationUsageLimit {
 	message = strings.TrimSpace(strings.ReplaceAll(message, "’", "'"))
