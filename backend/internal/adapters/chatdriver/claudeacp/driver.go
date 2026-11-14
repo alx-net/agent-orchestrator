@@ -226,37 +226,10 @@ func claudeAuthRejected(notifyDaemon func()) func() {
 	}
 }
 
+// claudePromptResponseFailure reads claude-agent-acp's AIR failure, which the
+// shared ACP classifier interprets.
 func claudePromptResponseFailure(response acpsdk.PromptResponse) error {
-	if response.StopReason != acpsdk.StopReasonEndTurn {
-		return nil
-	}
-	air := claudeNestedMap(claudeNestedMap(response.Meta, "jetbrains"), "air")
-	version, versionOK := air["version"].(float64)
-	failure := claudeNestedMap(air, "sessionFailure")
-	id, _ := failure["id"].(string)
-	title, _ := failure["title"].(string)
-	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" || failure["severity"] != "error" {
-		return nil
-	}
-	details, _ := failure["details"].(string)
-	var cause error
-	if actions, ok := failure["actions"].([]any); ok {
-		for _, action := range actions {
-			if action == "login" {
-				cause = ports.ErrChatAuthRequired
-				break
-			}
-		}
-	}
-	return ports.NewChatProviderFailure(strings.TrimSpace(title), strings.TrimSpace(details), cause)
-}
-
-func claudeNestedMap(meta map[string]any, key string) map[string]any {
-	if meta == nil {
-		return nil
-	}
-	value, _ := meta[key].(map[string]any)
-	return value
+	return acpdriver.SessionFailurePromptError(response)
 }
 
 // claudeACPLaunchEnv gives claude-agent-acp the same provider model IDs AO

@@ -91,6 +91,7 @@ type conversation struct {
 	legacyWire           *legacyACPTransport
 	proc                 *process
 	log                  *slog.Logger
+	harness              domain.AgentHarness
 	providerScopeID      string
 	decodeConversationID func(string) (string, error)
 	canDeleteFork        bool
@@ -768,6 +769,26 @@ func (c *conversation) runTurn(ctx context.Context, sessionID string, turn prepa
 	c.finishPrompt(turn.id, resp, err)
 }
 
+// warnUnclassifiedFailure logs a provider turn failure no class matched, once
+// per turn. Each Claude Code release has brought a new error shape that failed
+// as a generic error; this puts the next one in the daemon log.
+func (c *conversation) warnUnclassifiedFailure(turnID string, resp acpsdk.PromptResponse, err error) {
+	var failure providerFailure
+	var ok bool
+	if err != nil {
+		failure, ok = classifyRequestError(err)
+	} else {
+		failure, ok = promptSessionFailure(resp)
+	}
+	if !ok || failure.class != failureUnclassified || c.log == nil {
+		return
+	}
+	c.log.Warn("unclassified provider turn failure",
+		"harness", c.harness, "turn", turnID, "code", failure.code,
+		"errorKind", failure.errorKind, "kind", failure.kind, "apiError", failure.apiError, "category", failure.category,
+		"message", failure.logText())
+}
+
 func (c *conversation) finishPrompt(
 	turnID string,
 	resp acpsdk.PromptResponse,
@@ -811,7 +832,7 @@ func (c *conversation) finishPrompt(
 			state = domain.TurnStateInterrupted
 		} else {
 			state = domain.TurnStateFailed
-			turnErr = normalizeACPError("ACP session/prompt", err)
+			turnErr = normalizeACPPromptError(err)
 		}
 	} else {
 		state = turnState(resp.StopReason)
@@ -844,6 +865,9 @@ func (c *conversation) finishPrompt(
 				TotalsKnown: true,
 			}})
 		}
+	}
+	if state == domain.TurnStateFailed && turnErr != nil {
+		c.warnUnclassifiedFailure(turnID, resp, err)
 	}
 	if errors.Is(turnErr, ports.ErrChatAuthRequired) {
 		// The provider has just contradicted whatever the readiness cache holds.

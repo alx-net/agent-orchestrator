@@ -16,6 +16,7 @@ import {
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
+	patchClaudeFailureKinds,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
 	patchClaudeMcpControl,
@@ -92,6 +93,7 @@ const npm = npmInvocation(["ci", "--omit=dev", "--omit=optional", "--ignore-scri
 run(npm.command, npm.args, { cwd: outDir });
 patchClaudeRetryDetails(claudeAdapter);
 patchClaudeContextUsage(claudeAdapter);
+patchClaudeFailureKinds(claudeAdapter);
 patchClaudeHibernationCheck(claudeAdapter);
 patchClaudeFoldedPromptSettlement(claudeAdapter);
 patchClaudeSessionSettings(claudeAdapter);

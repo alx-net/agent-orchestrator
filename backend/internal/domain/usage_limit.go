@@ -45,6 +45,10 @@ type UsageLimitSwitch struct {
 	MCPNeedsAuth []string
 }
 
+// UsageLimitReachedTitle heads a refusal that native metadata proves is a
+// usage limit when the provider's own wording is not one AO recognizes.
+const UsageLimitReachedTitle = "Usage limit reached"
+
 var usageLimitMessage = regexp.MustCompile(`(?i)^(?:you(?:'ve| have) (?:hit|reached) your (?:[\w.-]+ ){0,3}limit\b|usage limit (?:reached|exceeded)\b|(?:session|weekly|daily) usage limit (?:reached|exceeded)\b|the Claude account has no available quota\b)`)
 var usageLimitResetClock = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:(tomorrow)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)`)
 var usageLimitResetISO = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))`)

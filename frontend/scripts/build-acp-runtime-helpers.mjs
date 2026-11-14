@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 
 const ROOT_BUILD_TOOLS = ["corepack", "corepack.cmd", "npm", "npm.cmd", "npx", "npx.cmd"];
 const BIN_BUILD_TOOLS = ["corepack", "npm", "npx"];
@@ -279,6 +279,93 @@ export function patchClaudeStaleIdleDebt(adapterPath) {
 		'                                if (message.state === "idle") {',
 	].join("\n");
 	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
+ * Forward the structured cause of a terminal Claude failure on the AIR wire.
+ *
+ * claude-agent-acp 0.70 knows each failure's kind (quota_exhausted,
+ * rate_limited, auth_required, ...), the SDK's errorKind, and Claude Code's
+ * typed api_error (usage_limit_reached, ...), but sends AIR clients only a
+ * category, actions and display text. AO then had to tell a usage limit from a
+ * transient rate limit by wording that changes between Claude Code releases.
+ * This adds the three as optional sessionFailure fields; AO still falls back
+ * to the category and text when they are absent.
+ */
+export function patchClaudeFailureKinds(adapterPath) {
+	const extensionPath = join(dirname(adapterPath), "session-failure-extension.js");
+	let changed = false;
+
+	let extension = readFileSync(extensionPath, "utf8");
+	if (!extension.includes("kind: failure.kind")) {
+		const actions = [
+			"                    ...(failure.details ? { details: failure.details } : {}),",
+			"                    actions: failure.actions,",
+		].join("\n");
+		const at = extension.indexOf(actions);
+		if (at < 0 || extension.indexOf(actions, at + 1) >= 0) {
+			throw new Error("claude-agent-acp sessionFailureMeta no longer matches AO's failure-kind patch");
+		}
+		const forwarded = [
+			"                    ...(failure.details ? { details: failure.details } : {}),",
+			"                    ...(failure.kind ? { kind: failure.kind } : {}),",
+			"                    ...(failure.errorKind ? { errorKind: failure.errorKind } : {}),",
+			"                    ...(failure.apiError ? { apiError: failure.apiError } : {}),",
+			"                    actions: failure.actions,",
+		].join("\n");
+		extension = extension.slice(0, at) + forwarded + extension.slice(at + actions.length);
+		writeFileSync(extensionPath, extension);
+		changed = true;
+	}
+
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: forward the failure's structured cause.")) return changed;
+	const edits = [
+		["        let lastAssistantError;\n", "        let lastAssistantApiError;\n"],
+		["            lastAssistantError = undefined;\n", "            lastAssistantApiError = undefined;\n"],
+		[
+			[
+				"                            if (message.error) {",
+				"                                lastAssistantError = message.error;",
+				"                            }",
+				"",
+			].join("\n"),
+			[
+				'                            if (typeof message.api_error === "string") {',
+				"                                lastAssistantApiError = message.api_error;",
+				"                            }",
+				"",
+			].join("\n"),
+		],
+		[
+			[
+				"            const failure = await createSessionFailure(kind, { title });",
+				"            if (!failure) {",
+				"                failActive(error);",
+				"                return;",
+				"            }",
+				"",
+			].join("\n"),
+			[
+				"            // AO: forward the failure's structured cause.",
+				'            failure.errorKind = typeof error?.data?.errorKind === "string" ? error.data.errorKind : undefined;',
+				"            failure.apiError = lastAssistantApiError;",
+				"",
+			].join("\n"),
+		],
+	];
+	for (const [anchor] of edits) {
+		const at = source.indexOf(anchor);
+		if (at < 0 || source.indexOf(anchor, at + 1) >= 0) {
+			throw new Error("claude-agent-acp failure handling no longer matches AO's failure-kind patch");
+		}
+	}
+	for (const [anchor, addition] of edits) {
+		const at = source.indexOf(anchor) + anchor.length;
+		source = source.slice(0, at) + addition + source.slice(at);
+	}
+	writeFileSync(adapterPath, source);
 	return true;
 }
 

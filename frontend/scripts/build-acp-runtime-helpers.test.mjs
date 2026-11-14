@@ -17,6 +17,7 @@ import {
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
+	patchClaudeFailureKinds,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
 	patchClaudeMcpControl,
@@ -388,6 +389,97 @@ describe("patchClaudeStaleIdleDebt", () => {
 		writeFileSync(adapterPath, 'case "session_state_changed": {\n');
 
 		expect(() => patchClaudeStaleIdleDebt(adapterPath)).toThrow(/idle-debt patch/);
+	});
+});
+
+describe("patchClaudeFailureKinds", () => {
+	const extensionSource = `
+export function sessionFailureMeta(failure) {
+    return {
+        jetbrains: {
+            air: {
+                version: 1,
+                sessionFailure: {
+                    id: failure.id,
+                    category: failure.category,
+                    severity: failure.severity,
+                    title: failure.title,
+                    ...(failure.details ? { details: failure.details } : {}),
+                    actions: failure.actions,
+                },
+            },
+        },
+    };
+}
+`;
+	const adapterSource = `
+        let lastAssistantError;
+        const resetTurnScratch = () => {
+            lastAssistantError = undefined;
+        };
+        const failActiveWithSessionFailure = async (kind, error, title) => {
+            const failure = await createSessionFailure(kind, { title });
+            if (!failure) {
+                failActive(error);
+                return;
+            }
+            sessionFailures.recordActive(failure);
+        };
+                        if (message.type === "assistant" && message.parent_tool_use_id === null) {
+                            if (message.error) {
+                                lastAssistantError = message.error;
+                            }
+                        }
+`;
+
+	function writeBridge() {
+		const directory = temporaryDirectory();
+		const adapterPath = join(directory, "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		writeFileSync(join(directory, "session-failure-extension.js"), extensionSource);
+		return adapterPath;
+	}
+
+	it("sends the failure's kind, errorKind and Claude Code's api_error to AO", () => {
+		const adapterPath = writeBridge();
+
+		expect(patchClaudeFailureKinds(adapterPath)).toBe(true);
+		expect(patchClaudeFailureKinds(adapterPath)).toBe(false);
+
+		const extension = readFileSync(join(dirname(adapterPath), "session-failure-extension.js"), "utf8");
+		const sessionFailureMeta = new Function(`${extension.replace("export ", "")}; return sessionFailureMeta;`)();
+		const failure = { id: "t:error", category: "limit", severity: "error", title: "Out of quota", actions: [] };
+		expect(sessionFailureMeta({
+			...failure, kind: "quota_exhausted", errorKind: "rate_limit", apiError: "usage_limit_reached",
+		}).jetbrains.air.sessionFailure).toEqual({
+			...failure, kind: "quota_exhausted", errorKind: "rate_limit", apiError: "usage_limit_reached",
+		});
+		// A failure without them keeps the original wire shape.
+		expect(sessionFailureMeta(failure).jetbrains.air.sessionFailure).toEqual(failure);
+
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("let lastAssistantApiError;");
+		expect(patched).toContain("lastAssistantApiError = undefined;");
+		expect(patched).toContain('if (typeof message.api_error === "string") {');
+		expect(patched).toContain('failure.errorKind = typeof error?.data?.errorKind === "string" ? error.data.errorKind : undefined;');
+		expect(patched).toContain("failure.apiError = lastAssistantApiError;");
+		// The stamp goes after the missing-failure fallback, which has no failure.
+		expect(patched.indexOf("failure.apiError")).toBeGreaterThan(patched.indexOf("failActive(error);"));
+		expect(patched.indexOf("failure.apiError")).toBeLessThan(patched.indexOf("sessionFailures.recordActive(failure);"));
+	});
+
+	it("fails packaging when the adapter's failure handling changes", () => {
+		const adapterPath = writeBridge();
+		writeFileSync(adapterPath, adapterSource.replace("let lastAssistantError;", "let lastError;"));
+
+		expect(() => patchClaudeFailureKinds(adapterPath)).toThrow(/failure-kind patch/);
+	});
+
+	it("fails packaging when sessionFailureMeta changes", () => {
+		const adapterPath = writeBridge();
+		writeFileSync(join(dirname(adapterPath), "session-failure-extension.js"), "export function sessionFailureMeta() {}\n");
+
+		expect(() => patchClaudeFailureKinds(adapterPath)).toThrow(/failure-kind patch/);
 	});
 });
 

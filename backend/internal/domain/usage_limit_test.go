@@ -30,6 +30,7 @@ func TestParseConversationUsageLimit(t *testing.T) {
 		{"ordinary rate limiting", "Too many requests. Retry after 30 seconds.", "", false},
 		{"quoted prose", "The tool says You've hit your session limit · resets 10:20pm (Asia/Calcutta)", "", false},
 		{"quoted model limit", "The tool says You've reached your Fable limit.", "", false},
+		{"AO's own title", UsageLimitReachedTitle + "\n\nYour seat type doesn't include usage · resets 10:20pm (Asia/Kolkata)", "2026-10-14T16:50:00Z", true},
 		{"quoted Claude quota", "The tool says The Claude account has no available quota.", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

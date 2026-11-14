@@ -81,6 +81,37 @@ func TestUsageLimitedTurnTellsTheAccountSwitcher(t *testing.T) {
 	}
 }
 
+// A driver that proves a usage limit from native metadata marks it with
+// ErrChatUsageLimit. Wording AO has never seen still moves the account, and the
+// stored turn still reads as usage-limited, with its reset.
+func TestTypedUsageLimitTellsTheAccountSwitcher(t *testing.T) {
+	h := newHarnessForHarness(t, domain.HarnessClaudeCode)
+	switcher := &recordingSwitcher{}
+	h.svc.SetUsageLimitSwitcher(switcher)
+	turn, err := h.svc.Send(context.Background(), testSession, ports.ChatUserMessage{
+		Text: "finish this task", ClientMessageID: uuid.NewString(), Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := ports.NewChatUsageLimitFailure("Your seat type doesn't include usage · resets 3:31pm (Asia/Calcutta)", "", nil)
+	if domain.ParseConversationUsageLimit("Your seat type doesn't include usage", nil) != nil {
+		t.Fatal("fixture wording must be one the text rules do not know")
+	}
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: turn.ProviderTurnID,
+		TurnState: domain.TurnStateFailed, Err: failure})
+	failedTurnSnapshot(t, h, turn.ID)
+
+	heard := switcher.await(t, 1)
+	if heard[0] != string(testSession)+"/"+turn.ProviderTurnID {
+		t.Fatalf("switcher heard %v, want %s/%s", heard, testSession, turn.ProviderTurnID)
+	}
+	limited, err := h.svc.UsageLimitedTurn(context.Background(), testSession, turn.ProviderTurnID)
+	if err != nil || limited.UsageLimit == nil || limited.UsageLimit.ResetsAt == nil {
+		t.Fatalf("usage-limited turn = %+v, %v; want one with its reset", limited, err)
+	}
+}
+
 // After a move the turn runs again at once, though the old account's reset is
 // still ahead: the account it ran out on is no longer the session's.
 func TestContinueAfterAccountSwitchRunsTheTurnBeforeTheReset(t *testing.T) {

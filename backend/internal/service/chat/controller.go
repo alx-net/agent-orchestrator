@@ -3500,8 +3500,11 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
 		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
+		// A driver marks a usage limit its native metadata proves; known wording
+		// still counts for a driver that cannot.
 		if c.onUsageLimit != nil && c.reviewID == "" && event.Err != nil && event.ProviderTurnID != "" &&
-			settledTurnState(event) == domain.TurnStateFailed && domain.ParseConversationUsageLimit(event.Err.Error(), &now) != nil {
+			settledTurnState(event) == domain.TurnStateFailed &&
+			(errors.Is(event.Err, ports.ErrChatUsageLimit) || domain.ParseConversationUsageLimit(event.Err.Error(), &now) != nil) {
 			c.onUsageLimit(c.sessionID, event.ProviderTurnID)
 		}
 	case ports.ChatEventApprovalRequested:

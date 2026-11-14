@@ -734,6 +734,7 @@ func (d *Driver) initialize(
 	conv := newConversation(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
 	)
+	conv.harness = d.cfg.Harness
 	conv.onAuthRejected = d.cfg.OnAuthRejected
 	conv.promptResponseFailure = d.cfg.PromptResponseFailure
 	conv.sessionPromptResponseFailure = d.cfg.SessionPromptResponseFailure
@@ -957,62 +958,6 @@ func extensionSupported(meta map[string]any, name string) bool {
 }
 
 func pointer[T any](value T) *T { return &value }
-
-// isACPAuthRequired reports whether err is the agent telling us the credential
-// was refused, so the caller can raise a reauth prompt instead of a generic
-// turn failure. ACP's code for it is -32000; claude-agent-acp reports a login
-// that expired mid-session as an internal error (-32603) tagged
-// errorKind "authentication_failed" instead.
-func isACPAuthRequired(err error) bool {
-	var requestErr *acpsdk.RequestError
-	if !errors.As(err, &requestErr) {
-		return false
-	}
-	return requestErr.Code == -32000 || acpErrorKind(requestErr.Data) == "authentication_failed"
-}
-
-// accountRefusedModelCheck reports a model change the agent could not check
-// because its account cannot make API calls now: at its usage limit or signed
-// out. The model itself is fine.
-func accountRefusedModelCheck(err error) bool {
-	var requestErr *acpsdk.RequestError
-	if !errors.As(err, &requestErr) {
-		return false
-	}
-	if acpErrorKind(requestErr.Data) == "authentication_failed" {
-		return true
-	}
-	details := strings.ToLower(acpErrorField(requestErr.Data, "details"))
-	if !strings.Contains(details, "model") {
-		return false
-	}
-	for _, refusal := range []string{"api error: 429", "rate limit", "oauth", "/login"} {
-		if strings.Contains(details, refusal) {
-			return true
-		}
-	}
-	return false
-}
-
-// acpErrorKind is the errorKind an agent put in a JSON-RPC error's data.
-func acpErrorKind(data any) string {
-	return acpErrorField(data, "errorKind")
-}
-
-// acpErrorField is a string field of a JSON-RPC error's data.
-func acpErrorField(data any, name string) string {
-	var fields map[string]any
-	switch value := data.(type) {
-	case map[string]any:
-		fields = value
-	case json.RawMessage:
-		_ = json.Unmarshal(value, &fields)
-	case []byte:
-		_ = json.Unmarshal(value, &fields)
-	}
-	field, _ := fields[name].(string)
-	return field
-}
 
 // acpResourceNotFound is ACP's JSON-RPC "Resource not found" error code. A
 // session/load or session/resume for an id the agent never persisted returns it.

@@ -37,6 +37,10 @@ var (
 	ErrChatDriverIncompatible = errors.New("chat driver incompatible")
 	// ErrChatAuthRequired means the provider is installed but not authenticated.
 	ErrChatAuthRequired = errors.New("chat driver requires authentication")
+	// ErrChatUsageLimit means native metadata proves the provider refused the
+	// turn because the account is out of quota. Another account's quota lifts
+	// it, unlike a transient rate limit, which only needs a later retry.
+	ErrChatUsageLimit = errors.New("chat provider usage limit reached")
 	// ErrChatResumeFailed means a stored provider conversation could not be
 	// resumed. Callers must surface a recovery choice, never silently start a
 	// new provider conversation.
@@ -1102,6 +1106,26 @@ func NewChatProviderFailure(title, detail string, cause error) error {
 		title += "\n\n" + detail
 	}
 	return &chatProviderFailure{message: title, cause: cause}
+}
+
+// NewChatUsageLimitFailure is NewChatProviderFailure for a refusal native
+// metadata proves is a usage limit. A turn keeps only its message, and the store
+// reads the usage limit back from it, so wording AO does not recognize is put
+// under a title it does. The provider's text, with any reset time, follows.
+func NewChatUsageLimitFailure(title, detail string, cause error) error {
+	if cause == nil {
+		cause = ErrChatUsageLimit
+	} else {
+		cause = errors.Join(ErrChatUsageLimit, cause)
+	}
+	if strings.TrimSpace(title) == "" && strings.TrimSpace(detail) == "" {
+		return NewChatProviderFailure(domain.UsageLimitReachedTitle, "", cause)
+	}
+	failure := NewChatProviderFailure(title, detail, cause)
+	if domain.ParseConversationUsageLimit(failure.Error(), nil) == nil {
+		return NewChatProviderFailure(domain.UsageLimitReachedTitle, failure.Error(), cause)
+	}
+	return failure
 }
 
 func (f *chatProviderFailure) Error() string { return f.message }
