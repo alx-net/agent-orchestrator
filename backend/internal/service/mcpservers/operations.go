@@ -268,7 +268,10 @@ func (s *Service) finishConnected(id string, t target, d definition, known bool)
 	if known {
 		change.config = d.Raw
 	}
-	applied := s.propagate(s.ctx, change)
+	// Off any request, so bound it: the sign-in stays "waiting" until this ends.
+	ctx, cancel := context.WithTimeout(s.ctx, s.propagateLimit)
+	applied := s.propagate(ctx, change)
+	cancel()
 	at := s.now()
 	s.updateOperation(id, func(op *Operation) {
 		op.State, op.Applied, op.FinishedAt = OpConnected, applied, &at

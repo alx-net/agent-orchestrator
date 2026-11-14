@@ -30,7 +30,14 @@ const (
 	mcpProbePoll   = 500 * time.Millisecond
 	// mcpProbeLineLimit fits a status listing every tool of many servers.
 	mcpProbeLineLimit = 16 << 20
+	// mcpGitLimit bounds the git call that finds a worktree's main checkout.
+	mcpGitLimit = 10 * time.Second
 )
+
+// mcpPipeWait bounds how long Wait waits for the CLI's output pipes after it
+// exits or is killed. A server process that left its process group can hold
+// them open forever, and a check would then keep its slot forever.
+var mcpPipeWait = 5 * time.Second
 
 var _ ports.MCPCLI = (*Claude)(nil)
 
@@ -43,6 +50,7 @@ func (c *Claude) mcpCommand(ctx context.Context, bin string, target ports.MCPTar
 	if target.Dir != "" {
 		cmd.Dir = target.Dir
 	}
+	cmd.WaitDelay = mcpPipeWait
 	return cmd
 }
 
@@ -58,6 +66,10 @@ func (c *Claude) MCPCommand(ctx context.Context, target ports.MCPTarget, args ..
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
+	if errors.Is(runErr, exec.ErrWaitDelay) {
+		// It exited cleanly; only a leftover child kept the pipes open.
+		runErr = nil
+	}
 	result := ports.MCPCommandResult{Stdout: stdout.String(), Stderr: stderr.String()}
 	if runErr != nil {
 		var exit *exec.ExitError
@@ -178,7 +190,9 @@ func mcpProjectKeys(dir string) ([]string, error) {
 // mainCheckout finds the repository's main checkout. Not a repository, no git, or
 // a bare repository (which has no main checkout) all report false.
 func mainCheckout(dir string) (string, bool) {
-	out, err := aoprocess.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), mcpGitLimit)
+	defer cancel()
+	out, err := aoprocess.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
 	if err != nil {
 		return "", false
 	}

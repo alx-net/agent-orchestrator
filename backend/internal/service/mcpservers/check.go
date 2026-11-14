@@ -118,7 +118,11 @@ func (s *Service) runCheck(account domain.AgentAccount, dir string, c *check) {
 		c.mu.Unlock()
 		return
 	}
-	entries, err := s.read(s.ctx, account, dir)
+	// Bound the whole check, not only each command: the slots are few, and a
+	// check that never ended would hold one for the daemon's life.
+	ctx, cancel := context.WithTimeout(s.ctx, s.checkLimit)
+	defer cancel()
+	entries, err := s.read(ctx, account, dir)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.running = false

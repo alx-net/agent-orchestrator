@@ -238,6 +238,53 @@ func TestMCPCommandTreatsANonzeroExitAsAResult(t *testing.T) {
 	}
 }
 
+// shortPipeWait keeps a test from waiting out the real pipe grace.
+func shortPipeWait(t *testing.T) {
+	t.Helper()
+	previous := mcpPipeWait
+	mcpPipeWait = 100 * time.Millisecond
+	t.Cleanup(func() { mcpPipeWait = previous })
+}
+
+// A server process that leaves the CLI's process group keeps its output pipes
+// open. The command must still return once the CLI exits, or the check that ran
+// it keeps its slot and every later check waits behind it. set -m puts the
+// background job in a process group of its own.
+func TestMCPCommandReturnsWhenAnEscapedChildHoldsItsOutput(t *testing.T) {
+	shortPipeWait(t)
+	c := fakeClaude(t, `echo "linear: https://x (HTTP) - ✓ Connected"; set -m; sleep 5 &`)
+	started := time.Now()
+	result, err := c.MCPCommand(context.Background(), ports.MCPTarget{}, "mcp", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("MCPCommand waited %s for a leftover child", elapsed)
+	}
+	if !strings.Contains(result.Stdout, "Connected") {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
+}
+
+func TestMCPProbeReturnsWhenAnEscapedChildHoldsItsOutput(t *testing.T) {
+	shortPipeWait(t)
+	dir := t.TempDir()
+	t.Setenv("ARGS_FILE", filepath.Join(dir, "args"))
+	t.Setenv("RECONNECT_FILE", filepath.Join(dir, "reconnect"))
+	c := fakeClaude(t, "set -m; sleep 5 &\nset +m\n"+fakeProbeScript)
+	started := time.Now()
+	servers, err := c.MCPProbe(context.Background(), ports.MCPTarget{}, ports.MCPProbeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("MCPProbe waited %s for a leftover child", elapsed)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("servers = %+v", servers)
+	}
+}
+
 func TestMCPConfigReadsEachFile(t *testing.T) {
 	c := fakeClaude(t, "")
 	if err := os.WriteFile(c.DeviceConfig, []byte(`{"mcpServers":{"device":{"type":"http"}}}`), 0o600); err != nil {
