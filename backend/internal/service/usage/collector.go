@@ -130,6 +130,9 @@ type Collector struct {
 	mu                      sync.Mutex
 	// Guarded separately from mu, which RecordHook holds across the whole hook.
 	routeMu sync.RWMutex
+	// claudePaths remembers where each Claude transcript was found.
+	claudePathMu sync.Mutex
+	claudePaths  map[string]claudePathEntry
 }
 
 // OnRouteResolved registers the handler called the first time a binding learns
@@ -2102,45 +2105,94 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 	if !nativeUsageIDPattern.MatchString(nativeID) {
 		return "", nil
 	}
-	var patterns []string
 	switch harness {
 	case domain.HarnessClaudeCode:
-		patterns = []string{filepath.Join(c.roots.ClaudeProjects, "*", nativeID+".jsonl")}
+		return c.discoverClaudePath(ctx, nativeID)
 	case domain.HarnessCodex:
 		return c.discoverCodexPath(ctx, nativeID, "")
 	case domain.HarnessKimi:
 		return c.discoverKimiPath(ctx, nativeID)
 	}
-	type candidate struct {
-		path string
-		mod  time.Time
+	return "", nil
+}
+
+// claudePathMissTTL is how long "no transcript yet" is remembered: a session's
+// transcript appears with its first turn, so a miss must not stick.
+const claudePathMissTTL = time.Minute
+
+type claudePathEntry struct {
+	path    string
+	checked time.Time
+}
+
+// discoverClaudePath finds a Claude Code transcript, <projects>/<project>/<id>.jsonl.
+// The obvious filepath.Glob(<projects>/*/<id>.jsonl) reads every file name in
+// every project folder; with thousands of folders that allocated over 500 MB
+// within a minute of the daemon starting. This lists only the folder names and
+// checks the one file name in each, and remembers the answer.
+func (c *Collector) discoverClaudePath(ctx context.Context, nativeID string) (string, error) {
+	now := c.clock()
+	c.claudePathMu.Lock()
+	cached, ok := c.claudePaths[nativeID]
+	c.claudePathMu.Unlock()
+	if ok {
+		if cached.path == "" && now.Sub(cached.checked) < claudePathMissTTL {
+			return "", nil
+		}
+		if cached.path != "" {
+			if info, err := os.Stat(cached.path); err == nil && info.Mode().IsRegular() {
+				return cached.path, nil
+			}
+		}
 	}
-	var matches []candidate
-	for _, pattern := range patterns {
+	path, err := c.findClaudePath(ctx, nativeID)
+	if err != nil {
+		return "", err
+	}
+	c.claudePathMu.Lock()
+	if c.claudePaths == nil {
+		c.claudePaths = map[string]claudePathEntry{}
+	}
+	c.claudePaths[nativeID] = claudePathEntry{path: path, checked: now}
+	c.claudePathMu.Unlock()
+	return path, nil
+}
+
+func (c *Collector) findClaudePath(ctx context.Context, nativeID string) (string, error) {
+	root, err := os.Open(c.roots.ClaudeProjects) //nolint:gosec // configured provider-owned root.
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = root.Close() }()
+	names, err := root.Readdirnames(-1)
+	if err != nil {
+		return "", err
+	}
+	best, bestMod := "", time.Time{}
+	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		paths, err := filepath.Glob(pattern)
-		if err != nil {
-			return "", err
+		path := filepath.Join(c.roots.ClaudeProjects, name, nativeID+".jsonl")
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
 		}
-		if len(paths) > 128 {
-			paths = paths[:128]
-		}
-		for _, path := range paths {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-				matches = append(matches, candidate{path: path, mod: info.ModTime()})
-			}
+		if best == "" || info.ModTime().After(bestMod) {
+			best, bestMod = path, info.ModTime()
 		}
 	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].mod.After(matches[j].mod) })
-	if len(matches) == 0 {
-		return "", nil
+	return best, nil
+}
+
+func (c *Collector) clock() time.Time {
+	if c.now != nil {
+		return c.now()
 	}
-	return matches[0].path, nil
+	return time.Now()
 }
 
 type kimiIndexRecord struct {
