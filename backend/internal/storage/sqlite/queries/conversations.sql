@@ -1581,6 +1581,55 @@ WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
   ))
 ORDER BY conversation_activities.sequence;
 
+-- SelectConversationActivities without the command_output and streamed_text
+-- bodies. Chat start reconciles native history on kind, summary and detail only,
+-- and those bodies are most of a long conversation's bytes.
+-- name: SelectConversationActivitiesWithoutOutput :many
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = sqlc.arg(conversation_id)
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT conversation_activities.id,
+       conversation_activities.conversation_id,
+       conversation_activities.turn_id,
+       conversation_activities.sequence,
+       conversation_activities.revision,
+       conversation_activities.kind,
+       conversation_activities.status,
+       conversation_activities.summary,
+       conversation_activities.detail_json,
+       conversation_activities.request_id,
+       conversation_activities.provider_item_id,
+       conversation_activities.created_at,
+       conversation_activities.updated_at,
+       conversation_activities.command_output_truncated,
+       conversation_activities.streamed_text_truncated,
+       conversation_activities.branch_id
+FROM conversation_activities
+JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
+WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
+  AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
+  AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (
+      SELECT discarded.id FROM conversation_turns AS discarded
+      WHERE discarded.conversation_id = sqlc.arg(conversation_id)
+        AND (
+          discarded.rolled_back_at IS NOT NULL
+          OR discarded.state = 'cancelled'
+        )
+  ))
+ORDER BY conversation_activities.sequence;
+
 -- name: SelectConversationActivitiesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)

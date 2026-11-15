@@ -947,7 +947,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			_ = cleanupUnpublishedConversation(conv, false)
 			return nil, fmt.Errorf("%w: durable conversation snapshot is unavailable", ports.ErrChatRecoveryInconclusive)
 		}
-		liveRows, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+		liveRows, err = s.loadConversationTurns(ctx, conversation.ID)
 		if err != nil {
 			_ = cleanupUnpublishedConversation(conv, false)
 			return nil, fmt.Errorf("%w: load live conversation before reconnect: %w", ports.ErrChatRecoveryInconclusive, err)
@@ -1075,7 +1075,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		// restart duplication race.
 		var existing ConversationRows
 		if s.reader != nil {
-			existing, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+			existing, err = s.loadConversationForReplay(ctx, conversation.ID)
 			if err != nil {
 				_ = cleanupUnpublishedConversation(conv, false)
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
@@ -2223,9 +2223,39 @@ func (s *Service) SnapshotPageForReview(ctx context.Context, reviewID string, be
 	return s.snapshotForReviewRows(review, rows), nil
 }
 
-// SnapshotReaderFunc adapts a plain function to SnapshotReader. The daemon wiring
-// uses it to convert the store's own snapshot type, so this package never has to
-// import the storage layer.
+// SnapshotTurnsReader is an optional SnapshotReader extension: a snapshot with
+// turns but no messages or activities.
+type SnapshotTurnsReader interface {
+	LoadConversationTurnsSnapshot(ctx context.Context, conversationID string) (ConversationRows, error)
+}
+
+// SnapshotReplayReader is an optional SnapshotReader extension: a full snapshot
+// whose activities carry no CommandOutput or StreamedText.
+type SnapshotReplayReader interface {
+	LoadConversationSnapshotWithoutActivityOutput(ctx context.Context, conversationID string) (ConversationRows, error)
+}
+
+// loadConversationTurns reads turns for callers that never look at messages or
+// activities, so a long conversation's timeline is not loaded on every start.
+func (s *Service) loadConversationTurns(ctx context.Context, conversationID string) (ConversationRows, error) {
+	if reader, ok := s.reader.(SnapshotTurnsReader); ok {
+		return reader.LoadConversationTurnsSnapshot(ctx, conversationID)
+	}
+	return s.reader.LoadConversationSnapshot(ctx, conversationID)
+}
+
+// loadConversationForReplay reads what native history reconciliation compares:
+// turns, messages and activity kind/status/summary/detail. Command output and
+// streamed text are never compared and are most of a long conversation's bytes.
+func (s *Service) loadConversationForReplay(ctx context.Context, conversationID string) (ConversationRows, error) {
+	if reader, ok := s.reader.(SnapshotReplayReader); ok {
+		return reader.LoadConversationSnapshotWithoutActivityOutput(ctx, conversationID)
+	}
+	return s.reader.LoadConversationSnapshot(ctx, conversationID)
+}
+
+// SnapshotReaderFunc adapts a plain function to SnapshotReader. It serves only
+// full reads; the narrower start-path reads fall back to it.
 type SnapshotReaderFunc func(ctx context.Context, conversationID string) (ConversationRows, error)
 
 // LoadConversationSnapshot satisfies SnapshotReader.
@@ -2392,7 +2422,7 @@ func (s *Service) branchUnanswered(ctx context.Context, session domain.SessionID
 	if s.reader == nil || !switchBranch && !ownBoundary {
 		return false
 	}
-	rows, err := s.reader.LoadConversationSnapshot(ctx, conversationID)
+	rows, err := s.loadConversationTurns(ctx, conversationID)
 	if err != nil {
 		return false
 	}

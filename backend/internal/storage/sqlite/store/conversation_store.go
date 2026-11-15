@@ -4022,6 +4022,43 @@ func (s *Store) LoadConversationSnapshot(
 	ctx context.Context,
 	conversationID string,
 ) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotFull)
+}
+
+// LoadConversationTurnsSnapshot is LoadConversationSnapshot without messages or
+// activities. Chat reconnect and resume decisions read only turns, and the rest
+// of a long conversation can be hundreds of megabytes.
+func (s *Store) LoadConversationTurnsSnapshot(
+	ctx context.Context,
+	conversationID string,
+) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotTurnsOnly)
+}
+
+// LoadConversationSnapshotWithoutActivityOutput is LoadConversationSnapshot with
+// every activity's CommandOutput and StreamedText left empty (their truncation
+// flags are kept). Native history reconciliation never compares those bodies.
+func (s *Store) LoadConversationSnapshotWithoutActivityOutput(
+	ctx context.Context,
+	conversationID string,
+) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotWithoutActivityOutput)
+}
+
+// conversationSnapshotParts selects how much of the timeline a snapshot reads.
+type conversationSnapshotParts int
+
+const (
+	snapshotFull conversationSnapshotParts = iota
+	snapshotWithoutActivityOutput
+	snapshotTurnsOnly
+)
+
+func (s *Store) loadConversationSnapshot(
+	ctx context.Context,
+	conversationID string,
+	parts conversationSnapshotParts,
+) (ConversationSnapshot, error) {
 	conv, err := s.qr.SelectConversationByID(ctx, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationSnapshot{}, ErrConversationNotFound
@@ -4060,13 +4097,36 @@ func (s *Store) LoadConversationSnapshot(
 	// Messages and activities exclude anything attached to a rolled-back turn: the
 	// agent has forgotten those, and a timeline that still showed them would be
 	// describing a conversation the agent is not in.
-	messageRows, err := s.qr.SelectConversationMessages(ctx, conversationID)
-	if err != nil {
-		return ConversationSnapshot{}, fmt.Errorf("select messages: %w", err)
+	var messageRows []gen.ConversationMessage
+	var activityRows []gen.ConversationActivity
+	if parts != snapshotTurnsOnly {
+		messageRows, err = s.qr.SelectConversationMessages(ctx, conversationID)
+		if err != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select messages: %w", err)
+		}
 	}
-	activityRows, err := s.qr.SelectConversationActivities(ctx, conversationID)
-	if err != nil {
-		return ConversationSnapshot{}, fmt.Errorf("select activities: %w", err)
+	switch parts {
+	case snapshotFull:
+		activityRows, err = s.qr.SelectConversationActivities(ctx, conversationID)
+		if err != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select activities: %w", err)
+		}
+	case snapshotWithoutActivityOutput:
+		lite, liteErr := s.qr.SelectConversationActivitiesWithoutOutput(ctx, conversationID)
+		if liteErr != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select activities: %w", liteErr)
+		}
+		activityRows = make([]gen.ConversationActivity, len(lite))
+		for i, row := range lite {
+			activityRows[i] = gen.ConversationActivity{
+				ID: row.ID, ConversationID: row.ConversationID, TurnID: row.TurnID,
+				Sequence: row.Sequence, Revision: row.Revision, Kind: row.Kind, Status: row.Status,
+				Summary: row.Summary, DetailJson: row.DetailJson, RequestID: row.RequestID,
+				ProviderItemID: row.ProviderItemID, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+				CommandOutputTruncated: row.CommandOutputTruncated,
+				StreamedTextTruncated:  row.StreamedTextTruncated, BranchID: row.BranchID,
+			}
+		}
 	}
 
 	presentation := s.conversationHistoryPresentation(ctx, conversationID)
@@ -4078,6 +4138,11 @@ func (s *Store) LoadConversationSnapshot(
 		BranchPoints:                     presentation.branchPoints,
 		BranchedFromEarlierMessage:       presentation.branchedFromEarlierMessage,
 	}
+	// Sized up front: growing by append copies every element several times over.
+	// Empty stays nil, as callers and JSON have always seen it.
+	if len(turnRows) > 0 {
+		snapshot.Turns = make([]domain.ConversationTurn, 0, len(turnRows))
+	}
 	for _, row := range turnRows {
 		turn := turnToDomain(row)
 		turn.HasRetryAttempt = retriedSources[turn.ID]
@@ -4085,8 +4150,14 @@ func (s *Store) LoadConversationSnapshot(
 		presentation.filterInactiveProviderTurn(&turn)
 		snapshot.Turns = append(snapshot.Turns, turn)
 	}
+	if len(messageRows) > 0 {
+		snapshot.Messages = make([]domain.ConversationMessage, 0, len(messageRows))
+	}
 	for _, row := range messageRows {
 		snapshot.Messages = append(snapshot.Messages, messageToDomain(row))
+	}
+	if len(activityRows) > 0 {
+		snapshot.Activities = make([]domain.ConversationActivity, 0, len(activityRows))
 	}
 	for _, row := range activityRows {
 		snapshot.Activities = append(snapshot.Activities, activityToDomain(row))

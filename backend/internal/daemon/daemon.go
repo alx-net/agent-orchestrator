@@ -81,6 +81,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessioncheckout"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
+	sqlitestore "github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 	"github.com/aoagents/agent-orchestrator/backend/internal/terminal"
 )
 
@@ -382,23 +383,7 @@ func Run(buildVersion string) error {
 		},
 		// Adapts the store's own snapshot type, so the chat service never has to
 		// import the storage layer.
-		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
-			rows, err := store.LoadConversationSnapshot(ctx, conversationID)
-			if err != nil {
-				return chatsvc.ConversationRows{}, err
-			}
-			return chatsvc.ConversationRows{
-				Conversation:                     rows.Conversation,
-				ActiveBranch:                     rows.ActiveBranch,
-				EditFloorSequence:                rows.EditFloorSequence,
-				NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
-				Turns:                            rows.Turns,
-				Messages:                         rows.Messages,
-				Activities:                       rows.Activities,
-				BranchPoints:                     rows.BranchPoints,
-				BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
-			}, nil
-		}),
+		Reader: chatSnapshotReader{store: store},
 		PageReader: chatsvc.SnapshotPageReaderFunc(func(ctx context.Context, conversationID string, beforeSequence, limit int64) (chatsvc.ConversationRows, error) {
 			rows, err := store.LoadConversationSnapshotPage(ctx, conversationID, beforeSequence, limit)
 			if err != nil {
@@ -1531,4 +1516,37 @@ func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, 
 		&agentaccount.Codex{Binary: codexagent.New().ResolveBinary, Accounts: codexAccounts, DeviceHome: codexHome},
 	}
 	return agentaccounts.New(store, providers, filepath.Join(cfg.StateDir, "agent-accounts"), nil, log)
+}
+
+// chatSnapshotReader serves the chat service's whole-conversation reads,
+// including the narrower turns-only and output-free reads chat start uses.
+type chatSnapshotReader struct{ store *sqlite.Store }
+
+func (r chatSnapshotReader) LoadConversationSnapshot(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return chatConversationRows(r.store.LoadConversationSnapshot(ctx, conversationID))
+}
+
+func (r chatSnapshotReader) LoadConversationTurnsSnapshot(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return chatConversationRows(r.store.LoadConversationTurnsSnapshot(ctx, conversationID))
+}
+
+func (r chatSnapshotReader) LoadConversationSnapshotWithoutActivityOutput(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return chatConversationRows(r.store.LoadConversationSnapshotWithoutActivityOutput(ctx, conversationID))
+}
+
+func chatConversationRows(rows sqlitestore.ConversationSnapshot, err error) (chatsvc.ConversationRows, error) {
+	if err != nil {
+		return chatsvc.ConversationRows{}, err
+	}
+	return chatsvc.ConversationRows{
+		Conversation:                     rows.Conversation,
+		ActiveBranch:                     rows.ActiveBranch,
+		EditFloorSequence:                rows.EditFloorSequence,
+		NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence,
+		Turns:                            rows.Turns,
+		Messages:                         rows.Messages,
+		Activities:                       rows.Activities,
+		BranchPoints:                     rows.BranchPoints,
+		BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
+	}, nil
 }
