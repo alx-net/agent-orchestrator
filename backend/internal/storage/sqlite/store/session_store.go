@@ -979,6 +979,23 @@ func (s *Store) ListLiveSessions(ctx context.Context) ([]domain.SessionRecord, e
 	return out, nil
 }
 
+// ListPreviewPollSessions returns live sessions with only the fields the
+// preview poller reads: id, kind, workspace path and preview URL.
+func (s *Store) ListPreviewPollSessions(ctx context.Context) ([]domain.SessionRecord, error) {
+	rows, err := s.qr.ListPreviewPollSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list preview poll sessions: %w", err)
+	}
+	out := make([]domain.SessionRecord, 0, len(rows))
+	for _, r := range rows {
+		rec := domain.SessionRecord{ID: r.ID, Kind: r.Kind}
+		rec.Metadata.WorkspacePath = r.WorkspacePath
+		rec.Metadata.PreviewURL = r.PreviewURL
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 // ListChatHibernationCandidates avoids decoding inactive sessions and activity JSON.
 func (s *Store) ListChatHibernationCandidates(ctx context.Context) ([]domain.SessionID, error) {
 	ids, err := s.qr.ListChatHibernationCandidates(ctx)

@@ -1017,6 +1017,44 @@ func TestListLiveSessionsSkipsTerminated(t *testing.T) {
 	}
 }
 
+// The preview poller's narrow read must carry the same fields it reads from a
+// full live session record, and skip ended sessions the same way.
+func TestListPreviewPollSessionsMatchesLiveSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	for range 2 {
+		rec := sampleRecord("mer")
+		rec.Metadata.PreviewURL = "index.html"
+		if _, err := s.CreateSession(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended, _, err := s.GetSession(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended.IsTerminated = true
+	if err := s.UpdateSession(ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	live, err := s.ListLiveSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := s.ListPreviewPollSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow) != len(live) || len(narrow) != 1 {
+		t.Fatalf("narrow = %d sessions, live = %d, want 1 each", len(narrow), len(live))
+	}
+	full, got := live[0], narrow[0]
+	if got.ID != full.ID || got.Kind != full.Kind || got.Metadata.WorkspacePath != full.Metadata.WorkspacePath || got.Metadata.PreviewURL != full.Metadata.PreviewURL {
+		t.Fatalf("narrow %+v differs from live %+v", got, full)
+	}
+}
+
 func TestSessionCreateAssignsStandaloneIDsWithoutProject(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

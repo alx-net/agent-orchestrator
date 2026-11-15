@@ -1233,6 +1233,47 @@ func (q *Queries) ListLiveSessions(ctx context.Context) ([]ListLiveSessionsRow, 
 	return items, nil
 }
 
+const listPreviewPollSessions = `-- name: ListPreviewPollSessions :many
+SELECT id, kind, workspace_path, preview_url FROM sessions WHERE is_terminated = 0 ORDER BY id
+`
+
+type ListPreviewPollSessionsRow struct {
+	ID            domain.SessionID
+	Kind          domain.SessionKind
+	WorkspacePath string
+	PreviewURL    string
+}
+
+// Only what the preview poller reads, four times a second: the full live
+// session row (prompts, latest messages) made it allocate ~300 MB a minute.
+func (q *Queries) ListPreviewPollSessions(ctx context.Context) ([]ListPreviewPollSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPreviewPollSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPreviewPollSessionsRow{}
+	for rows.Next() {
+		var i ListPreviewPollSessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.WorkspacePath,
+			&i.PreviewURL,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessionsByProject = `-- name: ListSessionsByProject :many
 SELECT id, project_id, num, issue_id, kind, harness,
     activity_state, activity_last_at, is_terminated, branch, workspace_path,

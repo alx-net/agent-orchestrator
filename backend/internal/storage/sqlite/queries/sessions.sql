@@ -363,6 +363,11 @@ SELECT id, project_id, num, issue_id, kind, harness,
     runtime_released_launch_id, parent_session_id, title_area
 FROM sessions ORDER BY project_id, num;
 
+-- name: ListPreviewPollSessions :many
+-- Only what the preview poller reads, four times a second: the full live
+-- session row (prompts, latest messages) made it allocate ~300 MB a minute.
+SELECT id, kind, workspace_path, preview_url FROM sessions WHERE is_terminated = 0 ORDER BY id;
+
 -- name: ListLiveSessions :many
 -- ListAllSessions without terminated sessions, for frequent pollers that only
 -- act on live ones and would otherwise decode the whole history every tick.
