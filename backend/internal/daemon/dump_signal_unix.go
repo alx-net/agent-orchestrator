@@ -11,7 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/diagnostics"
 )
 
-// watchGoroutineDumpSignal writes a goroutine dump on SIGUSR1. SIGQUIT prints
+// watchGoroutineDumpSignal writes a goroutine dump and a heap profile on SIGUSR1. SIGQUIT prints
 // the same stacks but kills the daemon, which is the opposite of what you want
 // when it is stuck and holding everyone's sessions.
 func watchGoroutineDumpSignal(dumper *diagnostics.Dumper, log *slog.Logger) (stop func()) {
@@ -30,6 +30,11 @@ func watchGoroutineDumpSignal(dumper *diagnostics.Dumper, log *slog.Logger) (sto
 					continue
 				}
 				log.Warn("goroutine dump written", "path", path)
+				if heap, err := dumper.HeapProfile(); err != nil {
+					log.Error("heap profile failed", "err", err)
+				} else {
+					log.Warn("heap profile written", "path", heap)
+				}
 			}
 		}
 	}()

@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -107,5 +108,18 @@ func TestLockWatchdogReportsAStarvedWaiter(t *testing.T) {
 	w.Check()
 	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "waiters=3") {
 		t.Fatalf("starved waiter not reported: %s", logs.String())
+	}
+}
+
+func TestMemoryMonitorProfilesALargeHeapAtMostOncePerInterval(t *testing.T) {
+	dumper := NewDumper(t.TempDir())
+	m := &MemoryMonitor{Dumper: dumper, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Every: time.Minute, ProfileAbove: 1, ProfileEvery: time.Hour}
+	start := time.Now()
+	m.Check(start)
+	m.Check(start.Add(time.Minute))
+	m.Check(start.Add(2 * time.Hour))
+	profiles, _ := filepath.Glob(filepath.Join(dumper.Dir(), "heap-*.pb.gz"))
+	if len(profiles) != 2 {
+		t.Fatalf("profiles = %d, want 2 (one, then one after the interval)", len(profiles))
 	}
 }

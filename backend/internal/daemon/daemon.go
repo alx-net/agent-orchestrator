@@ -210,6 +210,7 @@ func Run(buildVersion string) error {
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	defer stopWatch()
 	startWriterWatchdog(watchCtx, store.WriterLockState, dumper, log)
+	startMemoryWatch(watchCtx, dumper, log)
 	if _, err := store.RequeueClaimedReports(context.Background()); err != nil {
 		return fmt.Errorf("recover report delivery claims: %w", err)
 	}

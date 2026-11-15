@@ -84,6 +84,7 @@ import {
 	slowDaemonStartupStatus,
 } from "./shared/daemon-startup-status";
 import { toggleAppDevTools } from "./main/app-devtools";
+import { startMemoryLog } from "./main/memory-log";
 import { attachAppShortcuts } from "./main/app-shortcuts";
 import { relayScrollPhases } from "./main/scroll-phase";
 import {
@@ -3553,6 +3554,7 @@ async function writeAppStateOnLaunch(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	startMemoryLog(desktopDataDir, () => app.getAppMetrics());
 	if (app.isPackaged) {
 		const { checkDesktopVersionFloor } = await import("./main/desktop-version-floor");
 		await checkDesktopVersionFloor().catch((err) =>

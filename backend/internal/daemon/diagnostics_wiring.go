@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/diagnostics"
@@ -32,4 +34,23 @@ func startWriterWatchdog(ctx context.Context, state func() diagnostics.LockState
 		Log:       log,
 	}
 	go w.Run(ctx)
+}
+
+// daemonMemoryLimit is the soft limit the Go runtime collects toward. With the
+// default GOGC alone the heap may grow to twice what is live before a
+// collection, and freed memory reaches the OS only slowly: the daemon showed
+// 2.2 GB in Activity Monitor. GOMEMLIMIT in the environment overrides it.
+const daemonMemoryLimit = 1536 << 20
+
+// startMemoryWatch sets the soft memory limit, logs the daemon's memory every
+// ten minutes, and saves a heap profile when the live heap passes 1 GiB.
+func startMemoryWatch(ctx context.Context, dumper *diagnostics.Dumper, log *slog.Logger) {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(daemonMemoryLimit)
+	}
+	m := &diagnostics.MemoryMonitor{
+		Dumper: dumper, Log: log, Every: 10 * time.Minute,
+		ProfileAbove: 1 << 30, ProfileEvery: time.Hour,
+	}
+	go m.Run(ctx)
 }
