@@ -315,6 +315,36 @@ func TestRetryEpisodesKeepRecoveredDiagnosticsAndReplayIdentity(t *testing.T) {
 	}
 }
 
+// Every controller start (each account move) loads the transcript again over
+// a new connection or host. A failure it replays keeps one identity, so the
+// chat does not gain another "You've hit your session limit" row per move.
+func TestReplayedSessionFailureKeepsOneIdentityAcrossLoads(t *testing.T) {
+	meta := testPromptFailureMeta(map[string]any{"id": "limit-1", "severity": "error", "title": "You've hit your session limit · resets 9:40pm"})
+	var ids []string
+	for _, source := range []string{"", "host-a:7", "host-b:3"} {
+		conv := &conversation{
+			activeTurn: "native-user-1", events: make(chan ports.ChatEvent, 4), log: slog.New(slog.DiscardHandler),
+			history: &historyCapture{},
+		}
+		event, ok := conv.sessionFailureEvent("native-user-1", source, meta)
+		if !ok {
+			t.Fatal("replayed failure dropped")
+		}
+		ids = append(ids, event.ProviderItemID)
+	}
+	if ids[0] != ids[1] || ids[1] != ids[2] {
+		t.Fatalf("replayed failure identities = %v, want one", ids)
+	}
+	// Live direct connections still get a fresh row per retry episode.
+	live := &conversation{activeTurn: "turn-1", events: make(chan ports.ChatEvent, 4), log: slog.New(slog.DiscardHandler)}
+	first, _ := live.sessionFailureEvent("turn-1", "", meta)
+	live.completeProviderFailure("turn-1", func(ports.ChatEvent) {})
+	second, _ := live.sessionFailureEvent("turn-1", "", meta)
+	if first.ProviderItemID == second.ProviderItemID || first.ProviderItemID == ids[0] {
+		t.Fatalf("live identities = %q, %q", first.ProviderItemID, second.ProviderItemID)
+	}
+}
+
 func TestACPReplayedPromptFailure(t *testing.T) {
 	meta := testPromptFailureMeta(map[string]any{
 		"id": "failure-1", "severity": "error", "title": "Provider rejected this request", "details": "Original provider details",

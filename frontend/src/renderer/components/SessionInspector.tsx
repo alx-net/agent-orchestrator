@@ -59,6 +59,7 @@ import { latestScriptRun } from "../lib/cloud-script-runs";
 import { ResumeAgentControl } from "./ResumeAgentControl";
 import { SessionBranchSummary } from "./SessionBranchSummary";
 import { SessionAccountSummary } from "./SessionAccountSummary";
+import { SessionMcpServers } from "./SessionMcpServers";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
@@ -402,7 +403,7 @@ const SummaryView = memo(function SummaryView({
 	const linkedPRs = query.data?.linkedPrs ?? [];
 	const projectQuery = useQuery({
 		queryKey: hostId ? ["project", hostId, session.workspaceId] : ["project", session.workspaceId],
-		enabled: linkedPRs.length > 0 && !session.cloud,
+		enabled: linkedPRs.length > 0 && !session.cloud && session.workspaceId !== STANDALONE_WORKSPACE_ID,
 		queryFn: async () => {
 			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/projects/{id}", {
 				params: { path: { id: session.workspaceId } },
@@ -436,6 +437,7 @@ const SummaryView = memo(function SummaryView({
 				<>
 					<ActivityTimeline hostId={hostId} prs={prSummaries} session={session} />
 					{hostId || !accountsPreview ? null : <SessionAccountSummary session={session} />}
+					{hostId ? null : <SessionMcpServers session={session} />}
 					<ResumeAgentControl
 						className="w-full"
 						containerClassName="mt-3 border-t border-(--color-border-settings-input) pt-3"

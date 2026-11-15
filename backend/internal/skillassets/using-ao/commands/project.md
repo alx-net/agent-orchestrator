@@ -154,6 +154,7 @@ ao project set-config <id> [flags]
 | `--post-create stringArray` | Command to run after workspace creation (repeatable) | - |
 | `--session-prefix string` | Displayed session-id prefix | - |
 | `--symlink stringArray` | Repo-relative path to symlink into workspaces (repeatable) | - |
+| `--title-area stringArray` | Product area `NAME[=HINT]`; a new session whose task fits it gets `NAME: ` in front of its automatic titles (repeatable) | - |
 | `--tracker-assignee string` | Issue assignee required for tracker intake eligibility | - |
 | `--tracker-intake` | Opt this project into GitHub or GitLab issue intake; inert unless the daemon also has `AO_TRACKER_INTAKE=on` | Disabled |
 | `--tracker-repo string` | Provider-native issue repository (`owner/repo` or `group/subgroup/repo`); defaults to the Git origin | - |

@@ -165,13 +165,33 @@ async function resizeTo(window: BrowserWindow, width: number, height: number): P
 	throw renderCheckError("BROWSER_COMMAND_FAILED", `render check failed: the viewport did not reach ${width}x${height} px`);
 }
 
-/** The next frame painted after this call, captured. invalidate() guarantees a frame. */
+/** How often a capture that Electron refuses before its first frame is retried. */
+const CAPTURE_ATTEMPTS = 8;
+const CAPTURE_RETRY_MS = 125;
+
+/**
+ * The next frame painted after this call. invalidate() guarantees a paint, but
+ * Electron 44 can still reject capturePage() with UnknownVizError until the
+ * compositor has a frame to copy, which failed render checks outright. Such a
+ * refusal is retried after another paint; any other error is real. A frame the
+ * paint listener delivers is used directly when it is not empty.
+ */
 async function capturePainted(window: BrowserWindow): Promise<NativeImage> {
 	const contents = window.webContents;
-	const painted = new Promise<void>((resolve) => contents.once("paint", () => resolve()));
-	contents.invalidate();
-	await painted;
-	return contents.capturePage();
+	for (let attempt = 1; ; attempt++) {
+		const painted = new Promise<NativeImage | undefined>((resolve) =>
+			contents.once("paint", (_event: unknown, _dirty: unknown, image?: NativeImage) => resolve(image)),
+		);
+		contents.invalidate();
+		const frame = await painted;
+		if (frame && !frame.isEmpty()) return frame;
+		try {
+			return await contents.capturePage();
+		} catch (error) {
+			if (attempt >= CAPTURE_ATTEMPTS || !/UnknownVizError/i.test(String((error as Error)?.message ?? error))) throw error;
+			await sleep(CAPTURE_RETRY_MS);
+		}
+	}
 }
 
 /** Whether an image shows the whole width x height page, at any device scale. */

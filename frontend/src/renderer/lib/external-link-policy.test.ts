@@ -6,8 +6,31 @@ import {
 	isPotentialWorkspaceFileLink,
 	isWorkspaceHtmlLink,
 	openLinkInSystemBrowser,
+	opensInSystemBrowser,
 	workspaceFilePath,
 } from "./external-link-policy";
+
+describe("opensInSystemBrowser", () => {
+	it("sends GitHub and its subdomains to the signed-in system browser", () => {
+		expect(opensInSystemBrowser("https://github.com/Kugelaudio/KugelAudio/pull/5449")).toBe(true);
+		expect(opensInSystemBrowser("https://github.com/acme/repo/blob/main/docs/plan.md#L3")).toBe(true);
+		expect(opensInSystemBrowser("http://GitHub.com/acme/repo")).toBe(true);
+		expect(opensInSystemBrowser("https://www.github.com/acme")).toBe(true);
+		expect(opensInSystemBrowser("https://gist.github.com/ada/abc123")).toBe(true);
+		expect(opensInSystemBrowser("https://github.com./acme/repo")).toBe(true);
+	});
+
+	it("keeps every other link on its current route", () => {
+		expect(opensInSystemBrowser("http://localhost:5173")).toBe(false);
+		expect(opensInSystemBrowser("https://example.com/github.com")).toBe(false);
+		expect(opensInSystemBrowser("https://notgithub.com/acme")).toBe(false);
+		expect(opensInSystemBrowser("https://github.com.evil.example/acme")).toBe(false);
+		expect(opensInSystemBrowser("https://acme.github.io/docs")).toBe(false);
+		expect(opensInSystemBrowser("mailto:ada@github.com")).toBe(false);
+		expect(opensInSystemBrowser("docs/github.com.md")).toBe(false);
+		expect(opensInSystemBrowser("not a url")).toBe(false);
+	});
+});
 
 describe("external link policy", () => {
 	beforeEach(() => {

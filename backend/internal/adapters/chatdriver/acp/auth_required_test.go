@@ -18,6 +18,12 @@ func TestIsACPAuthRequiredRecognizesProtocolAuthCodes(t *testing.T) {
 	}{
 		{"acp auth_required code", &acpsdk.RequestError{Code: -32000, Message: "authentication required"}, true},
 		{"unassigned server code", &acpsdk.RequestError{Code: -32001, Message: "auth required"}, false},
+		// claude-agent-acp's report of a login that expired mid-session.
+		{"claude expired login", &acpsdk.RequestError{
+			Code: -32603, Message: "Internal error: Failed to authenticate: OAuth session expired and could not be refreshed",
+			Data: map[string]any{"errorKind": "authentication_failed"},
+		}, true},
+		{"other tagged internal error", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{"errorKind": "rate_limit"}}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

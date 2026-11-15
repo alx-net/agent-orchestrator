@@ -227,6 +227,12 @@ var shippedMigrations = map[int64]string{
 	20261024194546592: "20261024194546592_conversation_messages_search.sql",
 	20261026150328659: "20261026150328659_add_hot_path_indexes.sql",
 	20261026184509503: "20261026184509503_add_pr_check_details.sql",
+	20261026201227332: "20261026201227332_add_session_parent.sql",
+	20261027125731394: "20261027125731394_add_session_title_area.sql",
+	20261027203848009: "20261027203848009_app_settings_account_auto_switch.sql",
+	20261028173500215: "20261028173500215_fyi_messages.sql",
+	20261028173622194: "20261028173622194_session_waits.sql",
+	20261028173925693: "20261028173925693_app_settings_compact_at.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

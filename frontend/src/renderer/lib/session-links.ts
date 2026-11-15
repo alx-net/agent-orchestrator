@@ -78,6 +78,24 @@ export function artifactLinkForPath(value: string, workspaces: ArtifactPathWorks
 	return undefined;
 }
 
+/**
+ * The artifact route for an artifact named by its path or bare file name, as
+ * agents usually write them. This chat's own session wins; otherwise the name
+ * must identify one artifact, so an ambiguous name stays plain text.
+ */
+export function artifactLinkForName(value: string, workspaces: ArtifactPathWorkspace[], sessionId?: string): string | undefined {
+	const name = value.trim();
+	if (!name || /\s/.test(name) || !/\.[A-Za-z0-9]{1,8}$/.test(name)) return undefined;
+	const matches = workspaces.flatMap((workspace) => workspace.sessions.flatMap((session) =>
+		(session.artifactFiles ?? [])
+			.filter((file) => file.path === name || file.path.endsWith(`/${name}`))
+			.map((file) => ({ projectId: workspace.id, sessionId: session.id, path: file.path }))));
+	const own = matches.filter((match) => match.sessionId === sessionId);
+	const candidates = own.length > 0 ? own : matches;
+	const match = candidates.length === 1 ? candidates[0] : undefined;
+	return match ? artifactLink(match.projectId, match.sessionId, match.path) : undefined;
+}
+
 /** True for either in-app route: a session or one of its artifacts. */
 export function isAoLink(value: string): boolean {
 	return parseSessionLink(value) !== undefined || parseArtifactLink(value) !== undefined;
@@ -151,7 +169,7 @@ function count(value: string, character: string): number {
 	return [...value].filter((entry) => entry === character).length;
 }
 
-type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
+type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[]; data?: { hProperties?: Record<string, string> } };
 type TextMatch = { start: number; end: number; node: MarkdownNode };
 
 const linkNode = (url: string, text: string): MarkdownNode => ({ type: "link", url, children: [{ type: "text", value: text }] });
@@ -170,23 +188,35 @@ const ROOTED_PATH = /^(?:~|\.{1,2})\/\S|^\/[^\s/]+\//;
 // `a/b/c`, or `a/b.ext` (`a/b.test.tsx`, `a/.env.local`), optionally with `:line[:col]`. A single `and/or` is prose.
 const RELATIVE_PATH = /^[\w.-]+(?:\/[\w.@+-]+){2,}(?::\d+){0,2}$|^[\w.-]+\/[\w@+-]*(?:\.[\w@+-]+)+(?::\d+){0,2}$/;
 
+/** Whether a word of prose reads as a file path, optionally at a line. */
+export function isPlainPath(token: string): boolean {
+	return ROOTED_PATH.test(token) || RELATIVE_PATH.test(token);
+}
+
+/** The words of `text`, without the quotes, brackets and punctuation around them. */
+function plainWords(text: string): Array<{ start: number; token: string }> {
+	const words: Array<{ start: number; token: string }> = [];
+	for (const word of text.matchAll(/\S+/g)) {
+		const lead = LEADING_WRAP.exec(word[0])?.[0].length ?? 0;
+		const token = word[0].slice(lead).replace(TRAILING_WRAP, "");
+		if (token) words.push({ start: word.index + lead, token });
+	}
+	return words;
+}
+
 /**
  * Plain-text references in prose nobody formatted: file paths become inline code,
  * and words that are ids of `sessionProjects` become links to those sessions.
  */
 export function findPlainReferences(text: string, sessionProjects: ReadonlyMap<string, string>): TextMatch[] {
 	const matches: TextMatch[] = [];
-	for (const word of text.matchAll(/\S+/g)) {
-		const lead = LEADING_WRAP.exec(word[0])?.[0].length ?? 0;
-		const token = word[0].slice(lead).replace(TRAILING_WRAP, "");
-		if (!token) continue;
+	for (const { start, token } of plainWords(text)) {
 		const projectId = sessionProjects.get(token);
 		const node = projectId
 			? linkNode(`${SESSION_LINK_PREFIX}${encodeURIComponent(projectId)}/${encodeURIComponent(token)}`, token)
-			: ROOTED_PATH.test(token) || RELATIVE_PATH.test(token)
+			: isPlainPath(token)
 				? { type: "inlineCode", value: token }
 				: undefined;
-		const start = word.index + lead;
 		if (node) matches.push({ start, end: start + token.length, node });
 	}
 	return matches;
@@ -195,6 +225,29 @@ export function findPlainReferences(text: string, sessionProjects: ReadonlyMap<s
 /** remark plugin for `findPlainReferences`, outside code and links. */
 export function remarkPlainReferences(sessionProjects: ReadonlyMap<string, string>) {
 	return (tree: MarkdownNode) => visitMarkdown(tree, (text) => findPlainReferences(text, sessionProjects));
+}
+
+/** The hast property that marks inline code which was a bare path in prose. */
+export const PLAIN_PATH_PROPERTY = "dataPlainPath";
+
+/**
+ * Bare file paths in an agent's own prose, as inline code marked with
+ * `PLAIN_PATH_PROPERTY`. The chat keeps them looking like the plain text they
+ * were unless it can open the file they name.
+ */
+export function findPlainPaths(text: string): TextMatch[] {
+	return plainWords(text)
+		.filter(({ token }) => isPlainPath(token))
+		.map(({ start, token }) => ({
+			start,
+			end: start + token.length,
+			node: { type: "inlineCode", value: token, data: { hProperties: { [PLAIN_PATH_PROPERTY]: "" } } },
+		}));
+}
+
+/** remark plugin for `findPlainPaths`, outside code and links. */
+export function remarkPlainPaths() {
+	return (tree: MarkdownNode) => visitMarkdown(tree, findPlainPaths);
 }
 
 function visitMarkdown(node: MarkdownNode, find: (text: string) => TextMatch[]): void {

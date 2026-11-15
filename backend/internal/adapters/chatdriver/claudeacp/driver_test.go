@@ -12,6 +12,7 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -300,9 +301,9 @@ func TestClaudeSessionMetaDisablesBackgroundTools(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1")
 	for _, window := range []string{"", "50000"} {
 		t.Run("compact window "+window, func(t *testing.T) {
-			meta := claudeSessionMeta(acpdriver.LaunchConfig{
+			meta := (&checkpointDriver{}).sessionMeta(acpdriver.LaunchConfig{
 				SystemPrompt: "Return only task title and slug JSON.", DisableTools: true,
-				Env: map[string]string{claudeAutoCompactWindowEnv: window},
+				Env: map[string]string{domain.ClaudeAutoCompactWindowEnv: window},
 			})
 			prompt := meta["systemPrompt"].(map[string]any)
 			if prompt["append"] != "Return only task title and slug JSON." {
@@ -317,8 +318,9 @@ func TestClaudeSessionMetaDisablesBackgroundTools(t *testing.T) {
 				t.Fatalf("background task can inherit MCP tools: %#v", options)
 			}
 			if window != "" {
-				env, ok := options["env"].(map[string]string)
-				if !ok || env[claudeAutoCompactWindowEnv] != window {
+				settings, _ := options["settings"].(map[string]any)
+				env, ok := settings["env"].(map[string]string)
+				if !ok || env[domain.ClaudeAutoCompactWindowEnv] != window {
 					t.Fatalf("lost compaction environment: %#v", options)
 				}
 			}

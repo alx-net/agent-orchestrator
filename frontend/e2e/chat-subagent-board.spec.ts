@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installFakeAgent } from "./support/fake-bridge";
 
 // The Agents tab of a Claude Code chat: the main agent pinned on top with its
-// own Status:/Decision: lines, then one card per Agent/Task call, placed in
+// own Status: lines, then one card per Agent/Task call, placed in
 // Working, Needs you or Done, with the subagent's lines as its "now" line and
 // timeline. A live card can be stepped into: a steer straight into the main
 // turn, a message to one subagent's inbox, and a stop for that subagent alone.
@@ -29,7 +29,7 @@ function snapshot(board: BoardState = untouched()) {
 	sequence = 2;
 	const audit = board.auditStopped ? "failed" : "running";
 	const activities = [
-		// Working: narrating with Status:/Decision: lines while a Read runs.
+		// Working: narrating with Status: lines while a Read runs.
 		activity({
 			id: "agent-audit", providerItemId: "agent-audit", activityKind: "mcp_tool", status: audit, summary: "Audit the auth flow",
 			detail: {
@@ -45,9 +45,7 @@ function snapshot(board: BoardState = untouched()) {
 				nestedAgent: true, parentProviderItemId: "agent-audit",
 				progress: [
 					"Status: Listing the auth package",
-					"Decision: Start from the HTTP middleware, since every route passes through it",
 					"Status: Reading the session token validator",
-					"Decision: Skip the legacy OAuth adapter; nothing imports it",
 				].join("\n"),
 			},
 		}),
@@ -65,7 +63,7 @@ function snapshot(board: BoardState = untouched()) {
 		}),
 		activity({
 			id: "migrate-voice", providerItemId: "migrate-voice", activityKind: "mcp_tool", status: "running", summary: "Subagent response",
-			detail: { nestedAgent: true, parentProviderItemId: "agent-migrate", progress: "Status: Creating the migration file\nDecision: Use the migration generator instead of writing the ID by hand" },
+			detail: { nestedAgent: true, parentProviderItemId: "agent-migrate", progress: "Status: Creating the migration file" },
 		}),
 		activity({
 			id: "migrate-bash", providerItemId: "migrate-bash", activityKind: "mcp_tool", status: "pending", summary: "npm run migration:create -- add_paused_at",
@@ -86,7 +84,7 @@ function snapshot(board: BoardState = untouched()) {
 		}),
 		activity({
 			id: "routes-voice", providerItemId: "routes-voice", activityKind: "mcp_tool", status: "completed", summary: "Subagent response",
-			detail: { nestedAgent: true, parentProviderItemId: "agent-routes", progress: "Status: Grepping the controllers\nDecision: Count only routes under /api/v1/sessions" },
+			detail: { nestedAgent: true, parentProviderItemId: "agent-routes", progress: "Status: Grepping the controllers" },
 		}),
 		// The person's own steers land in the running turn as steer rows.
 		...board.steers.map((steer, index) => activity({
@@ -100,7 +98,6 @@ function snapshot(board: BoardState = untouched()) {
 		text: [
 			"I'll split this across subagents.",
 			"Status: Splitting the pausing work across three subagents",
-			"Decision: Run the audit and the migration in parallel, since they touch different packages",
 			"Status: Waiting on the migration subagent",
 		].join("\n"),
 		streaming: true, createdAt: at(30),
@@ -170,7 +167,7 @@ async function capture(page: Page, name: string) {
 	if (directory) await page.screenshot({ path: `${directory}/${name}.png` });
 }
 
-test("the Agents tab shows the main agent and each subagent's lane, now line and decisions @T0", async ({ page }) => {
+test("the Agents tab shows the main agent and each subagent's lane, now line and updates @T0", async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await installSubagentConversation(page);
 
@@ -181,20 +178,19 @@ test("the Agents tab shows the main agent and each subagent's lane, now line and
 
 	const board = page.getByTestId("subagent-board");
 	const card = (title: string) => board.getByRole("article", { name: title });
-	// The main agent's newest Status: line and latest Decision: line, above the lanes.
+	// The main agent's newest Status: line, above the lanes.
 	const main = card("Main agent");
 	await expect(main).toHaveAttribute("data-state", "working");
 	await expect(main.getByTestId("main-agent-now")).toHaveText("Waiting on the migration subagent");
-	await expect(main.getByTestId("main-agent-decision")).toContainText("Run the audit and the migration in parallel, since they touch different packages");
 	await expect(card("Audit the auth flow")).toHaveAttribute("data-lane", "working");
 	await expect(card("Write the paused_at migration")).toHaveAttribute("data-lane", "needs_you");
 	await expect(card("Map the session routes")).toHaveAttribute("data-lane", "done");
-	// The newest Status:/Decision:/progress line is the working card's one status line.
-	await expect(card("Audit the auth flow")).toContainText(/Read backend\/internal\/auth\/token\.go|Tracing token validation|Skip the legacy OAuth adapter/);
+	// The newest Status:/progress line is the working card's one status line.
+	await expect(card("Audit the auth flow")).toContainText(/Read backend\/internal\/auth\/token\.go|Tracing token validation|Reading the session token validator/);
 	await capture(page, "subagent-board-1-lanes");
 
 	await card("Audit the auth flow").getByText("Audit the auth flow").click();
-	await expect(card("Audit the auth flow").getByText("Start from the HTTP middleware, since every route passes through it")).toBeVisible();
+	await expect(card("Audit the auth flow").getByText("Listing the auth package")).toBeVisible();
 	await capture(page, "subagent-board-2-expanded");
 
 	await main.getByRole("button", { name: /Main agent/ }).click();

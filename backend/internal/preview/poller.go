@@ -14,7 +14,9 @@ import (
 const DefaultPollInterval = 250 * time.Millisecond
 
 type sessionPreviewSource interface {
-	ListLiveSessions(ctx context.Context) ([]domain.SessionRecord, error)
+	// ListPreviewPollSessions lists live sessions with at least their id,
+	// kind, workspace path and preview URL; it runs four times a second.
+	ListPreviewPollSessions(ctx context.Context) ([]domain.SessionRecord, error)
 }
 
 type previewSetter interface {
@@ -101,7 +103,7 @@ func (p *Poller) Poll(ctx context.Context) error {
 	if p.source == nil || p.setter == nil {
 		return nil
 	}
-	sessions, err := p.source.ListLiveSessions(ctx)
+	sessions, err := p.source.ListPreviewPollSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("preview poller list sessions: %w", err)
 	}

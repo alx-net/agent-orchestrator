@@ -16,9 +16,12 @@ import {
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
+	patchClaudeFailureKinds,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
+	patchClaudeMcpControl,
 	patchClaudeRetryDetails,
+	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
 	patchClaudeSteerSettlement,
 	patchClaudeSubagentControl,
@@ -90,13 +93,17 @@ const npm = npmInvocation(["ci", "--omit=dev", "--omit=optional", "--ignore-scri
 run(npm.command, npm.args, { cwd: outDir });
 patchClaudeRetryDetails(claudeAdapter);
 patchClaudeContextUsage(claudeAdapter);
+patchClaudeFailureKinds(claudeAdapter);
 patchClaudeHibernationCheck(claudeAdapter);
 patchClaudeFoldedPromptSettlement(claudeAdapter);
+patchClaudeSessionSettings(claudeAdapter);
 patchClaudeStaleIdleDebt(claudeAdapter);
 patchClaudeSteerSettlement(claudeAdapter);
 patchClaudeSubagentProgress(claudeAdapter);
 // Extends the PreToolUse block the progress patch writes.
 patchClaudeSubagentControl(claudeAdapter);
+// Uses the session lookup the subagent control patch adds.
+patchClaudeMcpControl(claudeAdapter);
 
 // The Claude Agent SDK declares platform-native Claude executables as optional
 // dependencies. --omit=optional excludes them; this removal is defense-in-depth.

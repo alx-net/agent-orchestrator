@@ -430,6 +430,10 @@ export type FakeWorker = {
 	id: string;
 	title: string;
 	createdAt?: string;
+	/** Defaults to a worker. */
+	kind?: "worker" | "orchestrator";
+	/** The session that spawned it. */
+	parentSessionId?: string;
 	mode?: "chat" | "tui";
 	provider?: string;
 	branch?: string;
@@ -582,7 +586,8 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				workspaceName: projectName,
 				title: w.title,
 				provider: w.provider ?? "codex",
-				kind: "worker",
+				kind: w.kind ?? "worker",
+				...(w.parentSessionId ? { parentSessionId: w.parentSessionId } : {}),
 				mode: w.mode ?? "tui",
 				branch: w.branch ?? `session/${w.id}`,
 				status: w.status ?? "working",

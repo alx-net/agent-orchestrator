@@ -93,6 +93,21 @@ type Service struct {
 	// there, rather than inferring "still blocked" from a goroutine that simply
 	// hasn't run yet.
 	onSessionGateWait func(domain.SessionID)
+	// sessionAccountEnv resolves the account variables the session's agent runs
+	// with (such as CLAUDE_CONFIG_DIR). Nil leaves them to the inherited env.
+	sessionAccountEnv func(context.Context, domain.SessionID) (map[string]string, error)
+	// commandWatchCtx bounds the goroutines watching Run commands: the daemon's
+	// lifetime, set by ResumeSessionCommands. Runs left unfinished stay on disk.
+	commandWatchCtx context.Context //nolint:containedctx // a process lifetime, not a request's
+	// commandPoll and commandRetryFirst pace those watches; tests shorten them.
+	commandPoll       time.Duration
+	commandRetryFirst time.Duration
+}
+
+// SetSessionAccountEnv supplies the session account lookup for Run tabs. Late-bound
+// like the other daemon wiring: call it during boot, before clients connect.
+func (s *Service) SetSessionAccountEnv(lookup func(context.Context, domain.SessionID) (map[string]string, error)) {
+	s.sessionAccountEnv = lookup
 }
 
 // IsShellTerminalChildAlive reports whether the command inside a shell
@@ -185,6 +200,9 @@ func NewService(shellRuntime ShellRuntime, store Store, projects ProjectRootLoca
 		executable:          os.Executable,
 		initialInputTimeout: initialInputTimeout,
 		gates:               map[domain.SessionID]*sessionGate{},
+		commandWatchCtx:     context.Background(),
+		commandPoll:         sessionCommandPoll,
+		commandRetryFirst:   sessionCommandRetryFirst,
 	}
 }
 
@@ -316,36 +334,45 @@ func (s *Service) OpenShellTerminal(ctx context.Context, in OpenShellTerminalInp
 	if env == nil {
 		env = make(map[string]string, 3)
 	}
-	// A user shell must never inherit the worker-only browser automation bearer
-	// from an unusual daemon launch environment.
-	env["AO_BROWSER_CAPABILITY"] = ""
-	env["AO_PREVIEW_CAPABILITY"] = ""
-	var verifier string
-	if in.SessionID != "" {
-		env["AO_SESSION_ID"] = string(in.SessionID)
-		var token string
-		token, verifier, err = s.previewCapabilities.Issue(in.SessionID)
-		if err != nil {
-			return ShellTerminal{}, fmt.Errorf("open shell terminal: preview capability: %w", err)
-		}
-		env["AO_PREVIEW_CAPABILITY"] = token
-		// The shell can issue its first CLI request before runtime.Create returns
-		// and its durable row is inserted. Admit it only during this launch gap.
-		s.pendingPreviewMu.Lock()
-		s.pendingPreview[in.SessionID] = verifier
-		s.pendingPreviewMu.Unlock()
-		defer func() {
-			s.pendingPreviewMu.Lock()
-			delete(s.pendingPreview, in.SessionID)
-			s.pendingPreviewMu.Unlock()
-		}()
+	verifier, releasePreview, err := s.addSessionShellEnv(env, in.SessionID)
+	if err != nil {
+		return ShellTerminal{}, fmt.Errorf("open shell terminal: preview capability: %w", err)
 	}
+	defer releasePreview()
 	return s.openTerminal(ctx, openTerminalConfig{
 		argv: argv, env: env, projectEnv: projectEnv, projectID: projectID, sessionID: in.SessionID,
 		workingDir: workingDir, title: title,
 		previewVerifier: verifier,
 		startOnAttach:   in.StartOnAttach,
 	})
+}
+
+// addSessionShellEnv gives a shell its session identity, when it has one. The
+// returned func ends the launch gap and must run once the terminal is open.
+func (s *Service) addSessionShellEnv(env map[string]string, sessionID domain.SessionID) (verifier string, release func(), err error) {
+	// A user shell must never inherit the worker-only browser automation bearer
+	// from an unusual daemon launch environment.
+	env["AO_BROWSER_CAPABILITY"] = ""
+	env["AO_PREVIEW_CAPABILITY"] = ""
+	if sessionID == "" {
+		return "", func() {}, nil
+	}
+	env["AO_SESSION_ID"] = string(sessionID)
+	token, verifier, err := s.previewCapabilities.Issue(sessionID)
+	if err != nil {
+		return "", nil, err
+	}
+	env["AO_PREVIEW_CAPABILITY"] = token
+	// The shell can issue its first CLI request before runtime.Create returns
+	// and its durable row is inserted. Admit it only during this launch gap.
+	s.pendingPreviewMu.Lock()
+	s.pendingPreview[sessionID] = verifier
+	s.pendingPreviewMu.Unlock()
+	return verifier, func() {
+		s.pendingPreviewMu.Lock()
+		delete(s.pendingPreview, sessionID)
+		s.pendingPreviewMu.Unlock()
+	}, nil
 }
 
 const authWorkspaceDirectoryName = "auth-workspace"

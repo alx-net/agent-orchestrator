@@ -184,6 +184,9 @@ type hibernateOptions struct {
 	// forUpdate stops an idle provider so an installer can replace its
 	// executable; the session wakes on its next message or once the update ends.
 	forUpdate bool
+	// toolServers stops an idle provider so it starts again with its tool
+	// servers as they now are, when the running one cannot take the change.
+	toolServers bool
 	// minIdle is how long the session must have been quiet.
 	minIdle time.Duration
 	// ignoreViews lets a refresh run under an open view: the user's next
@@ -192,7 +195,7 @@ type hibernateOptions struct {
 }
 
 func (o hibernateOptions) enabled(s *Service) bool {
-	if o.versionRefresh || o.forUpdate {
+	if o.versionRefresh || o.forUpdate || o.toolServers {
 		return true
 	}
 	return s.hibernationEnabled != nil && s.hibernationEnabled()
@@ -202,10 +205,10 @@ func (o hibernateOptions) enabled(s *Service) bool {
 // provider confirms it has no background work.
 func (o hibernateOptions) eligible(s *Service, rec domain.SessionRecord) bool {
 	candidate := rec
-	if (o.forUpdate || o.versionRefresh) && candidate.Kind == domain.KindOrchestrator {
-		// Idle hibernation keeps orchestrators running. An update or a move to
-		// a new release stops them only to start them again, so they go too,
-		// under the same turn, queue and approval checks.
+	if (o.forUpdate || o.versionRefresh || o.toolServers) && candidate.Kind == domain.KindOrchestrator {
+		// Idle hibernation keeps orchestrators running. An update, a move to a
+		// new release or a tool server change stops them only to start them
+		// again, so they go too, under the same turn, queue and approval checks.
 		candidate.Kind = ""
 	}
 	if !candidate.EligibleForChatHibernation() || rec.Activity.LastActivityAt.Add(o.minIdle).After(s.now()) {

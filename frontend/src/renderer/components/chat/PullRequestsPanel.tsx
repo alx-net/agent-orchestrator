@@ -207,15 +207,19 @@ export const PullRequestsPanel = memo(function PullRequestsPanel({ session, host
 	);
 });
 
-/** Wall time for running checks' "Running for", ticking only while one runs. */
-function useNow(active: boolean): number {
+/**
+ * Wall time for running checks' "Running for", ticking every second while one
+ * runs, and otherwise every `idleMs` when given (for relative times).
+ */
+export function useNow(active: boolean, idleMs?: number): number {
 	const [now, setNow] = useState(() => Date.now());
 	useEffect(() => {
-		if (!active) return;
+		const interval = active ? 1_000 : idleMs;
+		if (interval === undefined) return;
 		setNow(Date.now());
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+		const timer = window.setInterval(() => setNow(Date.now()), interval);
 		return () => window.clearInterval(timer);
-	}, [active]);
+	}, [active, idleMs]);
 	return now;
 }
 
@@ -226,7 +230,7 @@ const STATE_LABEL_KEYS = {
 	closed: "prMergeBox.state.closed",
 } as const satisfies Record<MergeBoxPR["state"], MessageKey>;
 
-const REVIEW_LABEL_KEYS: Partial<Record<MergeBoxPR["review"]["decision"], MessageKey>> = {
+export const REVIEW_LABEL_KEYS: Partial<Record<MergeBoxPR["review"]["decision"], MessageKey>> = {
 	approved: "pr.review.approved",
 	changes_requested: "pr.review.changesRequested",
 	review_required: "pr.review.pending",
@@ -256,9 +260,6 @@ const PullRequestMergeBox = memo(function PullRequestMergeBox({
 	// Merged and closed PRs are history: they fold to their header.
 	const [open, setOpen] = useState(!settled);
 	const merge = usePullRequestMerge({ cloudOrgId, hostId, pr, sessionId });
-	const summary = checksSummary(pr);
-	const groups = groupChecks(prCheckSet(pr).checks);
-	const verdict = mergeVerdict(pr);
 	const href = prBrowserUrl(pr);
 	const observedAt = prObservedAt(pr);
 	const reviewKey = settled ? undefined : REVIEW_LABEL_KEYS[pr.review.decision];
@@ -325,17 +326,58 @@ const PullRequestMergeBox = memo(function PullRequestMergeBox({
 				</div>
 			</div>
 			{open ? (
-				<div className="divide-y divide-border border-t border-border" id={bodyId}>
-					<ChecksSummaryRow detailsLoaded={detailsLoaded} pr={pr} summary={summary} />
-					{groups.map((group) => (
-						<CheckGroupSection group={group} key={group.key} now={now} onFix={settled ? undefined : onFix} pr={pr} />
-					))}
-					<MergeStateRow error={merge.error} onFix={onFix} pr={pr} verdict={verdict} />
-				</div>
+				<PullRequestMergeBoxBody
+					className="border-t border-border"
+					detailsLoaded={detailsLoaded}
+					id={bodyId}
+					mergeError={merge.error}
+					now={now}
+					onFix={onFix}
+					pr={pr}
+				/>
 			) : null}
 		</article>
 	);
 });
+
+/**
+ * The merge box below its header: where the checks are, each group of them, and
+ * whether the PR can merge. The Pull requests tab and the PRs page share it.
+ */
+export function PullRequestMergeBoxBody({
+	className,
+	detailsLoaded,
+	id,
+	mergeError,
+	now,
+	onFix,
+	pr,
+}: {
+	className?: string;
+	/** The full summary arrived; until then only the session's PR facts are known. */
+	detailsLoaded: boolean;
+	id?: string;
+	/** Why the last merge attempt failed, from the shared merge action. */
+	mergeError: string | null;
+	now: number;
+	/** Starts a "Fix this" draft. Absent where no composer can take one. */
+	onFix?: (prompt: string) => void;
+	pr: MergeBoxPR;
+}) {
+	const settled = prIsSettled(pr);
+	const summary = checksSummary(pr);
+	const groups = groupChecks(prCheckSet(pr).checks);
+	const verdict = mergeVerdict(pr);
+	return (
+		<div className={cn("divide-y divide-border", className)} data-testid="pr-merge-box-body" id={id}>
+			<ChecksSummaryRow detailsLoaded={detailsLoaded} pr={pr} summary={summary} />
+			{groups.map((group) => (
+				<CheckGroupSection group={group} key={group.key} now={now} onFix={settled ? undefined : onFix} pr={pr} />
+			))}
+			<MergeStateRow error={mergeError} onFix={onFix} pr={pr} verdict={verdict} />
+		</div>
+	);
+}
 
 const PR_GLYPH_CLASS: Record<PRGlyphTone, string> = {
 	merged: "text-status-merged",
@@ -348,11 +390,11 @@ const PR_GLYPH_CLASS: Record<PRGlyphTone, string> = {
 	neutral: "text-muted-foreground",
 };
 
-function PRGlyph({ state, tone }: { state: MergeBoxPR["state"]; tone: PRGlyphTone }) {
+export function PRGlyph({ className: slotClassName, state, tone }: { className?: string; state: MergeBoxPR["state"]; tone: PRGlyphTone }) {
 	const { t } = useTranslation();
 	const className = cn("size-4", PR_GLYPH_CLASS[tone]);
 	return (
-		<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center" data-testid="pr-glyph" data-tone={tone}>
+		<span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center", slotClassName)} data-testid="pr-glyph" data-tone={tone}>
 			{state === "merged" ? (
 				<GitMerge aria-hidden="true" className={className} />
 			) : state === "closed" ? (
@@ -367,7 +409,7 @@ function PRGlyph({ state, tone }: { state: MergeBoxPR["state"]; tone: PRGlyphTon
 	);
 }
 
-const HEADLINE_KEYS = {
+export const HEADLINE_KEYS = {
 	failing: "prMergeBox.checks.failing",
 	running: "prMergeBox.checks.running",
 	passed: "prMergeBox.checks.passed",
@@ -375,12 +417,19 @@ const HEADLINE_KEYS = {
 	unknown: "prMergeBox.checks.unknown",
 } as const satisfies Record<ChecksHeadline, MessageKey>;
 
-const COUNT_KEYS = {
+export const COUNT_KEYS = {
 	failing: "prMergeBox.count.failing",
 	running: "prMergeBox.count.running",
 	skipped: "prMergeBox.count.skipped",
 	passed: "prMergeBox.count.passed",
 } as const satisfies Record<CheckGroupKey, PluralMessageKey>;
+
+/** "1 failing, 8 skipped, 6 successful", or empty when no check is known. */
+export function checkCountsText(t: TFunction, summary: Pick<ReturnType<typeof checksSummary>, "counts">): string {
+	return checkCountParts(summary.counts)
+		.map((part) => t(COUNT_KEYS[part.key], { count: part.count }))
+		.join(t("prMergeBox.count.separator"));
+}
 
 function ChecksSummaryRow({
 	detailsLoaded,
@@ -392,9 +441,7 @@ function ChecksSummaryRow({
 	summary: ReturnType<typeof checksSummary>;
 }) {
 	const { t } = useTranslation();
-	const counts = checkCountParts(summary.counts)
-		.map((part) => t(COUNT_KEYS[part.key], { count: part.count }))
-		.join(t("prMergeBox.count.separator"));
+	const counts = checkCountsText(t, summary);
 	const checksUrl = prChecksUrl(pr);
 	return (
 		<div className="flex min-w-0 items-start gap-2.5 px-3.5 py-2.5" data-headline={summary.headline} data-testid="pr-checks-summary">

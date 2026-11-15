@@ -688,6 +688,102 @@ func TestPersistentACPReplayAppliesAcceptedPermissionCommand(t *testing.T) {
 	}
 }
 
+// A turn paused on a question (Claude Code's AskUserQuestion) survives a daemon
+// restart: the host replays the unanswered elicitation, and the answer given to
+// the reattached daemon goes back on the provider's original request id.
+func TestPersistentACPReplayedQuestionAnswersTheWaitingRequest(t *testing.T) {
+	initialize, err := json.Marshal(acpsdk.InitializeResponse{
+		ProtocolVersion: acpsdk.ProtocolVersionNumber,
+		AgentCapabilities: acpsdk.AgentCapabilities{
+			SessionCapabilities: acpsdk.SessionCapabilities{Resume: &acpsdk.SessionResumeCapabilities{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := json.Marshal(acpsdk.NewSessionResponse{SessionId: "provider-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, host := net.Pipe()
+	t.Cleanup(func() { _ = host.Close() })
+	driver := New(Config{
+		Harness: domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{
+			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true,
+		},
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return &persistenthost.Transport{
+			Stdin: daemon, Stdout: daemon, Reconnected: true,
+			ACPState: &persistenthost.ACPState{
+				InitializeResult: initialize, SessionResult: session,
+				SessionID: "provider-session", ActivePrompt: true,
+			},
+		}, nil
+	}
+	opened, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-session", DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
+		ProviderConversationID: "provider-session", ProviderScopeID: "scope",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	conv := opened.(*conversation)
+	t.Cleanup(func() { _ = conv.Close() })
+	if err := conv.ActivateLiveReconnect(context.Background(), "durable-turn"); err != nil {
+		t.Fatalf("ActivateLiveReconnect: %v", err)
+	}
+	go func() {
+		_, _ = fmt.Fprintln(host, `{"jsonrpc":"2.0","id":"question-1","method":"elicitation/create","params":{"_meta":{"ao.persistentRequestId":"acp-request:host:2"},"mode":"form","message":"Please answer the following questions.","requestedSchema":{"type":"object","properties":{"question_0":{"type":"string"}}}}}`)
+	}()
+
+	_ = nextEvent(t, conv.Events()) // controller.ready
+	requested := nextEvent(t, conv.Events())
+	if requested.Kind != ports.ChatEventInputRequested || requested.RequestID != "acp-request:host:2" ||
+		requested.ProviderTurnID != "durable-turn" {
+		t.Fatalf("replayed question = %#v", requested)
+	}
+
+	providerResponse := make(chan []byte, 1)
+	go func() {
+		reader := bufio.NewReader(host)
+		command, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var call struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.Unmarshal(command, &call) != nil || call.Method != persistenthost.ACPInteractionCommandMethod {
+			providerResponse <- command
+			return
+		}
+		_, _ = fmt.Fprintf(host, `{"jsonrpc":"2.0","id":%s,"result":{"eventId":"acp-host:9"}}`+"\n", call.ID)
+		response, _ := reader.ReadBytes('\n')
+		providerResponse <- response
+	}()
+	if err := conv.ResolveInput(context.Background(), requested.RequestID, ports.ChatInputResponse{
+		Action: ports.ChatInputActionAccept, Content: map[string]any{"question_0": "ENG-1837"},
+	}); err != nil {
+		t.Fatalf("ResolveInput: %v", err)
+	}
+	select {
+	case response := <-providerResponse:
+		if !bytes.Contains(response, []byte(`"id":"question-1"`)) ||
+			!bytes.Contains(response, []byte(`"action":"accept"`)) ||
+			!bytes.Contains(response, []byte(`"question_0":"ENG-1837"`)) {
+			t.Fatalf("provider question response = %s", response)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the answer never reached the waiting provider request")
+	}
+}
+
 func TestPersistentACPReconnectAcknowledgesAlreadyCommittedPrompt(t *testing.T) {
 	initialize, err := json.Marshal(acpsdk.InitializeResponse{
 		ProtocolVersion: acpsdk.ProtocolVersionNumber,
@@ -822,6 +918,7 @@ type fakeAgent struct {
 	options             map[string]string
 	newConfig           []acpsdk.SessionConfigOption
 	setConfig           []acpsdk.SessionConfigOption
+	resumeConfig        []acpsdk.SessionConfigOption
 	setCalls            int
 	steering            bool
 	steerText           string
@@ -833,7 +930,13 @@ type fakeAgent struct {
 	// subagentControl advertises AO's claude-agent-acp subagent extension.
 	subagentControl bool
 	subagentCalls   []fakeExtensionCall
-	subagentErr     error
+	// mcpControl advertises AO's claude-agent-acp MCP extension.
+	mcpControl          bool
+	mcpCalls            []fakeExtensionCall
+	mcpServers          []mcpBridgeServer
+	mcpReconnectRefusal string
+	mcpApplyErrors      map[string]string
+	subagentErr         error
 }
 
 type fakeExtensionCall struct {
@@ -990,6 +1093,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 	if a.steering {
 		meta["steering"] = map[string]any{"supported": true}
 	}
+	if a.mcpControl {
+		meta[mcpControlExtension] = map[string]any{"supported": true}
+	}
 	if a.subagentControl {
 		meta[subagentControlExtension] = map[string]any{
 			"supported": true, "messageMethod": subagentMessageMethod, "stopMethod": subagentStopMethod,
@@ -1014,6 +1120,9 @@ func (a *fakeAgent) Initialize(_ context.Context, params acpsdk.InitializeReques
 func (a *fakeAgent) HandleExtensionMethod(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	if method == subagentMessageMethod || method == subagentStopMethod {
 		return a.handleSubagentExtension(method, raw)
+	}
+	if method == mcpStatusMethod || method == mcpReconnectMethod || method == mcpApplyMethod {
+		return a.handleMCPExtension(method, raw)
 	}
 	if method != steeringMethod {
 		return nil, acpsdk.NewMethodNotFound(method)
@@ -1086,8 +1195,9 @@ func (a *fakeAgent) ResumeSession(_ context.Context, params acpsdk.ResumeSession
 	a.mu.Lock()
 	a.resumeParams = params
 	a.resumeCalls++
+	resumed := append([]acpsdk.SessionConfigOption(nil), a.resumeConfig...)
 	a.mu.Unlock()
-	return acpsdk.ResumeSessionResponse{}, nil
+	return acpsdk.ResumeSessionResponse{ConfigOptions: resumed}, nil
 }
 func (a *fakeAgent) UnstableForkSession(ctx context.Context, params acpsdk.UnstableForkSessionRequest) (acpsdk.UnstableForkSessionResponse, error) {
 	a.mu.Lock()
@@ -2484,7 +2594,7 @@ func TestACPDriverUsesProviderPermissionPolicyBeforeParking(t *testing.T) {
 	}
 
 	conv := opened.(*conversation)
-	if err := conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{}); err != nil {
+	if _, err := conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{}); err != nil {
 		t.Fatalf("apply empty settings: %v", err)
 	}
 	conv.mu.Lock()
@@ -2539,7 +2649,7 @@ func TestACPDriverKeepsPermissionPolicyWhenLaterTurnSettingFails(t *testing.T) {
 	agent.configErr = errors.New("set model failed")
 	agent.mu.Unlock()
 	conv := opened.(*conversation)
-	err = conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{
+	_, err = conv.applyTurnSettings(context.Background(), ports.ChatTurnSettings{
 		Approval: ports.PermissionModeAcceptEdits,
 		Model:    "cursor-model",
 	})
@@ -5422,5 +5532,103 @@ func TestACPHistoryReplaySplitsIDLessPromptsAfterAnswers(t *testing.T) {
 	want := []turn{{"Hi how are you", "Doing well."}, {"What did I ask?", "You asked how I am."}}
 	if !reflect.DeepEqual(turns, want) {
 		t.Fatalf("replayed turns = %+v, want %+v", turns, want)
+	}
+}
+
+// A model change the agent refuses after session/load (Claude Code checks one
+// against the API, and an account at its usage limit answers 429) must not
+// throw the loaded conversation away: the next send applies its settings again
+// and reports the error there.
+func TestACPDriverResumeKeepsSessionWhenTurnSettingIsRefused(t *testing.T) {
+	catalog := []acpsdk.SessionConfigOption{selectConfigOption("model", "Model", "", "fable-5-2", "fable-5-2", "fable")}
+	agent := &fakeAgent{
+		newConfig: catalog,
+		configErr: errors.New("API error: 429 This request would exceed your account's rate limit · model not changed"),
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessCopilot,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+			if settings.Model == "" {
+				return nil
+			}
+			return []SessionOption{{ID: "model", Value: settings.Model}}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	resumed, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: domain.SessionID("sess1"), WorkspacePath: t.TempDir(),
+		ProviderConversationID: "claude-session-1", Model: "fable",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v, want the loaded session kept", err)
+	}
+	defer resumed.Close()
+	agent.mu.Lock()
+	calls := agent.setCalls
+	agent.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("Resume never asked the agent for the saved model")
+	}
+	if _, err := resumed.(*conversation).applyTurnSettings(context.Background(), ports.ChatTurnSettings{Model: "fable"}); err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("next send's settings error = %v, want the agent's refusal", err)
+	}
+}
+
+// Claude Code checks a model change against the API. An account at its usage
+// limit or signed out refuses that check, and failing the send left no turn for
+// AO's account switch or sign-in prompt to act on. The message goes out with the
+// current model instead; any other refusal still stops it.
+func TestACPSendTurnGoesOutWhenTheAccountRefusesTheModelCheck(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantSent bool
+	}{
+		{"usage limit", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed",
+		}}, true},
+		{"signed out", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "Unable to validate model: OAuth refresh token is no longer valid; run /login to re-authenticate",
+		}}, true},
+		{"model refused", &acpsdk.RequestError{Code: -32603, Message: "Internal error", Data: map[string]any{
+			"details": "model not available for this organization",
+		}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &fakeAgent{}
+			driver := New(Config{
+				Harness: domain.HarnessCursor,
+				Probe:   func(context.Context) error { return nil },
+				Launch:  func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+				SessionOptions: func(settings ports.ChatTurnSettings) []SessionOption {
+					if settings.Model == "" {
+						return nil
+					}
+					return []SessionOption{{ID: "model", Value: settings.Model}}
+				},
+			}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			driver.useTestProcess(fakeSpawn(agent))
+			opened, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer opened.Close()
+			_ = nextEvent(t, opened.Events())
+			agent.mu.Lock()
+			agent.configErr = tt.err
+			agent.mu.Unlock()
+
+			_, err = opened.(*conversation).SendTurn(context.Background(), ports.ChatUserMessage{
+				Text: "hi", Settings: ports.ChatTurnSettings{Model: "fable"},
+			})
+			if sent := err == nil; sent != tt.wantSent {
+				t.Fatalf("SendTurn err = %v, want sent %v", err, tt.wantSent)
+			}
+		})
 	}
 }

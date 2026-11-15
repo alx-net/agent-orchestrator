@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -123,6 +123,8 @@ async function waitForTaskReady() {
 
 beforeEach(() => {
 	useUiStore.setState({ developerMode: true, remoteHosts: true });
+	// Every composer prepares a workspace, Scratchpad's included.
+	h.post.mockResolvedValue({ data: {} });
 	h.get.mockImplementation(async (path: string) => {
 		if (path.includes("/models")) {
 			return {
@@ -395,6 +397,7 @@ describe("TaskComposer", () => {
 			}
 			return { data: { status: "ok", project: { config: {} } } };
 		});
+		h.post.mockResolvedValueOnce({ data: {} }); // Scratchpad's preparation
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-remembered" } } });
 
 		const first = render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
@@ -466,6 +469,7 @@ describe("TaskComposer", () => {
 			}
 			return { data: { status: "ok", project: { config: {} } } };
 		});
+		h.post.mockResolvedValueOnce({ data: {} }); // Scratchpad's preparation
 		h.post.mockResolvedValueOnce({ error: { code: "SPAWN_FAILED", message: "Could not start task" } });
 
 		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
@@ -532,6 +536,7 @@ describe("TaskComposer", () => {
 	it("starts a standalone worker without loading or sending a project", async () => {
 		const onCreated = vi.fn();
 		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.post.mockResolvedValueOnce({ data: {} }); // Scratchpad's preparation
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
 
 		render(
@@ -555,7 +560,7 @@ describe("TaskComposer", () => {
 				}),
 			}),
 		);
-		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("projectId");
+		expect(h.post.mock.calls.find(([path]) => path === "/api/v1/sessions")?.[1].body).not.toHaveProperty("projectId");
 		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
 	});
 
@@ -1585,6 +1590,7 @@ describe("TaskComposer", () => {
 			return { data: { status: "ok", project: { config: {} } } };
 		});
 		h.post
+			.mockResolvedValueOnce({ data: {} }) // Scratchpad's preparation
 			.mockResolvedValueOnce({
 				error: {
 					code: "SESSION_MODE_UNSUPPORTED",
@@ -1602,8 +1608,8 @@ describe("TaskComposer", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "Start without approvals" }));
 
 		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("sess-unreal"));
-		expect(h.post.mock.calls[0][1].body).toMatchObject({ harness: "unreal-agent", mode: "chat" });
-		expect(h.post.mock.calls[1][1].body).toMatchObject({
+		expect(h.post.mock.calls[1][1].body).toMatchObject({ harness: "unreal-agent", mode: "chat" });
+		expect(h.post.mock.calls[2][1].body).toMatchObject({
 			harness: "unreal-agent", mode: "chat", approvalMode: "bypass-permissions",
 		});
 	});
@@ -2545,6 +2551,94 @@ describe("useTaskLaunch on the new chat page", () => {
 		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
 		render(<Wrap><LoadError /></Wrap>);
 		await screen.findByText("ready");
+	});
+
+	it("ignores a project failure cached under Scratchpad's id", async () => {
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		// Another surface that once asked the daemon for this id left its 400 in the cache.
+		await queryClient.prefetchQuery({
+			queryKey: ["project", "__standalone__"],
+			queryFn: async () => { throw new Error("Project id failed storage-path validation"); },
+		});
+		expect(queryClient.getQueryState(["project", "__standalone__"])?.error).toBeInstanceOf(Error);
+		render(<Wrap queryClient={queryClient}><LoadError /></Wrap>);
+		await screen.findByText("ready");
+		expect(screen.queryByText("Project id failed storage-path validation")).not.toBeInTheDocument();
+		expect(h.get).not.toHaveBeenCalledWith("/api/v1/projects/{id}", expect.anything());
+	});
+
+	describe("Scratchpad's prepared folder", () => {
+		// Unmount before the mocks reset, so this folder's cancel does not reach the next test.
+		afterEach(cleanup);
+		let task!: ReturnType<typeof useTaskLaunch>;
+		function Launcher() {
+			task = useTaskLaunch({ projectId: "__standalone__" });
+			return <p>{task.preparedSessionId || "unprepared"}{task.canSubmit ? " ready" : ""}</p>;
+		}
+		const prepareWith = (answer: () => unknown) => {
+			h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+			h.delete.mockResolvedValue({});
+			h.post.mockImplementation(async (path: string) => {
+				if (path === "/api/v1/standalone/tasks/prepare") return answer();
+				if (path === "/api/v1/sessions") return { data: { session: { id: "standalone-7" } } };
+				return { data: {}, response: { status: 204 } };
+			});
+		};
+
+		it("prepares a folder and claims it with the send", async () => {
+			prepareWith(() => ({ data: { taskPreparation: "standalone-7" } }));
+			render(<Wrap><Launcher /></Wrap>);
+			await screen.findByText("standalone-7 ready");
+			expect(h.post).not.toHaveBeenCalledWith("/api/v1/projects/{id}/tasks/prepare", expect.anything());
+
+			await act(async () => { await expect(task.launch("Read the screenshot")).resolves.toBe("standalone-7"); });
+			expect(h.post).toHaveBeenCalledWith("/api/v1/sessions", expect.objectContaining({
+				body: expect.objectContaining({ taskPreparation: "standalone-7" }),
+			}));
+		});
+
+		it("gives the folder back when the page goes away", async () => {
+			prepareWith(() => ({ data: { taskPreparation: "standalone-7" } }));
+			const { unmount } = render(<Wrap><Launcher /></Wrap>);
+			await screen.findByText("standalone-7 ready");
+			unmount();
+			expect(h.delete).toHaveBeenCalledWith("/api/v1/task-preparations/{token}", { params: { path: { token: "standalone-7" } } });
+		});
+
+		it("still starts a task without a token when preparing fails", async () => {
+			prepareWith(() => { throw new Error("offline"); });
+			render(<Wrap><Launcher /></Wrap>);
+			await screen.findByText("unprepared ready");
+
+			await act(async () => { await task.launch("Read the screenshot"); });
+			const create = h.post.mock.calls.find(([path]) => path === "/api/v1/sessions");
+			expect(create?.[1].body).not.toHaveProperty("taskPreparation");
+		});
+
+		it("holds the folder while the page is open and prepares again once it is gone", async () => {
+			let token = "standalone-7";
+			prepareWith(() => ({ data: { taskPreparation: token } }));
+			const everyMinute = vi.spyOn(globalThis, "setInterval");
+			try {
+				render(<Wrap><Launcher /></Wrap>);
+				await screen.findByText("standalone-7 ready");
+				const renew = everyMinute.mock.calls.find(([, ms]) => ms === 60_000)?.[0] as () => void;
+				expect(renew).toBeTypeOf("function");
+
+				await act(async () => { renew(); });
+				expect(h.post).toHaveBeenCalledWith("/api/v1/task-preparations/{token}/renew", { params: { path: { token: "standalone-7" } } });
+				expect(screen.getByText("standalone-7 ready")).toBeInTheDocument();
+
+				// The daemon restarted: this token is gone, so the page takes a new one.
+				token = "standalone-8";
+				h.post.mockImplementationOnce(async () => ({ response: { status: 404 } }));
+				await act(async () => { renew(); });
+				await screen.findByText("standalone-8 ready");
+			} finally {
+				everyMinute.mockRestore();
+			}
+		});
 	});
 
 	it("keeps the prepared worktree a send in flight will claim when the page goes away", async () => {

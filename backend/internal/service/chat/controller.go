@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -147,6 +148,9 @@ type Store interface {
 	ReconcileConversationAuthentication(ctx context.Context, conversationID, generation, providerTurnID string, now time.Time) (*domain.ConversationAccount, error)
 	RecordThreadState(ctx context.Context, conversationID string, state domain.ConversationThreadState) error
 	RecordMCPServers(ctx context.Context, conversationID string, servers []domain.ConversationMCPServer) error
+	// WithConversationWriter runs fn holding the store's writer; fn's own writes
+	// reuse it. A provider event projection always holds it first.
+	WithConversationWriter(ctx context.Context, fn func(context.Context) error) error
 
 	UpsertActivity(ctx context.Context, conversationID, providerTurnID string, activity domain.ConversationActivity, now time.Time) error
 	MarkCompacted(ctx context.Context, conversationID string, at time.Time) error
@@ -212,6 +216,9 @@ type Controller struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// onUsageLimit hears of a primary turn the provider refused for the
+	// account's usage limit, by its provider turn id. It must not block.
+	onUsageLimit func(domain.SessionID, string)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -285,6 +292,12 @@ type Controller struct {
 	preserveProviderOnStop bool
 	transportInterrupted   bool
 	explicitClose          bool
+	// reattached is set before start for a controller adopted from a provider
+	// host that was already running. replayFailed records that such a
+	// controller could not project the host's output: adopting that host again
+	// replays the same output and fails the same way.
+	reattached   bool
+	replayFailed bool
 
 	// account, threadState and mcpServers are merged here before being written,
 	// because the provider reports each of them in pieces: account/updated carries
@@ -379,6 +392,7 @@ func newController(
 	now Clock,
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
+	onUsageLimit func(domain.SessionID, string),
 	reader SnapshotReader,
 ) *Controller {
 	c := &Controller{
@@ -396,6 +410,7 @@ func newController(
 		now:                    now,
 		onAccountChanged:       onAccountChanged,
 		onCodexCapacityChanged: onCodexCapacityChanged,
+		onUsageLimit:           onUsageLimit,
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
@@ -1747,6 +1762,27 @@ func (c *Controller) SetSettings(ctx context.Context, settings domain.Conversati
 	return nil
 }
 
+// adoptProviderModel saves the provider's own id for a model alias a turn was
+// just sent with ("fable" for claude-fable-5-2), so the saved choice converges
+// on full ids and the next send has nothing to translate. A choice the user
+// made or is making meanwhile wins: a queued turn can dispatch from the event
+// loop, which must not wait on a provider settings change. A skipped or failed
+// save only means translating again on the next send.
+func (c *Controller) adoptProviderModel(ctx context.Context, requested, model string) {
+	if !c.configMu.TryLock() {
+		return
+	}
+	defer c.configMu.Unlock()
+	settings := c.Settings()
+	if settings.Model != requested {
+		return
+	}
+	settings.Model = model
+	if err := c.SetSettings(ctx, settings); err != nil {
+		c.log.Warn("chat: could not save the provider's id for the model", "session", c.sessionID, "model", model, "error", err)
+	}
+}
+
 // turnSettings converts the stored choices into what a driver takes per turn.
 func (c *Controller) turnSettings() ports.ChatTurnSettings {
 	current := c.Settings()
@@ -1914,6 +1950,9 @@ func (c *Controller) dispatch(
 			}
 			return domain.ConversationTurn{}, fmt.Errorf("start turn: %w", err)
 		}
+	}
+	if ref.Model != "" && ref.Model != msg.Settings.Model {
+		c.adoptProviderModel(ctx, msg.Settings.Model, ref.Model)
 	}
 
 	return domain.ConversationTurn{
@@ -2893,6 +2932,7 @@ func (c *Controller) projectUnit(
 			"session", c.sessionID, "kind", event.Kind, "error", err)
 		c.mu.Lock()
 		c.preserveProviderOnStop = true
+		c.replayFailed = c.reattached
 		c.state = ports.ChatControllerStopped
 		c.mu.Unlock()
 		if lifecycle {
@@ -3304,6 +3344,9 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		return c.applyThreadState(ctx, *event.ThreadState, now)
 
 	case ports.ChatEventMCPServers:
+		if event.MCPServersComplete {
+			return c.replaceMCPServers(ctx, event.MCPServers)
+		}
 		if len(event.MCPServers) == 0 {
 			return nil
 		}
@@ -3481,6 +3524,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
 		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
+		// A driver marks a usage limit its native metadata proves; known wording
+		// still counts for a driver that cannot.
+		if c.onUsageLimit != nil && c.reviewID == "" && event.Err != nil && event.ProviderTurnID != "" &&
+			settledTurnState(event) == domain.TurnStateFailed &&
+			(errors.Is(event.Err, ports.ErrChatUsageLimit) || domain.ParseConversationUsageLimit(event.Err.Error(), &now) != nil) {
+			c.onUsageLimit(c.sessionID, event.ProviderTurnID)
+		}
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:
@@ -3748,12 +3798,7 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 		if _, seen := c.mcpServers[update.Name]; !seen {
 			c.mcpServerOrder = append(c.mcpServerOrder, update.Name)
 		}
-		c.mcpServers[update.Name] = domain.ConversationMCPServer{
-			Name:          update.Name,
-			Status:        update.Status,
-			Error:         update.Error,
-			FailureReason: update.FailureReason,
-		}
+		c.mcpServers[update.Name] = conversationMCPServer(update)
 		c.mcpServerRevision++
 		c.mcpServerSeenRevision[update.Name] = c.mcpServerRevision
 	}
@@ -3761,6 +3806,142 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 	c.mu.Unlock()
 
 	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
+}
+
+// recordMCPInventory saves an inventory read outside the event projector, on an
+// HTTP request. It takes the store's writer before mcpPersistMu, the order the
+// projector takes them in. Taking them the other way round deadlocked against a
+// projection: each held one and waited for the other, and every store write in
+// the daemon queued behind them.
+func (c *Controller) recordMCPInventory(ctx context.Context, servers []ports.ChatMCPServer) error {
+	return c.store.WithConversationWriter(ctx, func(ctx context.Context) error {
+		return c.replaceMCPServers(ctx, servers)
+	})
+}
+
+// replaceMCPServers records the provider's whole inventory: a server it no
+// longer lists is gone. Known servers keep their place in the list. An unchanged
+// inventory writes nothing: views poll this, and each write wakes every client.
+func (c *Controller) replaceMCPServers(ctx context.Context, servers []ports.ChatMCPServer) error {
+	c.mcpPersistMu.Lock()
+	defer c.mcpPersistMu.Unlock()
+
+	c.mu.Lock()
+	before := c.mcpServersLocked()
+	fresh := make(map[string]domain.ConversationMCPServer, len(servers))
+	for _, server := range servers {
+		if server.Name != "" {
+			fresh[server.Name] = conversationMCPServer(server)
+		}
+	}
+	order := make([]string, 0, len(fresh))
+	for _, name := range c.mcpServerOrder {
+		if _, ok := fresh[name]; ok {
+			order = append(order, name)
+		}
+	}
+	for _, server := range servers {
+		if server.Name == "" {
+			continue
+		}
+		if _, known := c.mcpServers[server.Name]; !known {
+			order = append(order, server.Name)
+		}
+	}
+	c.mcpServerRevision++
+	c.mcpServers = fresh
+	c.mcpServerOrder = order
+	c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
+	for name := range fresh {
+		c.mcpServerSeenRevision[name] = c.mcpServerRevision
+	}
+	recorded := c.mcpServersLocked()
+	c.mu.Unlock()
+
+	if reflect.DeepEqual(before, recorded) {
+		return nil
+	}
+	return c.store.RecordMCPServers(ctx, c.conversation.ID, recorded)
+}
+
+func conversationMCPServer(server ports.ChatMCPServer) domain.ConversationMCPServer {
+	return domain.ConversationMCPServer{
+		Name:          server.Name,
+		Status:        server.Status,
+		Error:         server.Error,
+		FailureReason: server.FailureReason,
+		ToolCount:     server.ToolCount,
+		Scope:         server.Scope,
+	}
+}
+
+// mcpController is the running agent's per-server control, when it has one.
+func (c *Controller) mcpController() (ports.ChatMCPController, bool) {
+	controller, ok := c.conv.(ports.ChatMCPController)
+	return controller, ok && c.Capabilities().Has(ports.ChatCapabilityMCPReload)
+}
+
+// LiveMCPServers reads the servers the running agent has right now.
+func (c *Controller) LiveMCPServers(ctx context.Context) ([]domain.ConversationMCPServer, error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, ErrMCPReloadUnsupported
+	}
+	servers, err := controller.MCPServerStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.recordMCPInventory(ctx, servers); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), nil
+}
+
+// ReconnectMCPServer has the running agent connect again to one server. Unlike
+// ReloadMCPServers it does not wait for the turn: an agent asking for its own
+// sign-in is mid-turn by definition, and only this server's connection changes.
+// reason is the provider's word when it refused.
+func (c *Controller) ReconnectMCPServer(ctx context.Context, name string) (servers []domain.ConversationMCPServer, reason string, err error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, "", ErrMCPReloadUnsupported
+	}
+	if c.handoffActive() {
+		return nil, "", ErrControllerHandoff
+	}
+	result, err := controller.ReconnectMCPServer(ctx, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.recordMCPInventory(ctx, result.Servers); err != nil {
+		return nil, "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), result.Error, nil
+}
+
+// ApplyMCPServers adds, replaces or drops servers in the running agent.
+func (c *Controller) ApplyMCPServers(ctx context.Context, change ports.ChatMCPChange) ([]domain.ConversationMCPServer, map[string]string, error) {
+	controller, ok := c.mcpController()
+	if !ok {
+		return nil, nil, ErrMCPReloadUnsupported
+	}
+	if c.handoffActive() {
+		return nil, nil, ErrControllerHandoff
+	}
+	result, err := controller.ApplyMCPServers(ctx, change)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.recordMCPInventory(ctx, result.Servers); err != nil {
+		return nil, nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mcpServersLocked(), result.Errors, nil
 }
 
 func (c *Controller) mcpServersLocked() []domain.ConversationMCPServer {
@@ -3786,7 +3967,7 @@ var ErrMCPReloadUnsupported = errors.New("chat driver cannot reload MCP servers"
 // their request failed for a reason they caused.
 func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.ConversationMCPServer, error) {
 	reloader, ok := c.conv.(ports.ChatMCPReloader)
-	if !ok {
+	if !ok || !c.Capabilities().Has(ports.ChatCapabilityMCPReload) {
 		return nil, ErrMCPReloadUnsupported
 	}
 
@@ -3823,48 +4004,47 @@ func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.Conversatio
 	// positively initialized inventory entries as ready. Holding mcpPersistMu through
 	// the write keeps a notification that raced the reload from persisting stale state
 	// after this replacement.
-	c.mcpPersistMu.Lock()
-	defer c.mcpPersistMu.Unlock()
-	c.mu.Lock()
-	fresh := make(map[string]domain.ConversationMCPServer)
-	freshOrder := make([]string, 0, len(c.mcpServerOrder))
-	for _, name := range c.mcpServerOrder {
-		if c.mcpServerSeenRevision[name] > reloadRevision {
-			fresh[name] = c.mcpServers[name]
-			freshOrder = append(freshOrder, name)
+	// Under the store's writer first, as recordMCPInventory explains.
+	var reconciled []domain.ConversationMCPServer
+	err = c.store.WithConversationWriter(ctx, func(ctx context.Context) error {
+		c.mcpPersistMu.Lock()
+		defer c.mcpPersistMu.Unlock()
+		c.mu.Lock()
+		fresh := make(map[string]domain.ConversationMCPServer)
+		freshOrder := make([]string, 0, len(c.mcpServerOrder))
+		for _, name := range c.mcpServerOrder {
+			if c.mcpServerSeenRevision[name] > reloadRevision {
+				fresh[name] = c.mcpServers[name]
+				freshOrder = append(freshOrder, name)
+			}
 		}
-	}
-	for _, server := range result.Servers {
-		if server.Name == "" {
-			continue
+		for _, server := range result.Servers {
+			if server.Name == "" {
+				continue
+			}
+			current, seen := fresh[server.Name]
+			if seen && current.Status != "ready" {
+				// The status list is a snapshot, while this non-ready state came from
+				// a startup notification observed after the reload began. Keep the
+				// newer failure/transition instead of promoting it back to ready.
+				continue
+			}
+			if !seen {
+				freshOrder = append(freshOrder, server.Name)
+			}
+			fresh[server.Name] = conversationMCPServer(server)
 		}
-		current, seen := fresh[server.Name]
-		if seen && current.Status != "ready" {
-			// The status list is a snapshot, while this non-ready state came from
-			// a startup notification observed after the reload began. Keep the
-			// newer failure/transition instead of promoting it back to ready.
-			continue
+		c.mcpServers = fresh
+		c.mcpServerOrder = freshOrder
+		c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
+		for name := range fresh {
+			c.mcpServerSeenRevision[name] = c.mcpServerRevision
 		}
-		if !seen {
-			freshOrder = append(freshOrder, server.Name)
-		}
-		fresh[server.Name] = domain.ConversationMCPServer{
-			Name:          server.Name,
-			Status:        server.Status,
-			Error:         server.Error,
-			FailureReason: server.FailureReason,
-		}
-	}
-	c.mcpServers = fresh
-	c.mcpServerOrder = freshOrder
-	c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
-	for name := range fresh {
-		c.mcpServerSeenRevision[name] = c.mcpServerRevision
-	}
-	reconciled := c.mcpServersLocked()
-	c.mu.Unlock()
-
-	if err := c.store.RecordMCPServers(ctx, c.conversation.ID, reconciled); err != nil {
+		reconciled = c.mcpServersLocked()
+		c.mu.Unlock()
+		return c.store.RecordMCPServers(ctx, c.conversation.ID, reconciled)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return reconciled, nil

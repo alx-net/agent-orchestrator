@@ -1366,6 +1366,22 @@ UPDATE conversation_activities
 SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
 WHERE conversation_id = ? AND provider_item_id = ? AND status <> 'cancelled';
 
+-- A persistent provider host replays every request still awaiting an answer to
+-- the controller that reattaches to it. The previous controller already wrote
+-- that request's row, and request ids are unique, so the replay updates it.
+-- name: ConversationActivityExistsForRequest :one
+SELECT EXISTS(
+    SELECT 1
+    FROM conversation_activities
+    WHERE conversation_id = sqlc.arg(conversation_id)
+      AND request_id = sqlc.arg(request_id)
+);
+
+-- name: SettleConversationActivityByRequest :exec
+UPDATE conversation_activities
+SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
+WHERE conversation_id = ? AND request_id = ? AND status <> 'cancelled';
+
 -- Resolving an approval matches on the provider's request id, so a card the user
 -- left on screen cannot answer a request that replaced it.
 -- Merge the resolution into the provider payload so the offered decision kinds
@@ -1565,6 +1581,55 @@ WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
   ))
 ORDER BY conversation_activities.sequence;
 
+-- SelectConversationActivities without the command_output and streamed_text
+-- bodies. Chat start reconciles native history on kind, summary and detail only,
+-- and those bodies are most of a long conversation's bytes.
+-- name: SelectConversationActivitiesWithoutOutput :many
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = sqlc.arg(conversation_id)
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT conversation_activities.id,
+       conversation_activities.conversation_id,
+       conversation_activities.turn_id,
+       conversation_activities.sequence,
+       conversation_activities.revision,
+       conversation_activities.kind,
+       conversation_activities.status,
+       conversation_activities.summary,
+       conversation_activities.detail_json,
+       conversation_activities.request_id,
+       conversation_activities.provider_item_id,
+       conversation_activities.created_at,
+       conversation_activities.updated_at,
+       conversation_activities.command_output_truncated,
+       conversation_activities.streamed_text_truncated,
+       conversation_activities.branch_id
+FROM conversation_activities
+JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
+WHERE conversation_activities.conversation_id = sqlc.arg(conversation_id)
+  AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
+  AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (
+      SELECT discarded.id FROM conversation_turns AS discarded
+      WHERE discarded.conversation_id = sqlc.arg(conversation_id)
+        AND (
+          discarded.rolled_back_at IS NOT NULL
+          OR discarded.state = 'cancelled'
+        )
+  ))
+ORDER BY conversation_activities.sequence;
+
 -- name: SelectConversationActivitiesPage :many
 WITH RECURSIVE active_path(branch_id, max_sequence) AS (
     SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
@@ -1609,10 +1674,15 @@ LIMIT sqlc.arg(page_limit);
 -- part of the conversation title lifecycle; sessions is only the table the value
 -- lands in.
 -- name: ApplyConversationTitleToSession :execrows
+-- A session with a title area also admits the witness carrying that area's prefix,
+-- and the area itself is part of the guard: the caller composed the new label with
+-- the area it read, so a different area must not slip in between.
 UPDATE sessions
-SET display_name = ?, updated_at = ?
-WHERE id = ?
-  AND (display_name = '' OR display_name = ?);
+SET display_name = sqlc.arg(display_name), auto_title = sqlc.arg(auto_title), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id)
+  AND title_area IS sqlc.narg(title_area)
+  AND (display_name = '' OR display_name = sqlc.arg(applied_title)
+    OR display_name = sqlc.arg(prefixed_applied_title));
 
 -- The raw provider event archive. Append-only, and the only way to answer "what
 -- did the provider actually say" once a projection turns out to be wrong.

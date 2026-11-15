@@ -171,6 +171,8 @@ type AppSetting struct {
 	CloudOffering      bool
 	HarnessDefaults    string
 	VersionRefresh     bool
+	AccountAutoSwitch  bool
+	CompactAt          int64
 }
 
 type Automation struct {
@@ -427,6 +429,18 @@ type Cue struct {
 	Prompt    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type FyiMessage struct {
+	ID              int64
+	TargetSessionID string
+	SenderSessionID string
+	Message         string
+	CreatedAt       time.Time
+	DeliveryState   string
+	ClaimToken      string
+	ClaimedAt       sql.NullTime
+	AcknowledgedAt  sql.NullTime
 }
 
 type ManagedHarnessRelease struct {
@@ -743,6 +757,9 @@ type Session struct {
 	LaunchOptions                    string
 	BranchNaming                     bool
 	TemporaryBranch                  string
+	ParentSessionID                  sql.NullString
+	TitleArea                        sql.NullString
+	AutoTitle                        string
 }
 
 type SessionAgentAccount struct {
@@ -823,6 +840,27 @@ type SessionTerminalTurn struct {
 	AgentResponse   string
 	RequestedAt     time.Time
 	RespondedAt     sql.NullTime
+}
+
+type SessionWait struct {
+	ID               string
+	SessionID        string
+	ProjectID        string
+	Kind             string
+	Condition        string
+	PRNumber         int64
+	PRURL            string
+	Note             string
+	Baseline         string
+	CreatedAt        time.Time
+	FireAt           sql.NullTime
+	ExpiresAt        time.Time
+	State            string
+	Outcome          string
+	Message          string
+	ResolvedAt       sql.NullTime
+	DeliveryAttempts int64
+	LastError        string
 }
 
 type SessionWorktree struct {

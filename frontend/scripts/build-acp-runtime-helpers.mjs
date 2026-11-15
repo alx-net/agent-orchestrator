@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 
 const ROOT_BUILD_TOOLS = ["corepack", "corepack.cmd", "npm", "npm.cmd", "npx", "npx.cmd"];
 const BIN_BUILD_TOOLS = ["corepack", "npm", "npx"];
@@ -201,6 +201,51 @@ export function patchClaudeFoldedPromptSettlement(adapterPath) {
 }
 
 /**
+ * Merge a session's `settings` option with the model settings instead of
+ * replacing them.
+ *
+ * claude-agent-acp 0.70 turns CLAUDE_MODEL_CONFIG into the Agent SDK's
+ * `settings` option (Claude Code's --settings), unless the session's
+ * `_meta.claudeCode.options.settings` is set, which then replaces it. AO sends
+ * that option per session to decide where Claude Code compacts, because
+ * --settings outranks a repository's .claude/settings.json env and the process
+ * environment does not. Without this patch that choice would drop the
+ * availableModels list AO's model picker relies on.
+ */
+export function patchClaudeSessionSettings(adapterPath) {
+	const source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: merge session settings over the model settings.")) return false;
+	const original = [
+		"const configuredSettings = userProvidedOptions?.settings ??",
+		"            (modelConfig",
+		"                ? {",
+		"                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),",
+		"                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),",
+		"                }",
+		"                : undefined);",
+	].join("\n");
+	const at = source.indexOf(original);
+	if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+		throw new Error("claude-agent-acp settings option no longer matches AO's session settings patch");
+	}
+	const replacement = [
+		"// AO: merge session settings over the model settings.",
+		"        const modelSettings = modelConfig",
+		"            ? {",
+		"                ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),",
+		"                ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),",
+		"            }",
+		"            : undefined;",
+		"        const sessionSettings = userProvidedOptions?.settings;",
+		'        const configuredSettings = modelSettings && sessionSettings !== null && typeof sessionSettings === "object"',
+		"            ? { ...modelSettings, ...sessionSettings }",
+		"            : sessionSettings ?? modelSettings;",
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
  * Drop trailing-idle debt that can no longer be paid.
  *
  * claude-agent-acp 0.70 counts one owed `idle` per result and absorbs that many
@@ -234,6 +279,93 @@ export function patchClaudeStaleIdleDebt(adapterPath) {
 		'                                if (message.state === "idle") {',
 	].join("\n");
 	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
+ * Forward the structured cause of a terminal Claude failure on the AIR wire.
+ *
+ * claude-agent-acp 0.70 knows each failure's kind (quota_exhausted,
+ * rate_limited, auth_required, ...), the SDK's errorKind, and Claude Code's
+ * typed api_error (usage_limit_reached, ...), but sends AIR clients only a
+ * category, actions and display text. AO then had to tell a usage limit from a
+ * transient rate limit by wording that changes between Claude Code releases.
+ * This adds the three as optional sessionFailure fields; AO still falls back
+ * to the category and text when they are absent.
+ */
+export function patchClaudeFailureKinds(adapterPath) {
+	const extensionPath = join(dirname(adapterPath), "session-failure-extension.js");
+	let changed = false;
+
+	let extension = readFileSync(extensionPath, "utf8");
+	if (!extension.includes("kind: failure.kind")) {
+		const actions = [
+			"                    ...(failure.details ? { details: failure.details } : {}),",
+			"                    actions: failure.actions,",
+		].join("\n");
+		const at = extension.indexOf(actions);
+		if (at < 0 || extension.indexOf(actions, at + 1) >= 0) {
+			throw new Error("claude-agent-acp sessionFailureMeta no longer matches AO's failure-kind patch");
+		}
+		const forwarded = [
+			"                    ...(failure.details ? { details: failure.details } : {}),",
+			"                    ...(failure.kind ? { kind: failure.kind } : {}),",
+			"                    ...(failure.errorKind ? { errorKind: failure.errorKind } : {}),",
+			"                    ...(failure.apiError ? { apiError: failure.apiError } : {}),",
+			"                    actions: failure.actions,",
+		].join("\n");
+		extension = extension.slice(0, at) + forwarded + extension.slice(at + actions.length);
+		writeFileSync(extensionPath, extension);
+		changed = true;
+	}
+
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: forward the failure's structured cause.")) return changed;
+	const edits = [
+		["        let lastAssistantError;\n", "        let lastAssistantApiError;\n"],
+		["            lastAssistantError = undefined;\n", "            lastAssistantApiError = undefined;\n"],
+		[
+			[
+				"                            if (message.error) {",
+				"                                lastAssistantError = message.error;",
+				"                            }",
+				"",
+			].join("\n"),
+			[
+				'                            if (typeof message.api_error === "string") {',
+				"                                lastAssistantApiError = message.api_error;",
+				"                            }",
+				"",
+			].join("\n"),
+		],
+		[
+			[
+				"            const failure = await createSessionFailure(kind, { title });",
+				"            if (!failure) {",
+				"                failActive(error);",
+				"                return;",
+				"            }",
+				"",
+			].join("\n"),
+			[
+				"            // AO: forward the failure's structured cause.",
+				'            failure.errorKind = typeof error?.data?.errorKind === "string" ? error.data.errorKind : undefined;',
+				"            failure.apiError = lastAssistantApiError;",
+				"",
+			].join("\n"),
+		],
+	];
+	for (const [anchor] of edits) {
+		const at = source.indexOf(anchor);
+		if (at < 0 || source.indexOf(anchor, at + 1) >= 0) {
+			throw new Error("claude-agent-acp failure handling no longer matches AO's failure-kind patch");
+		}
+	}
+	for (const [anchor, addition] of edits) {
+		const at = source.indexOf(anchor) + anchor.length;
+		source = source.slice(0, at) + addition + source.slice(at);
+	}
+	writeFileSync(adapterPath, source);
 	return true;
 }
 
@@ -370,7 +502,7 @@ export function patchClaudeSteerSettlement(adapterPath) {
 
 const SUBAGENT_REPORTING_RULE =
 	"\n\nWhile you work, before each major step write one short line that starts with \"Status:\" saying what you are doing now. " +
-	"Whenever you choose between approaches, write one line that starts with \"Decision:\" stating the choice and the reason in under 20 words.";
+	"End your final report with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or what you are waiting for in under 20 words.";
 
 /**
  * Stream what a Claude subagent is doing to its Agent/Task tool call.
@@ -379,7 +511,7 @@ const SUBAGENT_REPORTING_RULE =
  * the SDK for its periodic subagent summaries. Turn the summaries on and
  * forward each subagent's progress as a meta-only tool_call_update on the
  * Agent/Task call that spawned it, leaving the call's status, content, and
- * title alone. A PreToolUse hook also appends AO's Status:/Decision: reporting
+ * title alone. A PreToolUse hook also appends AO's Status: reporting
  * rule to every Agent/Task prompt, after any user and file-change-audit hooks.
  */
 export function patchClaudeSubagentProgress(adapterPath) {
@@ -411,7 +543,7 @@ export function patchClaudeSubagentProgress(adapterPath) {
 				"                PreToolUse: [",
 				"                    ...(userProvidedOptions?.hooks?.PreToolUse || []),",
 				"                    ...(fileChangeAuditSupport ? [{ hooks: [fileChangeAuditSupport.preToolUseHook] }] : []),",
-				"                    // AO: ask every subagent for Status:/Decision: lines.",
+				"                    // AO: ask every subagent for Status: lines.",
 				"                    {",
 				'                        matcher: "Agent|Task",',
 				"                        hooks: [",
@@ -488,7 +620,7 @@ export function patchClaudeSubagentProgress(adapterPath) {
 }
 
 const SUBAGENT_MESSAGE_PREFIX =
-	"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+	"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: line): ";
 
 // Module-level helpers the subagent control patch adds after STEER_PRIORITY.
 // Kept free of template literals so the injected source reads as written.
@@ -710,8 +842,8 @@ export function patchClaudeSubagentControl(adapterPath) {
 			['                                    message.patch.status === "killed") {', ...ended.map((line) => `    ${line}`), ""].join("\n"),
 		],
 		[
-			"                    // AO: ask every subagent for Status:/Decision: lines.\n",
-			`${inboxHook}                    // AO: ask every subagent for Status:/Decision: lines.\n`,
+			"                    // AO: ask every subagent for Status: lines.\n",
+			`${inboxHook}                    // AO: ask every subagent for Status: lines.\n`,
 		],
 		[postToolUse, postToolUse + inboxHook],
 		[
@@ -727,6 +859,114 @@ export function patchClaudeSubagentControl(adapterPath) {
 		const at = source.indexOf(original);
 		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
 			throw new Error("claude-agent-acp no longer matches AO's subagent control patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
+// Module-level helpers the MCP control patch adds after STEER_PRIORITY.
+const MCP_CONTROL_HELPERS = [
+	"// AO: let the client read and change the live query's MCP servers.",
+	'const AO_MCP_STATUS_METHOD = "_claude/mcp_status";',
+	'const AO_MCP_RECONNECT_METHOD = "_claude/mcp_reconnect";',
+	'const AO_MCP_APPLY_METHOD = "_claude/mcp_apply";',
+	"async function aoMcpStatus(session) {",
+	"    const servers = await session.query.mcpServerStatus();",
+	"    return servers.map((server) => ({",
+	"        name: server.name,",
+	"        status: server.status,",
+	"        scope: server.scope,",
+	"        error: server.error,",
+	'        toolCount: server.status === "connected" ? (server.tools?.length ?? 0) : undefined,',
+	"    }));",
+	"}",
+	"async function aoReconnectMcp(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const name = params?.serverName;",
+	'    if (typeof name !== "string" || name === "") {',
+	'        throw RequestError.invalidParams(undefined, "A reconnect needs a server name.");',
+	"    }",
+	"    // A refusal (the server still wants a sign-in, say) leaves the session fine:",
+	"    // report it with the servers' state rather than as a failed request.",
+	"    let error;",
+	"    try {",
+	"        await session.query.reconnectMcpServer(name);",
+	"    }",
+	"    catch (failure) {",
+	"        error = failure instanceof Error ? failure.message : String(failure);",
+	"    }",
+	"    return { servers: await aoMcpStatus(session), error };",
+	"}",
+	"// setMcpServers replaces the session's whole dynamic set, which includes what the",
+	"// session launched with (AO's own tools, the file-change audit), so each call",
+	"// sends those too. Entries that did not change stay connected.",
+	"async function aoApplyMcp(agent, params) {",
+	"    const session = aoLiveSession(agent, params);",
+	"    const overlay = { ...session.aoMcpOverlay };",
+	"    for (const [name, config] of Object.entries(params?.set ?? {})) {",
+	"        overlay[name] = config;",
+	"    }",
+	"    for (const name of params?.remove ?? []) {",
+	"        delete overlay[name];",
+	"    }",
+	"    const result = await session.query.setMcpServers({ ...session.aoMcpLaunched, ...overlay });",
+	"    session.aoMcpOverlay = overlay;",
+	"    return { errors: result.errors ?? {}, servers: await aoMcpStatus(session) };",
+	"}",
+].join("\n");
+
+/**
+ * Let AO see and change which MCP servers a running Claude agent has.
+ *
+ * claude-agent-acp 0.70 never exposes the SDK's MCP controls. Measured against
+ * Claude Code 2.1.314: `reconnectMcpServer` loads a token another process saved
+ * in 33 ms, mid-turn, and `setMcpServers` adds a server configured after the
+ * query started, or replaces one's headers. So a sign-in, a new server or a new
+ * key reaches a running agent without a restart. Apply after
+ * patchClaudeSubagentControl, whose aoLiveSession this uses.
+ */
+export function patchClaudeMcpControl(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: let the client read and change the live query's MCP servers.")) return false;
+	const goalRegistration = ".onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params))";
+	const steeringMeta = "                steering: {\n                    supported: true,\n                },\n";
+	const sessionRecord = "        this.sessions[sessionId] = {\n            query: q,\n";
+	const patches = [
+		['const STEER_PRIORITY = "now";\n', `const STEER_PRIORITY = "now";\n${MCP_CONTROL_HELPERS}\n`],
+		[
+			steeringMeta,
+			[
+				steeringMeta.trimEnd(),
+				"                // AO: live MCP server status and changes.",
+				"                mcpControl: {",
+				"                    supported: true,",
+				"                    statusMethod: AO_MCP_STATUS_METHOD,",
+				"                    reconnectMethod: AO_MCP_RECONNECT_METHOD,",
+				"                    applyMethod: AO_MCP_APPLY_METHOD,",
+				"                },",
+				"",
+			].join("\n"),
+		],
+		[sessionRecord, `${sessionRecord}            aoMcpLaunched: options.mcpServers,\n`],
+		[
+			goalRegistration,
+			[
+				".onRequest(AO_MCP_STATUS_METHOD, { parse: (params) => params }, async (ctx) => ({ servers: await aoMcpStatus(aoLiveSession(agent, ctx.params)) }))",
+				"        .onRequest(AO_MCP_RECONNECT_METHOD, { parse: (params) => params }, (ctx) => aoReconnectMcp(agent, ctx.params))",
+				"        .onRequest(AO_MCP_APPLY_METHOD, { parse: (params) => params }, (ctx) => aoApplyMcp(agent, ctx.params))",
+				`        ${goalRegistration}`,
+			].join("\n"),
+		],
+	];
+	if (!source.includes("function aoLiveSession(agent, params) {")) {
+		throw new Error("claude-agent-acp no longer matches AO's MCP control patch");
+	}
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's MCP control patch");
 		}
 		source = source.slice(0, at) + replacement + source.slice(at + original.length);
 	}

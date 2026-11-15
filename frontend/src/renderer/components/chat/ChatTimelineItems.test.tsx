@@ -7,6 +7,7 @@ import { agentModelsQueryKey } from "../../hooks/useAgentModelsQuery";
 import { groupScriptRuns } from "../../lib/cloud-script-runs";
 import type { ConversationMessage } from "../../types/conversation";
 import { TooltipProvider } from "../ui/tooltip";
+import { ChatLinkProvider } from "./ChatMarkdown";
 
 function render(ui: ReactElement) {
 	const result = rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -146,6 +147,27 @@ describe("TurnOutcome", () => {
 			"href",
 			"https://example.com/billing",
 		);
+	});
+});
+
+describe("AssistantMessage file paths", () => {
+	it("opens a bare path the worktree has in Files and leaves a missing one as prose", () => {
+		const onFileOpen = vi.fn();
+		const text = "Run infrastructure/hetzner-agents/scripts/apply:12, then read products/platform/docs/22-workspaces.md.";
+		render(
+			<ChatLinkProvider onFileOpen={onFileOpen} workspacePaths={["infrastructure/hetzner-agents/scripts/apply"]} pullRequestFileBase="https://github.com/acme/app/blob/feat/x/">
+				<AssistantMessage message={message({ text, streaming: false })} />
+			</ChatLinkProvider>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Open infrastructure/hetzner-agents/scripts/apply in Files" }));
+
+		expect(onFileOpen).toHaveBeenCalledExactlyOnceWith("infrastructure/hetzner-agents/scripts/apply", 12);
+		expect(document.querySelector("p")?.textContent).toBe(text);
+		// The missing path stays prose: no button, no guessed PR link, not restyled as code.
+		expect([...document.querySelectorAll("code")].map((code) => code.textContent)).toEqual(["infrastructure/hetzner-agents/scripts/apply:12"]);
+		expect(screen.getAllByRole("button").filter((button) => button.textContent?.includes("22-workspaces"))).toEqual([]);
+		expect(screen.queryByRole("link")).toBeNull();
 	});
 });
 
@@ -394,6 +416,19 @@ describe("ActivityRow", () => {
 		expect(screen.getByRole("button")).toHaveTextContent(`Edit ${path}`);
 		expect(container.querySelector("code")).toHaveTextContent(path);
 		expect(screen.getByRole("button").textContent).not.toContain("`");
+	});
+
+	it("says in one quiet line that AO restarted the agent for an MCP change", () => {
+		render(
+			<ActivityRow activity={{
+				kind: "activity", id: "mcp-restart", sequence: 1, revision: 0,
+				createdAt: "2026-08-23T00:00:00Z", activityKind: "system",
+				status: "completed", summary: "Restarted the agent to load MCP server changes",
+				detail: { event: "mcp.agent_restarted" },
+			}} />,
+		);
+		expect(screen.getByText("Restarted the agent to load MCP server changes. The conversation is kept.")).toBeInTheDocument();
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
 	});
 
 	it("shows a finished project setup with its duration and expandable output", () => {

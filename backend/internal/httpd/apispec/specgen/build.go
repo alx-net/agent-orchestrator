@@ -64,6 +64,8 @@ func Build() ([]byte, error) {
 	r.Spec.Tags = []openapi31.Tag{
 		*(&openapi31.Tag{Name: "agents"}).WithDescription(
 			"Supported and locally runnable agent adapters"),
+		*(&openapi31.Tag{Name: "mcp"}).WithDescription(
+			"MCP servers per Claude Code subscription: status, sign-in, testing, and changes"),
 		*(&openapi31.Tag{Name: "projects"}).WithDescription(
 			"Project registry, configuration, and lifecycle administration"),
 		*(&openapi31.Tag{Name: "sessions"}).WithDescription(
@@ -160,6 +162,26 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersTelemetryIdentityResponse":                 "TelemetryIdentityResponse",
 	"ControllersAgentAccountIDParam":                       "AgentAccountIDParam",
 	"ControllersAgentAccountLoginIDParam":                  "AgentAccountLoginIDParam",
+	"ControllersMCPServerAccountStatus":                    "MCPServerAccountStatus",
+	"ControllersMCPServerPayload":                          "MCPServerPayload",
+	"ControllersMCPAccountRef":                             "MCPAccountRef",
+	"ControllersMCPServersResponse":                        "MCPServersResponse",
+	"ControllersAddMCPServerRequest":                       "AddMCPServerRequest",
+	"ControllersUpdateMCPServerKeyRequest":                 "UpdateMCPServerKeyRequest",
+	"ControllersMCPChangeResponse":                         "MCPChangeResponse",
+	"ControllersMCPPropagation":                            "MCPPropagation",
+	"ControllersMCPServerTargetRequest":                    "MCPServerTargetRequest",
+	"ControllersMCPServerTestResponse":                     "MCPServerTestResponse",
+	"ControllersMCPLiveStatus":                             "MCPLiveStatus",
+	"ControllersMCPConnectOperation":                       "MCPConnectOperation",
+	"ControllersMCPConnectOperationResponse":               "MCPConnectOperationResponse",
+	"ControllersSessionMCPServersResponse":                 "SessionMCPServersResponse",
+	"ControllersMCPServerNameParam":                        "MCPServerNameParam",
+	"ControllersMCPOperationIDParam":                       "MCPOperationIDParam",
+	"ControllersMCPSessionIDParam":                         "MCPSessionIDParam",
+	"ControllersMCPSessionServerParams":                    "MCPSessionServerParams",
+	"ControllersListMCPServersQuery":                       "ListMCPServersQuery",
+	"ControllersSessionMCPServersQuery":                    "SessionMCPServersQuery",
 	"ControllersAgentAccountSessionIDParam":                "AgentAccountSessionIDParam",
 	"ControllersAgentAccountListQuery":                     "AgentAccountListQuery",
 	"ControllersAgentAccountUsageQuery":                    "AgentAccountUsageQuery",
@@ -201,6 +223,8 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersUpdateSessionInterfaceRequest":             "UpdateSessionInterfaceRequest",
 	"ControllersUpdateChatHibernationRequest":              "UpdateChatHibernationRequest",
 	"ControllersUpdateVersionRefreshRequest":               "UpdateVersionRefreshRequest",
+	"ControllersUpdateAccountAutoSwitchRequest":            "UpdateAccountAutoSwitchRequest",
+	"ControllersUpdateCompactAtRequest":                    "UpdateCompactAtRequest",
 	"ControllersConversationSnapshotResponse":              "ConversationSnapshotResponse",
 	"ControllersConversationTurnResponse":                  "ConversationTurnResponse",
 	"ControllersConversationUsageLimitResponse":            "ConversationUsageLimitResponse",
@@ -327,6 +351,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"DomainContainerReapConfig":       "ContainerReapConfig",
 	"DomainAgentConfig":               "AgentConfig",
 	"DomainRoleOverride":              "RoleOverride",
+	"DomainTitleArea":                 "TitleArea",
 	// httpd/controllers (wire envelopes)
 	"ControllersListProjectsResponse":                     "ListProjectsResponse",
 	"ControllersProjectResponse":                          "ProjectResponse",
@@ -532,6 +557,14 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersReportOutputResponse":             "ReportOutputResponse",
 	"ControllersReportResponse":                   "ReportResponse",
 	"ControllersListReportsResponse":              "ListReportsResponse",
+	"ControllersCreateWaitRequest":                "CreateWaitRequest",
+	"ControllersCreateWaitResponse":               "CreateWaitResponse",
+	"ControllersWaitResponse":                     "WaitResponse",
+	"ControllersListWaitsResponse":                "ListWaitsResponse",
+	"ControllersWaitEnvelope":                     "WaitEnvelope",
+	"ControllersWaitIDParam":                      "WaitIDParam",
+	"ControllersCreateCheckoutRequest":            "CreateCheckoutRequest",
+	"ControllersCheckoutResponse":                 "CheckoutResponse",
 	"ControllersClearNotificationsResponse":       "ClearNotificationsResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
@@ -742,6 +775,8 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
+	ops = append(ops, waitOperations()...)
+	ops = append(ops, checkoutOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -866,6 +901,69 @@ func reportOperations() []operation {
 			{http.StatusCreated, controllers.CreateReportResponse{}},
 			{http.StatusBadRequest, envelope.APIError{}},
 			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
+}
+
+// waitOperations declares a session's zero-token waits (`ao wait`). Must stay
+// 1:1 with the routes WaitsController.Register mounts.
+// checkoutOperations declares `ao checkout`, a session's own copy of one of
+// the user's projects. Must stay 1:1 with CheckoutsController.Register.
+func checkoutOperations() []operation {
+	return []operation{{
+		method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/checkouts", id: "createSessionCheckout", tag: "sessions",
+		summary:    "Fetch a project and create or refresh the session's detached worktree of it under <workspace>/repos/<project-id>",
+		pathParams: []any{controllers.SessionIDParam{}},
+		reqBody:    controllers.CreateCheckoutRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CheckoutResponse{}},
+			{http.StatusOK, controllers.CheckoutResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusConflict, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
+}
+
+func waitOperations() []operation {
+	session := []any{controllers.SessionIDParam{}}
+	return []operation{{
+		method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/waits", id: "listSessionWaits", tag: "sessions",
+		summary:    "List a session's pending waits",
+		pathParams: session,
+		resps: []respUnit{
+			{http.StatusOK, controllers.ListWaitsResponse{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/waits", id: "createSessionWait", tag: "sessions",
+		summary:    "Register a wait that wakes the session once a PR's CI, merge or review lands, or a timer elapses",
+		pathParams: session,
+		reqBody:    controllers.CreateWaitRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CreateWaitResponse{}},
+			{http.StatusOK, controllers.CreateWaitResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusTooManyRequests, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodDelete, path: "/api/v1/sessions/{sessionId}/waits/{waitId}", id: "cancelSessionWait", tag: "sessions",
+		summary:    "Cancel one of a session's pending waits without waking it",
+		pathParams: []any{controllers.SessionIDParam{}, controllers.WaitIDParam{}},
+		resps: []respUnit{
+			{http.StatusOK, controllers.WaitEnvelope{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusConflict, envelope.APIError{}},
 			{http.StatusInternalServerError, envelope.APIError{}},
 			{http.StatusNotImplemented, envelope.APIError{}},
 		},
@@ -1084,6 +1182,28 @@ func shellTerminalOperations() []operation {
 			method: http.MethodPatch, path: "/api/v1/settings/version-refresh", id: "updateVersionRefresh", tag: "settings",
 			summary: "Choose whether idle open sessions move to newly installed harness releases",
 			reqBody: controllers.UpdateVersionRefreshRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SettingsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/settings/account-auto-switch", id: "updateAccountAutoSwitch", tag: "settings",
+			summary: "Choose whether a chat that reaches its account's usage limit moves to another account",
+			reqBody: controllers.UpdateAccountAutoSwitchRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SettingsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/settings/compact-at", id: "updateCompactAt", tag: "settings",
+			summary: "Choose the token count at which Claude Code agents AO launches compact their conversation",
+			reqBody: controllers.UpdateCompactAtRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SettingsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
@@ -1714,6 +1834,22 @@ func shellTerminalOperations() []operation {
 			},
 		},
 		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/terminal-commands", id: "runSessionCommand", tag: "shellTerminals",
+			// Desktop app only: requests without a browser Origin are refused.
+			summary:    "Run a command from an agent's reply in a new shell tab",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.RunSessionCommandRequest{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ShellTerminalEnvelope{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
 			method: http.MethodPatch, path: "/api/v1/shell-terminals/{handleId}", id: "renameShellTerminal", tag: "shellTerminals",
 			summary:    "Rename a standalone shell terminal tab",
 			pathParams: []any{controllers.ShellTerminalHandleIDParam{}},
@@ -1990,6 +2126,66 @@ func agentOperations() []operation {
 			method: http.MethodGet, path: "/api/v1/agents/accounts/usage", id: "getAgentAccountUsage", tag: "agents",
 			summary: "Sum each account's model usage in AO sessions", pathParams: []any{controllers.AgentAccountUsageQuery{}},
 			resps: []respUnit{{http.StatusOK, controllers.AgentAccountUsageResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/mcp/servers", id: "listMcpServers", tag: "mcp",
+			summary: "List MCP servers and their state on each Claude Code subscription; poll while checking is true", pathParams: []any{controllers.ListMCPServersQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPServersResponse{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/servers", id: "addMcpServer", tag: "mcp",
+			summary: "Add a server to the user's global Claude Code config and bring it to running agents",
+			reqBody: controllers.AddMCPServerRequest{},
+			resps:   []respUnit{{http.StatusCreated, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/mcp/servers/{serverName}", id: "updateMcpServerKey", tag: "mcp",
+			summary: "Replace the headers of a global server whose config holds its key", pathParams: []any{controllers.MCPServerNameParam{}},
+			reqBody: controllers.UpdateMCPServerKeyRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/mcp/servers/{serverName}", id: "removeMcpServer", tag: "mcp",
+			summary: "Remove a server from the user's global Claude Code config and from running agents", pathParams: []any{controllers.MCPServerNameParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/approve", id: "approveMcpServer", tag: "mcp",
+			summary: "Approve a repo's .mcp.json server for a subscription in that project",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPChangeResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/test", id: "testMcpServer", tag: "mcp",
+			summary: "Really connect to one server and list its tools, and report pass or fail",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusOK, controllers.MCPServerTestResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/connect", id: "connectMcpServer", tag: "mcp",
+			summary: "Start a browser sign-in to a server for a subscription or a session's account",
+			reqBody: controllers.MCPServerTargetRequest{},
+			resps:   []respUnit{{http.StatusAccepted, controllers.MCPConnectOperationResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/mcp/connect/{operationId}", id: "getMcpConnectOperation", tag: "mcp",
+			summary: "Read a sign-in's state", pathParams: []any{controllers.MCPOperationIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPConnectOperationResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mcp/connect/{operationId}/cancel", id: "cancelMcpConnectOperation", tag: "mcp",
+			summary: "Stop a sign-in still waiting for the browser", pathParams: []any{controllers.MCPOperationIDParam{}},
+			resps: []respUnit{{http.StatusOK, controllers.MCPConnectOperationResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/mcp-servers", id: "getSessionMcpServers", tag: "mcp",
+			summary: "Read what MCP servers a session's running agent actually has right now", pathParams: []any{controllers.MCPSessionIDParam{}, controllers.SessionMCPServersQuery{}},
+			resps: []respUnit{{http.StatusOK, controllers.SessionMCPServersResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/mcp-servers/{serverName}/reconnect", id: "reconnectSessionMcpServer", tag: "mcp",
+			summary: "Have a session's running agent connect to one server again", pathParams: []any{controllers.MCPSessionServerParams{}},
+			resps: []respUnit{{http.StatusOK, controllers.SessionMCPServersResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/accounts/login", id: "startAgentAccountLogin", tag: "agents",
@@ -3566,7 +3762,7 @@ func sessionOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/send", id: "sendSessionMessage", tag: "sessions",
-			summary:    "Send a message to a running session's agent",
+			summary:    "Send a message to a running session's agent, or hold an FYI for its next turn",
 			pathParams: []any{controllers.SessionIDParam{}},
 			reqBody:    controllers.SendSessionMessageRequest{},
 			resps: []respUnit{
@@ -3660,6 +3856,26 @@ func sessionOperations() []operation {
 			pathParams: []any{controllers.ProjectIDParam{}},
 			resps: []respUnit{
 				{http.StatusAccepted, controllers.PrepareTaskResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/standalone/tasks/prepare", id: "prepareStandaloneTask", tag: "sessions",
+			summary: "Speculatively create the next Scratchpad task's empty folder",
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.PrepareTaskResponse{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/task-preparations/{token}/renew", id: "renewTaskPreparation", tag: "projects",
+			summary:    "Keep an open composer's unclaimed task workspace from expiring",
+			pathParams: []any{controllers.TaskPreparationTokenParam{}},
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},

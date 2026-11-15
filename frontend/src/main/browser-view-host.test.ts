@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { net } from "electron";
 import {
 	type BrowserNavState,
@@ -14,7 +18,7 @@ import {
 	shouldHandleAppShortcutInBrowserContext,
 } from "./browser-view-host";
 import { browserProfilePartition, type BrowserProfile } from "../shared/browser-profiles";
-import type { BrowserProfileStore } from "./browser-profile-store";
+import { BrowserProfileStore, createBrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
 import {
 	CLOSE_SHELL_TERMINAL_SHORTCUT_CHANNEL,
@@ -154,7 +158,11 @@ function submittedAnnotationSession(
 	};
 }
 
-function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime) {
+function setupHost(
+	agentBrowserRuntime?: import("./agent-browser-runtime").AgentBrowserRuntime,
+	/** Whether AO's own window holds the keyboard; omitted, the shell reports nothing. */
+	shellFocused?: () => boolean,
+) {
 	let currentURL = "";
 	let browserZoomFactor = 1;
 	const webContentsListeners = new Map<string, (...args: never[]) => void>();
@@ -305,6 +313,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 			webContents: {
 				id: 1,
 				focus: shellFocus,
+				...(shellFocused ? { isFocused: shellFocused } : {}),
 				send: shellSend,
 				on: (event: string, listener: (...args: never[]) => void) => {
 					addListener(shellWebContentsListeners, event, listener);
@@ -1201,7 +1210,7 @@ function setupTabHost(
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
 	clearBrowserProfileData = vi.fn(async (_partition: string) => undefined),
-	overrides?: { entryReadyTimeoutMs?: number },
+	overrides?: { entryReadyTimeoutMs?: number; partitionsDirectory?: string },
 ) {
 	const constructorOptions: Array<{
 		webPreferences: Electron.WebPreferences;
@@ -1430,6 +1439,7 @@ function setupTabHost(
 		browserHistoryStore,
 		clearBrowserProfileData,
 		entryReadyTimeoutMs: overrides?.entryReadyTimeoutMs,
+		partitionsDirectory: overrides?.partitionsDirectory,
 		onNativeViewAdded,
 		onTabCloseFailure,
 		// Kept only as a regression tripwire: the removed auto-send path used
@@ -1491,6 +1501,50 @@ function fakeBrowserProfileStore(
 		partitionForProfile: (profileId: string) => browserProfilePartition(profileId),
 	} as unknown as BrowserProfileStore;
 }
+
+describe("browser panel keyboard focus", () => {
+	it("never lets a navigation take the keyboard from the field the person is typing in", async () => {
+		const { constructorOptions, invoke, views } = setupTabHost();
+		const { viewId } = await invoke("browser:ensure", "sess-1") as BrowserNavState;
+		await invoke("browser:openTab", { viewId, url: "https://example.test/" });
+		views[0]!.webContents.openWindow("https://example.test/popup");
+
+		// Electron focuses a WebContents on loadURL, reload, history and CDP
+		// navigation unless told not to; previews and agent pages go through those.
+		expect(constructorOptions.length).toBeGreaterThanOrEqual(3);
+		for (const { webPreferences } of constructorOptions) expect(webPreferences.focusOnNavigation).toBe(false);
+	});
+
+	it("hands the keyboard to the page only for an address the person typed", async () => {
+		const { invoke, views } = setupTabHost();
+		const { viewId } = await invoke("browser:ensure", "sess-1") as BrowserNavState;
+		await invoke("browser:navigate", { viewId, url: "https://example.test/" });
+		const page = views.at(-1)!.webContents as unknown as { focus: ReturnType<typeof vi.fn> };
+		page.focus.mockClear();
+
+		// An `ao preview` arrives through the same call as the address bar.
+		await invoke("browser:navigate", { viewId, url: "http://localhost:4173/" });
+		expect(page.focus).not.toHaveBeenCalled();
+
+		await invoke("browser:navigate", { viewId, url: "https://example.test/next", focusPage: true });
+		expect(page.focus).toHaveBeenCalled();
+	});
+
+	it("does not take the keyboard back after a typed address loads once the person returned to AO", async () => {
+		let shellFocused = false;
+		const { invoke, webContents: page } = setupHost(undefined, () => shellFocused);
+		await invoke("browser:ensure", "sess-1");
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "https://example.test/" });
+		page.focus.mockClear();
+		page.loadURL.mockImplementationOnce(async () => {
+			// The person clicks back into the chat while the page loads.
+			shellFocused = true;
+		});
+
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "https://example.test/next", focusPage: true });
+		expect(page.focus).toHaveBeenCalledOnce();
+	});
+});
 
 describe("browser:closeTab automation-runtime fallback", () => {
 	it.each([1, 2])("accepts a repeated close with %i tabs initially", async (count) => {
@@ -3431,6 +3485,94 @@ describe("browser profile partitions and replacement", () => {
 		release();
 		await command;
 		await expect(switching).resolves.toMatchObject({ profileId: null, temporary: true });
+	});
+});
+
+describe("shared Default browser profile and stale temporary partitions", () => {
+	const tempDirectories: string[] = [];
+	const makeTempDir = async (): Promise<string> => {
+		const directory = await mkdtemp(path.join(os.tmpdir(), "ao-browser-host-"));
+		tempDirectories.push(directory);
+		return directory;
+	};
+
+	afterEach(async () => {
+		await Promise.all(tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+	});
+
+	it("starts every unbound worker in the seeded Default profile so a sign-in carries across sessions", async () => {
+		const store = await createBrowserProfileStore({ stateDir: await makeTempDir() });
+		const defaultProfileId = store.getDefaultProfileId()!;
+		const { constructorOptions, host, invoke } = setupTabHost(store);
+		const first = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const second = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+
+		for (const nav of [first, second]) {
+			expect(host.getProfileState(nav.viewId)).toEqual({
+				viewId: nav.viewId,
+				profileId: defaultProfileId,
+				profileName: "Shared",
+				temporary: false,
+			});
+		}
+		expect(constructorOptions.map(({ webPreferences }) => webPreferences.partition)).toEqual([
+			browserProfilePartition(defaultProfileId),
+			browserProfilePartition(defaultProfileId),
+		]);
+	});
+
+	it("keeps a worker that explicitly chose Temporary out of the seeded Default profile", async () => {
+		const stateDir = await makeTempDir();
+		await new BrowserProfileStore({ stateDir }).bindSession("worker-1", null);
+		const store = await createBrowserProfileStore({ stateDir });
+		const { constructorOptions, host, invoke } = setupTabHost(store);
+		const temporary = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const shared = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+
+		expect(host.getProfileState(temporary.viewId)).toMatchObject({ profileId: null, temporary: true });
+		expect(constructorOptions[0]!.webPreferences.partition).toMatch(/^persist:ao-browser-temporary-/);
+		expect(host.getProfileState(shared.viewId)).toMatchObject({
+			profileId: store.getDefaultProfileId(),
+			profileName: "Shared",
+			temporary: false,
+		});
+	});
+
+	it("leaves a user-chosen default profile in charge without adding Default", async () => {
+		const stateDir = await makeTempDir();
+		const existing = new BrowserProfileStore({ stateDir });
+		const work = await existing.createProfile("Work");
+		await existing.setDefaultProfileId(work.id);
+		const store = await createBrowserProfileStore({ stateDir });
+		const { host, invoke } = setupTabHost(store);
+		const nav = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+
+		expect(store.profiles.map((profile) => profile.name)).toEqual(["Work"]);
+		expect(host.getProfileState(nav.viewId)).toMatchObject({ profileId: work.id, profileName: "Work", temporary: false });
+	});
+
+	it("removes leftover temporary partitions while keeping the ones this run opened and every other partition", async () => {
+		const partitionsDirectory = await makeTempDir();
+		const { constructorOptions, host, invoke } = setupTabHost(undefined, false, undefined, undefined, undefined, {
+			partitionsDirectory,
+		});
+		await invoke("browser:ensure", "worker-1");
+		const ended = (await invoke("browser:ensure", "worker-2")) as BrowserNavState;
+		host.destroy(ended.viewId);
+		const [live, endedThisRun] = constructorOptions.map(({ webPreferences }) =>
+			webPreferences.partition!.slice("persist:".length),
+		);
+		const stale = [`ao-browser-temporary-${randomUUID()}`, `ao-browser-temporary-${randomUUID()}`];
+		const kept = [live!, endedThisRun!, `ao-browser-profile-${randomUUID()}`, "ao-browser-temporary-not-a-uuid"];
+		for (const name of [...stale, ...kept]) {
+			await mkdir(path.join(partitionsDirectory, name, "Local Storage"), { recursive: true });
+		}
+		// Only directories are partitions; a same-named file is not touched.
+		const strayFile = `ao-browser-temporary-${randomUUID()}`;
+		await writeFile(path.join(partitionsDirectory, strayFile), "");
+
+		await expect(host.removeStaleTemporaryPartitions()).resolves.toBe(2);
+		expect((await readdir(partitionsDirectory)).sort()).toEqual([...kept, strayFile].sort());
 	});
 });
 
@@ -5717,6 +5859,25 @@ describe("browser annotation IPC", () => {
 			payload: expect.anything(),
 		});
 		expect(webContents.send).toHaveBeenCalledWith("browser:annotation:setMode", { enabled: true, session });
+		expect(webContents.focus).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the keyboard in AO's window when a load the person did not start finishes in annotation mode", async () => {
+		let shellFocused = false;
+		const { invoke, webContents, webContentsListeners } = setupHost(undefined, () => shellFocused);
+		await invoke("browser:ensure", "sess-1");
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "http://localhost:4173/" });
+		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: true });
+		// The person went back to typing in the chat; the agent's dev server reloads the page.
+		shellFocused = true;
+		webContents.focus.mockClear();
+		webContentsListeners.get("did-start-loading")?.();
+		webContentsListeners.get("did-stop-loading")?.();
+		expect(webContents.focus).not.toHaveBeenCalled();
+
+		// The toolbar's reload is the person's: picking gets the keyboard back.
+		await invoke("browser:reload", "1:sess-1");
+		webContentsListeners.get("did-stop-loading")?.();
 		expect(webContents.focus).toHaveBeenCalledOnce();
 	});
 

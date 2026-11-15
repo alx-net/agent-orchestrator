@@ -797,7 +797,7 @@ export function BrowserPanelView({
 		setUrlInput(url);
 		setHistorySuggestions([]);
 		setActiveHistorySuggestion(-1);
-		void navigate(url);
+		void navigate(url, { focusPage: true });
 	};
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {

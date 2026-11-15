@@ -407,6 +407,73 @@ describe("SessionsBoardView", () => {
 		expect(onOpen).toHaveBeenCalledOnce();
 	});
 
+	it("places the agent context after the evidence and before the one status line, taking no room when empty", () => {
+		const labels = {
+			formatTime: () => "5m ago",
+			intakeIssue: (id: string) => `Issue ${id}`,
+			pr: { short: "PR", states: { closed: "closed", draft: "draft", merged: "merged", open: "open" } } satisfies BoardPullRequestLabels,
+			updatedAt: (timestamp: string) => `Updated ${timestamp}`,
+		};
+		function Empty() {
+			return null;
+		}
+		const { rerender } = render(
+			<SessionCardView
+				artifacts={<span>notes.md</span>}
+				context={<p>Running the unit tests</p>}
+				externalLink={ExternalLink}
+				labels={labels}
+				prs={[{ number: 12, state: "open", url: "https://example.com/pull/12" }]}
+				renderAvatar={() => null}
+				session={{ ...baseSession, branch: "feat/portable", status: "working" }}
+			/>,
+		);
+		const context = screen.getByTestId("session-card-context");
+		expect(context).toHaveTextContent("Running the unit tests");
+		const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+		expect(follows(screen.getByText("feat/portable"), context)).toBe(true);
+		expect(follows(screen.getByRole("link", { name: "PR #12 open" }), context)).toBe(true);
+		expect(follows(screen.getByText("notes.md"), context)).toBe(true);
+		expect(follows(context, screen.getByTestId("session-status"))).toBe(true);
+		// Still the one status line: the slot adds no chip of its own.
+		expect(screen.getAllByTestId("session-status")).toHaveLength(1);
+
+		// A slot that renders nothing leaves an empty box the card hides.
+		rerender(
+			<SessionCardView context={<Empty />} externalLink={ExternalLink} labels={labels} renderAvatar={() => null} session={baseSession} />,
+		);
+		expect(screen.getByTestId("session-card-context")).toBeEmptyDOMElement();
+		expect(screen.getByTestId("session-card-context")).toHaveClass("empty:hidden");
+		rerender(<SessionCardView externalLink={ExternalLink} labels={labels} renderAvatar={() => null} session={baseSession} />);
+		expect(screen.queryByTestId("session-card-context")).not.toBeInTheDocument();
+	});
+
+	it("puts compact metadata before the time, dropping its separator when it renders nothing", () => {
+		const labels = {
+			formatTime: () => "5m ago",
+			intakeIssue: (id: string) => `Issue ${id}`,
+			pr: { short: "PR", states: { closed: "closed", draft: "draft", merged: "merged", open: "open" } } satisfies BoardPullRequestLabels,
+			updatedAt: (timestamp: string) => `Updated ${timestamp}`,
+		};
+		function Empty() {
+			return null;
+		}
+		const { rerender } = render(
+			<SessionCardView externalLink={ExternalLink} labels={labels} meta={<span>2 subagents</span>} renderAvatar={() => null} session={baseSession} />,
+		);
+		const meta = screen.getByTestId("session-card-meta");
+		expect(meta).toHaveTextContent("2 subagents");
+		expect(meta.compareDocumentPosition(screen.getByText("5m ago")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const separator = meta.nextElementSibling!;
+		expect(separator).toHaveTextContent("·");
+		expect(separator).toHaveAttribute("aria-hidden", "true");
+		expect(separator).toHaveClass("peer-empty:hidden");
+		expect(meta).toHaveClass("peer", "empty:hidden");
+
+		rerender(<SessionCardView externalLink={ExternalLink} labels={labels} meta={<Empty />} renderAvatar={() => null} session={baseSession} />);
+		expect(screen.getByTestId("session-card-meta")).toBeEmptyDOMElement();
+	});
+
 	it("keeps a crowded PR row wrapping instead of crushing entries past the card edge", () => {
 		const { container } = render(
 			<SessionCardView

@@ -36,6 +36,7 @@ type Store interface {
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
 	RenameSession(ctx context.Context, id domain.SessionID, displayName string, updatedAt time.Time) (bool, error)
 	RenameSessionIfDisplayName(ctx context.Context, id domain.SessionID, currentDisplayName, displayName string, updatedAt time.Time) (bool, error)
+	SetSessionTitleArea(ctx context.Context, id domain.SessionID, area, provisional string, updatedAt time.Time) (bool, error)
 	SetSessionPreviewURL(ctx context.Context, id domain.SessionID, previewURL string, updatedAt time.Time) (bool, error)
 	SetSessionTerminateOnPRMerge(ctx context.Context, id domain.SessionID, terminate bool, updatedAt time.Time) (bool, error)
 	SetSessionAutoInjectReview(ctx context.Context, id domain.SessionID, autoInject bool, updatedAt time.Time) (bool, error)
@@ -93,6 +94,7 @@ type commander interface {
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 	PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error)
+	RenewTaskPreparation(domain.TaskPreparationToken) bool
 	CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error
 }
 
@@ -110,6 +112,11 @@ type interfaceTransitionCommander interface {
 // service fakes while production delegates to Session Manager.
 type exitAgentCommander interface {
 	ExitAgent(context.Context, domain.SessionID) (domain.SessionRecord, error)
+}
+
+// fyiCommander keeps `ao send --fyi` optional for focused service fakes.
+type fyiCommander interface {
+	QueueFYI(context.Context, domain.SessionID, string, ports.MessageDeliveryOptions) (int, error)
 }
 
 // agentAccountCommander keeps account moves optional for focused service fakes.
@@ -413,6 +420,16 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.Session{}, 0, 0, apiErr
 	}
 	s.recordSpawnOutcome(ctx, cfg, rec, domain.ActivityStatusCompleted, nil)
+	if cfg.Kind == domain.KindWorker && !rec.ClientRequestCommitted {
+		// The spawn-time name, e.g. one `ao spawn --name` gave, gets the area
+		// prefix like any provisional title; later renames never do.
+		s.titleSessionInBackground(rec.ID, sessionTitleWork{
+			projectID:   cfg.ProjectID,
+			brief:       cfg.Prompt,
+			provisional: cfg.DisplayName,
+			areas:       project.Config.TitleAreas,
+		})
+	}
 	sess, err := s.toSession(ctx, rec)
 	if err != nil {
 		return domain.Session{}, 0, 0, err
@@ -1032,6 +1049,20 @@ func (s *Service) Send(ctx context.Context, id domain.SessionID, message string,
 // SendWithOptions preserves authorship facts supplied by trusted UI surfaces.
 func (s *Service) SendWithOptions(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error {
 	return toAPIError(s.manager.SendWithOptions(ctx, id, message, attachment, options))
+}
+
+// QueueFYI holds an informational message for the session's next turn without
+// starting one, and returns how many are now waiting.
+func (s *Service) QueueFYI(ctx context.Context, id domain.SessionID, message string, options ports.MessageDeliveryOptions) (int, error) {
+	manager, ok := s.manager.(fyiCommander)
+	if !ok {
+		return 0, apierr.Conflict("FYI_UNSUPPORTED", "This build cannot hold FYI messages", nil)
+	}
+	pending, err := manager.QueueFYI(ctx, id, message, options)
+	if errors.Is(err, sessionmanager.ErrFYIUnsupported) {
+		return 0, apierr.Conflict("FYI_UNSUPPORTED", "This build cannot hold FYI messages", nil)
+	}
+	return pending, toAPIError(err)
 }
 
 // Rename updates the user-facing session display name.

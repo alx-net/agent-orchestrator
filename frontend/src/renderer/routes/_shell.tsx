@@ -22,6 +22,7 @@ import { KeyboardShortcutsDialog } from "../components/KeyboardShortcutsDialog";
 import { QuitConfirmDialog } from "../components/QuitConfirmDialog";
 import { ShellTopbar } from "../components/ShellTopbar";
 import { SessionTopbarProvider } from "../components/SessionTopbarPortal";
+import { AgentSummariesProvider } from "../components/AgentSummariesProvider";
 import { OrchestratorReplacementDialog } from "../components/OrchestratorReplacementDialog";
 import { RestartToUpdateDialog } from "../components/RestartToUpdateDialog";
 import { TelemetryConsentRenewalDialog } from "../components/TelemetryConsentRenewalDialog";
@@ -1463,6 +1464,8 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 			value={shellContextValue}
 		>
 			<AppBrowserLinkContext.Provider value={canOpenBrowserLink ? openBrowserLink : undefined}>
+			{/* One set of live agent summaries for the board's cards and the Agents page. */}
+			<AgentSummariesProvider>
 			<SessionTopbarProvider>
 				<NotificationRuntime />
 				<HarnessUpdateNotice enabled={daemonStatus.state === "ready"} />
@@ -1660,6 +1663,7 @@ const replacementErrorCount = Object.keys(orchestratorReplacementErrors).length;
 				</div>
 				</TerminalCacheProvider>
 			</SessionTopbarProvider>
+			</AgentSummariesProvider>
 			</AppBrowserLinkContext.Provider>
 		</ShellProvider>
 	);

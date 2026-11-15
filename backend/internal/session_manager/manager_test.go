@@ -1768,8 +1768,8 @@ func TestSpawn_ResolvesProjectConfig(t *testing.T) {
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "bare", Kind: domain.KindWorker, Harness: domain.HarnessCodex}); err != nil {
 		t.Fatal(err)
 	}
-	if agent.lastConfig != (ports.AgentConfig{Permissions: ports.PermissionModeAuto}) {
-		t.Fatalf("launch config = %#v, want Auto permissions for project without config", agent.lastConfig)
+	if agent.lastConfig != (ports.AgentConfig{Permissions: ports.PermissionModeBypassPermissions}) {
+		t.Fatalf("launch config = %#v, want bypass permissions for project without config", agent.lastConfig)
 	}
 	if got := ws.lastCfg.BaseBranch; got != "" {
 		t.Fatalf("automatic workspace base branch = %q, want empty for adapter inference", got)
@@ -1812,8 +1812,42 @@ func TestSpawn_IgnoresNonOrchestratorParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeAuto) {
-		t.Fatalf("worker permission environment = %q, want project default %q", got, domain.PermissionModeAuto)
+	if got := rt.lastCfg.Env[EnvPermissionMode]; got != string(domain.PermissionModeBypassPermissions) {
+		t.Fatalf("worker permission environment = %q, want project default %q", got, domain.PermissionModeBypassPermissions)
+	}
+}
+
+// The requesting session is persisted as the parent only when it exists in the
+// spawn's project; a stale or cross-project AO_SESSION_ID records no parent.
+func TestSpawn_RecordsParentSessionInSameProject(t *testing.T) {
+	m, st, _, _ := newManager()
+	st.sessions["mer-0"] = domain.SessionRecord{ID: "mer-0", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	st.sessions["other-0"] = domain.SessionRecord{ID: "other-0", ProjectID: "other", Kind: domain.KindOrchestrator}
+
+	for _, tt := range []struct {
+		name   string
+		parent domain.SessionID
+		want   domain.SessionID
+	}{
+		{name: "same project", parent: "mer-0", want: "mer-0"},
+		{name: "unknown session", parent: "mer-404", want: ""},
+		{name: "other project", parent: "other-0", want: ""},
+		{name: "no parent", parent: "", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+				ProjectID: "mer", Kind: domain.KindWorker, ParentSessionID: tt.parent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec.ParentSessionID != tt.want {
+				t.Fatalf("returned parent = %q, want %q", rec.ParentSessionID, tt.want)
+			}
+			if got := st.sessions[rec.ID].ParentSessionID; got != tt.want {
+				t.Fatalf("stored parent = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -11821,7 +11855,7 @@ func TestRestoreRetainsSpawnPermissionsAfterProjectChange(t *testing.T) {
 		}
 		want := permission
 		if want == "" {
-			want = domain.PermissionModeAuto
+			want = domain.PermissionModeBypassPermissions
 		}
 		if rec.Metadata.Permissions != want {
 			t.Fatalf("spawn pin=%q want %q", rec.Metadata.Permissions, want)

@@ -27,6 +27,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessioncheckout"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/termtheme"
@@ -420,6 +421,7 @@ type Manager struct {
 		Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
 	}
 	lcm                         lifecycleRecorder
+	fyis                        FYIDelivery // late-bound by SetFYIDelivery; nil leaves terminal sends unchanged
 	preview                     PreviewLifecycle
 	browser                     BrowserLifecycle
 	browserCapabilities         BrowserCapabilityIssuer
@@ -537,6 +539,11 @@ type Manager struct {
 	// nil means they do not (see SetVersionRefreshPolicy).
 	versionPolicyMu sync.Mutex
 	versionPolicy   func() VersionRefreshPolicy
+	// usageLimitSwitches are sessions moving off an account that ran out of
+	// usage; usageLimitSwitchOn is the user's setting (nil: on).
+	usageLimitSwitchMu sync.Mutex
+	usageLimitSwitches map[domain.SessionID]*usageLimitSwitchRun
+	usageLimitSwitchOn func() bool
 	// versionTelemetry receives version-move events; nil drops them.
 	versionTelemetryMu sync.Mutex
 	versionTelemetry   ports.EventSink
@@ -1013,12 +1020,22 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if projectKind == domain.ProjectKindScratch && strings.TrimSpace(cfg.Branch) != "" {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", ErrScratchBranchUnsupported)
 	}
-	if cfg.ParentSessionID != "" && cfg.AgentConfig.Permissions == "" {
-		permissions, err := m.inheritedSpawnPermissions(ctx, cfg.ProjectID, cfg.ParentSessionID)
+	if cfg.ParentSessionID != "" {
+		parent, ok, err := m.store.GetSession(ctx, cfg.ParentSessionID)
 		if err != nil {
-			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: load parent session %s: %w", cfg.ParentSessionID, err)
 		}
-		cfg.AgentConfig.Permissions = permissions
+		if !ok || parent.ProjectID != cfg.ProjectID {
+			// AO_SESSION_ID may be stale or name another project's session; the
+			// spawn proceeds as if no session had requested it.
+			cfg.ParentSessionID = ""
+		} else if cfg.AgentConfig.Permissions == "" {
+			permissions, err := m.inheritedSpawnPermissions(ctx, parent)
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+			}
+			cfg.AgentConfig.Permissions = permissions
+		}
 	}
 	// A per-project role override picks the harness when the spawn names none,
 	// so a project can default workers to one agent and orchestrators to another.
@@ -1127,7 +1144,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	asyncChat := cfg.Async && mode == domain.SessionModeChat && m.chat != nil && (cfg.Kind == domain.KindOrchestrator || cfg.Kind == domain.KindWorker)
 
 	var prep *taskPreparation
-	if cfg.AutomationRunID == nil && cfg.Branch == "" {
+	if cfg.AutomationRunID == nil && cfg.Branch == "" && cfg.Kind == domain.KindWorker {
 		prep = m.claimTaskPreparation(cfg.TaskPreparation, cfg.ProjectID)
 	}
 	var rec domain.SessionRecord
@@ -1817,29 +1834,26 @@ func containsString(values []string, value string) bool {
 }
 
 // inheritedSpawnPermissions derives a worker override from its requesting chat
-// orchestrator. The request supplies identity only: the stored conversation
-// settings remain the authority for the permission policy.
-func (m *Manager) inheritedSpawnPermissions(ctx context.Context, projectID domain.ProjectID, parentID domain.SessionID) (domain.PermissionMode, error) {
-	parent, ok, err := m.store.GetSession(ctx, parentID)
-	if err != nil {
-		return "", fmt.Errorf("load parent session %s: %w", parentID, err)
-	}
-	if !ok || parent.ProjectID != projectID || parent.Kind != domain.KindOrchestrator {
+// orchestrator, already confirmed to be in the spawn's project. The request
+// supplies identity only: the stored conversation settings remain the
+// authority for the permission policy.
+func (m *Manager) inheritedSpawnPermissions(ctx context.Context, parent domain.SessionRecord) (domain.PermissionMode, error) {
+	if parent.Kind != domain.KindOrchestrator {
 		// AO_SESSION_ID is available in every session, not only orchestrators.
-		// A worker (or a stale/cross-project value) must preserve the historical
-		// project-default spawn behavior rather than gain an inherited policy.
+		// A worker must preserve the historical project-default spawn behavior
+		// rather than gain an inherited policy.
 		return "", nil
 	}
 	conversations, ok := m.store.(conversationSettingsStore)
 	if !ok {
 		return "", nil
 	}
-	conversation, err := conversations.ConversationForSession(ctx, parentID)
+	conversation, err := conversations.ConversationForSession(ctx, parent.ID)
 	if errors.Is(err, domain.ErrNoConversation) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("load parent conversation %s: %w", parentID, err)
+		return "", fmt.Errorf("load parent conversation %s: %w", parent.ID, err)
 	}
 	return conversation.Settings.ApprovalMode, nil
 }
@@ -2388,7 +2402,11 @@ func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 		base.Permissions = override.Permissions
 	}
 	if base.Permissions == "" {
-		base.Permissions = ports.PermissionModeAuto
+		// Like Conductor, agents run without per-action approval unless the
+		// project or the spawn asks for a stricter mode. Auto's classifier
+		// silently blocked ordinary ops work (cluster access, merges) instead
+		// of asking. Reviewer chats choose their own mode and are unaffected.
+		base.Permissions = ports.PermissionModeBypassPermissions
 	}
 	return base
 }
@@ -2770,6 +2788,12 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
 		var cancelWorkspace context.CancelFunc
 		ctx, cancelWorkspace = context.WithTimeout(context.WithoutCancel(ctx), budget)
 		defer cancelWorkspace()
+		// `ao checkout` worktrees are registered in other repositories; remove
+		// them first so those repos keep no stale entries. One holding work
+		// preserves the whole workspace, like a dirty worktree.
+		if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+			return KillResult{}, m.terminateWithPreservedWorkspace(ctx, id, err, !workspaceProject)
+		}
 	}
 	if workspaceProject {
 		reclaim, err := m.destroyWorkspaceProjectRows(ctx, workspaceProjectRows)
@@ -2889,6 +2913,10 @@ func (m *Manager) RetireForReplacement(ctx context.Context, id domain.SessionID)
 	m.runReplacementPreRemove(rec.ID, rec.ProjectID, ws.Path)
 	ctx, cancelWorkspace := context.WithTimeout(context.WithoutCancel(ctx), killTeardownBudget)
 	defer cancelWorkspace()
+	// Best effort: the forced removal below must still release the branch.
+	if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+		m.logger.Warn("retire replacement: checkout teardown failed", "sessionID", id, "path", ws.Path, "error", err)
+	}
 	if err := m.workspace.ForceDestroy(ctx, ws); err != nil {
 		if staleWorkspace {
 			m.logger.Warn("retire replacement: stale workspace cleanup failed", "sessionID", id, "path", ws.Path, "error", err)
@@ -3351,6 +3379,9 @@ func (m *Manager) resumeAgentWithMode(ctx context.Context, id domain.SessionID, 
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
 		err := m.reconcileLive(recoveryCtx, rec)
+		if m.chatHostUnattachable(rec, err) {
+			err = m.replaceUnattachableChatHost(ctx, rec, err)
+		}
 		m.finishStatusRecovery(ctx, rec, err)
 		if err != nil {
 			return RestoreResult{}, err
@@ -3457,6 +3488,37 @@ func (m *Manager) launchedTUIAgentStillAlive(ctx context.Context, rec domain.Ses
 		return false
 	}
 	return alive
+}
+
+// chatHostUnattachable reports a Chat whose provider host is still running but
+// could not be reattached by the startup check, its retries, or an explicit
+// Resume. Inconclusive ownership is not proof the provider died; it only means
+// this daemon cannot adopt that host.
+func (m *Manager) chatHostUnattachable(rec domain.SessionRecord, err error) bool {
+	return err != nil && errors.Is(err, ports.ErrChatRecoveryInconclusive) &&
+		domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
+		m.chat != nil && !m.chat.HasLiveChatController(rec.ID)
+}
+
+// replaceUnattachableChatHost does what Exit agent then Resume agent would: it
+// stops the host deliberately and resumes the provider conversation natively in
+// a new one. The turn the old host was running ends; the conversation is kept.
+func (m *Manager) replaceUnattachableChatHost(ctx context.Context, rec domain.SessionRecord, reattachErr error) error {
+	m.logger.Warn("resume agent: replacing a chat host that could not be reattached",
+		"sessionID", rec.ID, "error", reattachErr)
+	replaceCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
+	defer cancel()
+	if err := m.chat.StopChat(replaceCtx, rec.ID); err != nil {
+		return errors.Join(reattachErr, fmt.Errorf("stop chat host that could not be reattached: %w", err))
+	}
+	current, found, err := m.store.GetSession(replaceCtx, rec.ID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return m.reconcileLive(replaceCtx, current)
 }
 
 func (m *Manager) resumeAgentRecordWithPolicy(
@@ -5061,6 +5123,12 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return err
 	}
 
+	// FYIs (`ao send --fyi`) ride on this turn, inside its delivery envelope.
+	fyis := m.prepareFYIs(ctx, id, message)
+	message = fyis.AppendToUserMessage(message)
+	fyisDelivered := false
+	defer func() { m.settleFYIs(context.WithoutCancel(ctx), id, fyis, fyisDelivered) }()
+
 	if _, coordination := domain.CoordinationDeliveryID(message); !coordination && !options.AuthoredByUser && strings.TrimSpace(message) != "" {
 		deliveryID := clientMessageID
 		if deliveryID == "" {
@@ -5147,6 +5215,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	case sessionguard.SuppressedInputGated:
 		return fmt.Errorf("send %s: %w", id, ErrOperationInProgress)
 	}
+	fyisDelivered = outcome == sessionguard.Sent
 	// Chat and transition queues persist interaction in their acceptance transaction.
 	// Only direct terminal sends need this separate fact; outbox replay already has it.
 	if options.SenderSessionID != "" && clientMessageID == "" {
@@ -5620,6 +5689,13 @@ func (m *Manager) cleanupOne(ctx context.Context, rec domain.SessionRecord, ws p
 	} else if inUse {
 		return ports.WorkspaceReclaimRemoved, "workspace in use by a live session"
 	}
+	// Same order as Kill: the session's `ao checkout` worktrees go first.
+	if err := sessioncheckout.RemoveAll(ctx, ws.Path); err != nil {
+		if !expectedWorkspaceRefusal(err) {
+			m.logger.Warn("cleanup: checkout teardown failed", "sessionID", rec.ID, "path", ws.Path, "error", err)
+		}
+		return ports.WorkspaceReclaimRemoved, cleanupSkipReason(err)
+	}
 
 	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
 		m.logger.Warn("cleanup: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
@@ -5701,6 +5777,7 @@ func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now t
 	return domain.SessionRecord{
 		ProjectID:         cfg.ProjectID,
 		IssueID:           cfg.IssueID,
+		ParentSessionID:   cfg.ParentSessionID,
 		AutomationRunID:   cfg.AutomationRunID,
 		ClientRequestID:   cfg.ClientRequestID,
 		ClientRequestHash: cfg.ClientRequestHash,
@@ -5968,6 +6045,9 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 			return "", err
 		}
 		cfg.ProjectRules = rules
+		if projectID == "" {
+			cfg.Repositories, cfg.MoreRepositories = m.standaloneRepositories(ctx)
+		}
 	default:
 		return "", nil
 	}
@@ -6035,6 +6115,35 @@ func (m *Manager) aoSkillPointer(chat bool) string {
 		"If you cannot see them, search your tools for them. " +
 		"If you find nothing, read `" + renderFile + "` and use `ao render`. " +
 		"Do not use a built-in visualize skill."
+}
+
+// standaloneRepositories lists the user's local projects for a standalone
+// worker's prompt, capped so a large registry cannot bloat every turn. The
+// listing is best effort: without it the agent only loses the hint.
+func (m *Manager) standaloneRepositories(ctx context.Context) ([]promptRepository, int) {
+	lister, ok := m.store.(sessioncheckout.ProjectLister)
+	if !ok {
+		return nil, 0
+	}
+	projects, err := lister.ListProjects(ctx)
+	if err != nil {
+		m.logger.Warn("standalone prompt: list projects", "error", err)
+		return nil, 0
+	}
+	eligible := sessioncheckout.EligibleProjects(projects)
+	more := 0
+	if len(eligible) > sessioncheckout.MaxListedProjects {
+		more = len(eligible) - sessioncheckout.MaxListedProjects
+		eligible = eligible[:sessioncheckout.MaxListedProjects]
+	}
+	repos := make([]promptRepository, 0, len(eligible))
+	for _, p := range eligible {
+		repos = append(repos, promptRepository{
+			ID: p.ID, Name: sessioncheckout.DisplayName(p), Path: p.Path,
+			Remote: p.RepoOriginURL, DefaultBranch: sessioncheckout.CachedDefaultBranch(p),
+		})
+	}
+	return repos, more
 }
 
 func (m *Manager) workspaceProjectPrompt(ctx context.Context, kind domain.SessionKind, projectID domain.ProjectID) (string, error) {

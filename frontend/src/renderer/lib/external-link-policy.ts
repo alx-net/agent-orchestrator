@@ -9,6 +9,23 @@ export function isWebLink(url: string): boolean {
 	}
 }
 
+/**
+ * Web links a plain click sends to the system browser instead of AO's Browser
+ * panel. GitHub pages need the user's GitHub sign-in, which the panel's profile
+ * lacks, so a private repository's PR or file lands on GitHub's 404 there.
+ * Explicit "Open in AO browser" actions still use the panel.
+ */
+export function opensInSystemBrowser(url: string): boolean {
+	try {
+		const { protocol, hostname } = new URL(url);
+		if (protocol !== "http:" && protocol !== "https:") return false;
+		const host = hostname.toLowerCase().replace(/\.$/, "");
+		return host === "github.com" || host.endsWith(".github.com");
+	} catch {
+		return false;
+	}
+}
+
 function decodedPath(url: string): string {
 	const trimmed = url.trim();
 	let path = trimmed.split(/[?#]/, 1)[0];

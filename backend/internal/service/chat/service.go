@@ -100,6 +100,7 @@ type Service struct {
 	autoResumeInFlight    map[string]bool
 	autoResumeScanning    bool
 	usageLimitAccounts    usageLimitAccountReader
+	usageLimitSwitcher    UsageLimitSwitcher
 	// updateStops are sessions stopped so an update could replace their
 	// executable; the update starts them again, so their queue is kept.
 	updateStops map[domain.SessionID]bool
@@ -112,6 +113,10 @@ type Service struct {
 	ownerControllers map[domain.ConversationOwner]*Controller
 	startConfigs     map[domain.ConversationOwner]StartConfig
 	awakeInterrupted map[domain.ConversationOwner]domain.AwakeAgentTarget
+	// unadoptableHosts are session hosts a reattached controller could not
+	// project. The next start that may launch a provider replaces such a host
+	// instead of adopting it again.
+	unadoptableHosts map[domain.ConversationOwner]struct{}
 	// handoffInterrupted is the provider turn each session's pending handoff
 	// stopped, kept until the account move that stopped it commits.
 	handoffInterrupted map[domain.SessionID]string
@@ -232,6 +237,7 @@ func New(opts Options) *Service {
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		awakeInterrupted:       make(map[domain.ConversationOwner]domain.AwakeAgentTarget),
+		unadoptableHosts:       make(map[domain.ConversationOwner]struct{}),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 		waking:                 make(map[domain.SessionID]int),
@@ -514,11 +520,18 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+		existing.mu.Lock()
+		replayFailed := existing.replayFailed && !existing.explicitClose
+		existing.mu.Unlock()
 		s.mu.Lock()
 		if current := s.ownerControllers[owner]; current == existing {
 			delete(s.ownerControllers, owner)
 			if owner.Kind == domain.ConversationOwnerSession {
 				delete(s.controllers, cfg.SessionID)
+				if replayFailed {
+					// The registry cleanup has not recorded this yet.
+					s.unadoptableHosts[owner] = struct{}{}
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -812,6 +825,9 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 
 	var conv ports.ChatConversation
 	hostID := providerHostID(cfg)
+	if err := s.replaceUnadoptableHost(ctx, owner, hostID, cfg); err != nil {
+		return nil, err
+	}
 	freshIfMissing := cfg.FreshIfProviderConversationMissing
 	if cfg.ProviderConversationID != "" {
 		// A target that has not answered yet still needs its standing context, though
@@ -931,7 +947,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 			_ = cleanupUnpublishedConversation(conv, false)
 			return nil, fmt.Errorf("%w: durable conversation snapshot is unavailable", ports.ErrChatRecoveryInconclusive)
 		}
-		liveRows, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+		liveRows, err = s.loadConversationTurns(ctx, conversation.ID)
 		if err != nil {
 			_ = cleanupUnpublishedConversation(conv, false)
 			return nil, fmt.Errorf("%w: load live conversation before reconnect: %w", ports.ErrChatRecoveryInconclusive, err)
@@ -1035,7 +1051,8 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.reader)
+		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.usageLimitReached, s.reader)
+	controller.reattached = liveReconnect
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
@@ -1058,7 +1075,7 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		// restart duplication race.
 		var existing ConversationRows
 		if s.reader != nil {
-			existing, err = s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+			existing, err = s.loadConversationForReplay(ctx, conversation.ID)
 			if err != nil {
 				_ = cleanupUnpublishedConversation(conv, false)
 				return nil, fmt.Errorf("load conversation before native history import: %w", err)
@@ -1229,9 +1246,13 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 		if current, ok := s.ownerControllers[owner]; ok && current == controller {
 			controller.mu.Lock()
 			interrupted := controller.transportInterrupted && !controller.explicitClose
+			replayFailed := controller.replayFailed && !controller.explicitClose
 			controller.mu.Unlock()
 			if interrupted && owner.Kind == domain.ConversationOwnerSession && cfg.ExpectedControllerOwner.ControllerGeneration != "" {
 				s.awakeInterrupted[owner] = domain.AwakeAgentTarget{SessionID: cfg.SessionID, Owner: cfg.ExpectedControllerOwner}
+			}
+			if replayFailed && owner.Kind == domain.ConversationOwnerSession {
+				s.unadoptableHosts[owner] = struct{}{}
 			}
 			delete(s.ownerControllers, owner)
 			if owner.Kind == domain.ConversationOwnerSession {
@@ -1242,6 +1263,32 @@ func (s *Service) startLocked(ctx context.Context, cfg StartConfig) (*Controller
 	}()
 
 	return controller, nil
+}
+
+// replaceUnadoptableHost stops a session's provider host that a reattached
+// controller could not project, so this start launches a replacement that
+// resumes the provider conversation natively, as Exit agent and Resume agent
+// would. The host is alive, but adopting it again only replays the output that
+// stopped the last controller. Reconnect-only starts cannot launch, so they
+// leave the host alone.
+func (s *Service) replaceUnadoptableHost(ctx context.Context, owner domain.ConversationOwner, hostID domain.SessionID, cfg StartConfig) error {
+	if cfg.ReconnectOnly || cfg.ProviderConversationID == "" || s.stopProviderHost == nil {
+		return nil
+	}
+	s.mu.RLock()
+	_, unadoptable := s.unadoptableHosts[owner]
+	s.mu.RUnlock()
+	if !unadoptable {
+		return nil
+	}
+	if err := s.stopProviderHost(ctx, hostID); err != nil {
+		return fmt.Errorf("%w: stop chat host whose output could not be recorded: %w", ports.ErrChatRecoveryInconclusive, err)
+	}
+	s.mu.Lock()
+	delete(s.unadoptableHosts, owner)
+	s.mu.Unlock()
+	s.log.Warn("chat start: replaced a provider host that could not be reattached", "session", cfg.SessionID)
+	return nil
 }
 
 // cleanupUnpublishedConversation rolls back a provider opened before its AO
@@ -1361,9 +1408,14 @@ func (s *Service) Send(
 		return domain.ConversationTurn{}, err
 	}
 	var reports reportsvc.PreparedBatch
-	if s.reports != nil && msg.Origin != domain.MessageOriginAutomation {
+	if s.reports != nil {
 		var err error
-		reports, err = s.reports.PreparePiggyback(ctx, id)
+		if msg.Origin != domain.MessageOriginAutomation {
+			reports, err = s.reports.PreparePiggyback(ctx, id)
+		} else {
+			// Worker reports ride only on human turns; FYIs ride on any turn.
+			reports, err = s.reports.PrepareFYIs(ctx, id)
+		}
 		if err != nil {
 			return domain.ConversationTurn{}, fmt.Errorf("prepare worker reports: %w", err)
 		}
@@ -1710,6 +1762,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		s.mu.Lock()
 		delete(s.startConfigs, owner)
 		delete(s.awakeInterrupted, owner)
+		delete(s.unadoptableHosts, owner)
 		s.mu.Unlock()
 		var stopErr error
 		if s.stopProviderHost != nil {
@@ -1751,6 +1804,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		}
 		delete(s.startConfigs, owner)
 		delete(s.awakeInterrupted, owner)
+		delete(s.unadoptableHosts, owner)
 		s.mu.Unlock()
 	default:
 	}
@@ -2169,9 +2223,39 @@ func (s *Service) SnapshotPageForReview(ctx context.Context, reviewID string, be
 	return s.snapshotForReviewRows(review, rows), nil
 }
 
-// SnapshotReaderFunc adapts a plain function to SnapshotReader. The daemon wiring
-// uses it to convert the store's own snapshot type, so this package never has to
-// import the storage layer.
+// SnapshotTurnsReader is an optional SnapshotReader extension: a snapshot with
+// turns but no messages or activities.
+type SnapshotTurnsReader interface {
+	LoadConversationTurnsSnapshot(ctx context.Context, conversationID string) (ConversationRows, error)
+}
+
+// SnapshotReplayReader is an optional SnapshotReader extension: a full snapshot
+// whose activities carry no CommandOutput or StreamedText.
+type SnapshotReplayReader interface {
+	LoadConversationSnapshotWithoutActivityOutput(ctx context.Context, conversationID string) (ConversationRows, error)
+}
+
+// loadConversationTurns reads turns for callers that never look at messages or
+// activities, so a long conversation's timeline is not loaded on every start.
+func (s *Service) loadConversationTurns(ctx context.Context, conversationID string) (ConversationRows, error) {
+	if reader, ok := s.reader.(SnapshotTurnsReader); ok {
+		return reader.LoadConversationTurnsSnapshot(ctx, conversationID)
+	}
+	return s.reader.LoadConversationSnapshot(ctx, conversationID)
+}
+
+// loadConversationForReplay reads what native history reconciliation compares:
+// turns, messages and activity kind/status/summary/detail. Command output and
+// streamed text are never compared and are most of a long conversation's bytes.
+func (s *Service) loadConversationForReplay(ctx context.Context, conversationID string) (ConversationRows, error) {
+	if reader, ok := s.reader.(SnapshotReplayReader); ok {
+		return reader.LoadConversationSnapshotWithoutActivityOutput(ctx, conversationID)
+	}
+	return s.reader.LoadConversationSnapshot(ctx, conversationID)
+}
+
+// SnapshotReaderFunc adapts a plain function to SnapshotReader. It serves only
+// full reads; the narrower start-path reads fall back to it.
 type SnapshotReaderFunc func(ctx context.Context, conversationID string) (ConversationRows, error)
 
 // LoadConversationSnapshot satisfies SnapshotReader.
@@ -2338,7 +2422,7 @@ func (s *Service) branchUnanswered(ctx context.Context, session domain.SessionID
 	if s.reader == nil || !switchBranch && !ownBoundary {
 		return false
 	}
-	rows, err := s.reader.LoadConversationSnapshot(ctx, conversationID)
+	rows, err := s.loadConversationTurns(ctx, conversationID)
 	if err != nil {
 		return false
 	}
@@ -2789,6 +2873,37 @@ func (s *Service) relayChatTurn(
 		SenderSessionID: options.SenderSessionID, InteractionAt: options.InteractionAt,
 		Origin: domain.MessageOriginAutomation, AuthoredByUser: options.AuthoredByUser,
 	})
+	// Bind a retry to its first attempt before FYIs join the text, so a retry
+	// carrying a different FYI set is still recognized as the same delivery.
+	var err error
+	if msg.ClientPayloadHash, err = clientPayloadHash(msg); err != nil {
+		return "", err
+	}
+	fyis, err := s.reports.PrepareFYIs(ctx, id)
+	if err != nil {
+		// FYIs never block the message they would ride on; they stay pending.
+		s.log.Warn("chat relay: fyi messages stay pending", "session", id, "error", err)
+		fyis = reportsvc.PreparedBatch{}
+	}
+	msg.Text = fyis.AppendToUserMessage(msg.Text)
+	turnID, err := s.deliverRelay(ctx, id, msg)
+	switch {
+	case err != nil:
+		_ = s.reports.ReleasePiggyback(ctx, fyis, err)
+	case turnID == "":
+		// A retried delivery did not record the newly claimed FYIs.
+		_ = s.reports.ReleasePiggyback(ctx, fyis, errors.New("duplicate chat message"))
+	default:
+		if ackErr := s.reports.AcceptPiggyback(ctx, fyis); ackErr != nil {
+			// The turn is accepted; failing it would make the sender deliver twice.
+			// The claim is requeued on the next daemon start.
+			s.log.Warn("chat relay: acknowledge fyi messages", "session", id, "error", ackErr)
+		}
+	}
+	return turnID, err
+}
+
+func (s *Service) deliverRelay(ctx context.Context, id domain.SessionID, msg ports.ChatUserMessage) (string, error) {
 	// A relay never wakes a sleeping session inline: it queues and wakes in the
 	// background, as a user's send does. Waking here would hold the caller
 	// through the provider start, and a caller holding the session's input

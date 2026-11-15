@@ -72,8 +72,9 @@ export function NewChatPage({ projectId, hostId }: { projectId: string; hostId?:
 	const fallbackInFlight = useRef(false);
 	// Bumped when a saved launch is resolved, so the page re-reads it.
 	const [, setLaunchRevision] = useState(0);
-	// "@" files and attachments go through the prepared worktree's session, which
-	// becomes the task's session on send. Scratchpad has none, so it offers neither.
+	// "@" files and attachments go through the prepared workspace's session, which
+	// becomes the task's session on send: a project's worktree, or Scratchpad's empty
+	// folder. Until that exists, or if preparing failed, attachments wait for the send.
 	const preparedId = task.preparedSessionId || undefined;
 	const workspaceFiles = useQuery({
 		queryKey: ["new-chat-files", hostKey, preparedId ?? ""],
@@ -104,8 +105,10 @@ export function NewChatPage({ projectId, hostId }: { projectId: string; hostId?:
 	}
 	const skills = useMemo(() => readChatSkills(task.agent.value, hostId), [hostId, task.agent.value]);
 	const snapshot = useMemo<ConversationSnapshot>(
-		() => ({ ...startingConversationSnapshot(draftId, task.agent.value || "claude-code"), controller: { state: "ready" } }),
-		[draftId, task.agent.value],
+		// Staged files are served from the prepared session, so the opening message's
+		// images show while the session starts.
+		() => ({ ...startingConversationSnapshot(draftId, task.agent.value || "claude-code"), sessionId: preparedId ?? draftId, controller: { state: "ready" } }),
+		[draftId, preparedId, task.agent.value],
 	);
 	// A session of this agent already reported its own settings: draw exactly those
 	// controls, holding this chat's choices, so the bar never changes on handoff.

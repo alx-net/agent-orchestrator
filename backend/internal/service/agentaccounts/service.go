@@ -26,6 +26,9 @@ import (
 // freshFor is how long a read of an account's identity and limits is reused.
 const freshFor = 5 * time.Minute
 
+// mcpShareLimit bounds copying the computer's MCP sign-ins into an account.
+const mcpShareLimit = 5 * time.Second
+
 // retryEmptyAfter is how long an answer with no limit windows is reused. A
 // folder read just after its sign-in can answer before its limits are known.
 const retryEmptyAfter = 30 * time.Second
@@ -50,8 +53,11 @@ type Service struct {
 	terminals Terminals
 	// stopAgents stops every running agent on an account before it is removed.
 	stopAgents func(context.Context, string) error
-	log        *slog.Logger
-	now        func() time.Time
+	// agentsRunning reports an agent other than the given session's running,
+	// or starting, on an account. Nil: unknown, so nothing is shared into it.
+	agentsRunning func(context.Context, string, domain.SessionID) bool
+	log           *slog.Logger
+	now           func() time.Time
 
 	mu       sync.Mutex
 	readings map[string]*reading
@@ -60,6 +66,10 @@ type Service struct {
 	// agent cannot start on a login AO is about to delete.
 	removing       map[string]bool
 	defaultChanged func(domain.AgentAccountProvider)
+	// limitedLogins holds, by login (quota pool), when a usage limit that
+	// refused a session resets; limitedFor holds it per session and account.
+	limitedLogins map[string]time.Time
+	limitedFor    map[domain.SessionID]map[string]time.Time
 }
 
 // reading is the last identity and limits read for one account.
@@ -70,7 +80,21 @@ type reading struct {
 	mismatch  bool
 	limits    *domain.AgentAccountLimits
 	limitsErr string
-	at        time.Time
+	// mcpNeedsAuth names the MCP servers the folder's CLI found not signed in.
+	mcpNeedsAuth []string
+	at           time.Time
+}
+
+// mcpAuthReporter is a provider that reports which MCP servers a folder has
+// not signed in to.
+type mcpAuthReporter interface {
+	MCPNeedsAuth(home string) []string
+}
+
+// mcpAuthSharer is a provider that copies the computer's MCP sign-ins into an
+// account folder's credentials. It must not run while an agent uses the folder.
+type mcpAuthSharer interface {
+	ShareMCPAuth(ctx context.Context, home string) error
 }
 
 // knownUnusable reports a reading that shows the folder cannot launch as its
@@ -122,6 +146,36 @@ func (s *Service) SetAgentStopper(stop func(ctx context.Context, accountID strin
 	s.stopAgents = stop
 }
 
+// SetAgentActivity late-binds what reports agents running on an account, so
+// the computer's MCP sign-ins are copied into it only while none is.
+func (s *Service) SetAgentActivity(running func(ctx context.Context, accountID string, except domain.SessionID) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentsRunning = running
+}
+
+// shareMCPAuth copies the computer's MCP sign-ins into account's folder when
+// no agent other than except's uses it. fresh marks an account just added,
+// which no agent can use yet. Failures are logged: a launch never fails for it.
+func (s *Service) shareMCPAuth(ctx context.Context, account domain.AgentAccount, except domain.SessionID, fresh bool) {
+	sharer, ok := s.providers[account.Provider].(mcpAuthSharer)
+	if !ok || account.Device() {
+		return
+	}
+	s.mu.Lock()
+	running := s.agentsRunning
+	s.mu.Unlock()
+	// Its own budget: a launch's deadline must not run out on the keychain.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mcpShareLimit)
+	defer cancel()
+	if !fresh && (running == nil || running(ctx, account.ID, except)) {
+		return
+	}
+	if err := sharer.ShareMCPAuth(ctx, account.Home); err != nil {
+		s.log.Warn("share MCP sign-ins into account", "account", account.ID, "error", err)
+	}
+}
+
 // AccountView is an account with its latest readings, as the app shows it.
 type AccountView struct {
 	Account     domain.AgentAccount
@@ -130,6 +184,9 @@ type AccountView struct {
 	IdentityErr string
 	Limits      *domain.AgentAccountLimits
 	LimitsErr   string
+	// MCPNeedsAuth names MCP servers that are not signed in on the account, so
+	// a session there runs without them.
+	MCPNeedsAuth []string
 }
 
 // List returns every account, the computer's own first per provider. refresh
@@ -155,6 +212,7 @@ func (s *Service) List(ctx context.Context, refresh bool) ([]AccountView, error)
 		view := AccountView{Account: account, Default: def == account.ID}
 		if r != nil {
 			view.SignedIn, view.IdentityErr, view.Limits, view.LimitsErr = r.identity.SignedIn, r.identityErr, r.limits, r.limitsErr
+			view.MCPNeedsAuth = r.mcpNeedsAuth
 			if account.Device() {
 				view.Account.Email, view.Account.Plan = r.identity.Email, r.identity.Plan
 			} else if r.identity.Plan != "" {
@@ -191,6 +249,9 @@ func (s *Service) read(ctx context.Context, account domain.AgentAccount) *readin
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	r := &reading{at: s.now()}
+	if reporter, ok := provider.(mcpAuthReporter); ok {
+		r.mcpNeedsAuth = reporter.MCPNeedsAuth(account.Home)
+	}
 	identity, err := provider.Identity(ctx, account.Home)
 	r.identity = identity
 	if err != nil {
@@ -263,6 +324,49 @@ func (s *Service) find(ctx context.Context, id string) (domain.AgentAccount, err
 		}
 	}
 	return domain.AgentAccount{}, ports.ErrAgentAccountUnknown
+}
+
+// ClaudeAccounts lists the Claude Code subscriptions, the computer's own first.
+func (s *Service) ClaudeAccounts(ctx context.Context) ([]domain.AgentAccount, error) {
+	accounts, err := s.accounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.AgentAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Provider == domain.AgentAccountProviderClaude {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
+// ClaudeAccount finds one Claude Code subscription.
+func (s *Service) ClaudeAccount(ctx context.Context, id string) (domain.AgentAccount, error) {
+	account, err := s.find(ctx, id)
+	if err != nil {
+		return domain.AgentAccount{}, err
+	}
+	if account.Provider != domain.AgentAccountProviderClaude {
+		return domain.AgentAccount{}, ports.ErrAgentAccountUnknown
+	}
+	return account, nil
+}
+
+// PrepareClaudeAccount brings the user's settings and MCP servers into the
+// account's folder, as a launch there does.
+func (s *Service) PrepareClaudeAccount(_ context.Context, account domain.AgentAccount) error {
+	provider := s.providers[domain.AgentAccountProviderClaude]
+	if provider == nil {
+		return nil
+	}
+	return s.prepare(provider, account.Home)
+}
+
+// ClaudeMCPCLI is the Claude Code provider's MCP commands, if it has them.
+func (s *Service) ClaudeMCPCLI() ports.MCPCLI {
+	cli, _ := s.providers[domain.AgentAccountProviderClaude].(ports.MCPCLI)
+	return cli
 }
 
 // defaultID is the provider's account for new sessions; the computer's own
@@ -375,9 +479,20 @@ func (s *Service) RunsOnComputerLogin(ctx context.Context, harness domain.AgentH
 
 // newSessionAccount is the account a new session of p starts on: the default,
 // or, when the default is known to be signed out or to hold another login, the
-// first other account that is signed in. The session's account shows which.
-// Only a bad default costs CLI calls; a good one is answered from the cache.
+// first other account that is signed in. When that account has run out of
+// usage, the one with the most headroom instead. The session's account shows
+// which. A reading is reused for the cache window.
 func (s *Service) newSessionAccount(ctx context.Context, p domain.AgentAccountProvider) (domain.AgentAccount, error) {
+	account, err := s.signedInSessionAccount(ctx, p)
+	if err != nil {
+		return account, err
+	}
+	return s.avoidUsedUp(ctx, p, account), nil
+}
+
+// signedInSessionAccount is the default, or the first other signed-in account
+// when the default cannot launch. Only a bad default costs CLI calls.
+func (s *Service) signedInSessionAccount(ctx context.Context, p domain.AgentAccountProvider) (domain.AgentAccount, error) {
 	def, err := s.defaultID(ctx, p)
 	if err != nil {
 		return domain.AgentAccount{}, err
@@ -584,6 +699,7 @@ func (s *Service) VerifyLogin(ctx context.Context, operationID string) (LoginSta
 		s.log.Warn("prepare account folder", "account", op.id, "error", err)
 	}
 	s.endLogin(ctx, op, false)
+	s.shareMCPAuth(ctx, account, "", true)
 	s.read(ctx, account)
 	s.notifyDefaultChanged(account.Provider)
 	views, err = s.List(ctx, false)
@@ -631,6 +747,7 @@ func (s *Service) finishSignInAgain(ctx context.Context, op *login, identity dom
 		return LoginMismatch, saved, nil
 	}
 	s.endLogin(ctx, op, false)
+	s.shareMCPAuth(ctx, *op.account, "", false)
 	s.read(ctx, *op.account)
 	s.notifyDefaultChanged(op.account.Provider)
 	views, err := s.List(ctx, false)
@@ -988,6 +1105,34 @@ func (s *Service) SessionLaunchEnv(ctx context.Context, id domain.SessionID) (ma
 	return s.launchEnv(ctx, id, domain.AgentAccount{})
 }
 
+// SessionAccountEnv is the environment of the accounts a running session is on,
+// for a process started beside its agent, such as a Run tab. Unlike
+// SessionLaunchEnv it changes nothing: no binding, no folder preparation, and no
+// MCP sign-in sharing, which touches the keychain and credentials the running
+// agent is using.
+func (s *Service) SessionAccountEnv(ctx context.Context, id domain.SessionID) (map[string]string, error) {
+	env := map[string]string{}
+	var errs []error
+	for _, p := range domain.AgentAccountProviders {
+		provider := s.providers[p]
+		if provider == nil {
+			continue
+		}
+		account, _, err := s.SessionAccount(ctx, id, p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if account.Device() {
+			continue
+		}
+		for key, value := range provider.LaunchEnv(account.Home) {
+			env[key] = value
+		}
+	}
+	return env, errors.Join(errs...)
+}
+
 // SessionLaunchEnvWith is SessionLaunchEnv with accountID in place of the
 // session's account for its provider, for starting an agent on an account the
 // session moves to. The session's binding is not changed.
@@ -1041,6 +1186,7 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
 		if err := s.prepare(provider, account.Home); err != nil {
 			errs = append(errs, err)
 		}
+		s.shareMCPAuth(ctx, account, id, false)
 		for key, value := range provider.LaunchEnv(account.Home) {
 			env[key] = value
 		}

@@ -119,8 +119,13 @@ export function SideComposer({
 	useEffect(() => {
 		if (editor.current?.getSnapshot().text !== draft.text) editor.current?.setText(draft.text);
 	}, [draft.text]);
+	// Each request (focusKey) focuses once, when the side chat can take input.
+	// A reply settling (ready again) must not pull the caret back here.
+	const focusedKey = useRef(0);
 	useEffect(() => {
-		if (focusKey && ready) editor.current?.focus();
+		if (!focusKey || !ready || focusedKey.current === focusKey) return;
+		focusedKey.current = focusKey;
+		editor.current?.focus();
 	}, [focusKey, ready]);
 	const canSend =
 		ready &&

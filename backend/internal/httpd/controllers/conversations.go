@@ -1632,6 +1632,8 @@ func mcpServersPayload(servers []domain.ConversationMCPServer) []ConversationMCP
 			Status:        server.Status,
 			Error:         server.Error,
 			FailureReason: server.FailureReason,
+			ToolCount:     server.ToolCount,
+			Scope:         server.Scope,
 		})
 	}
 	return out

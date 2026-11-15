@@ -717,7 +717,7 @@ func (s *Store) commitChatSpawn(
 		return errors.New("commit Chat spawn: incomplete or mismatched provider boundary ownership")
 	}
 
-	s.writeMu.Lock()
+	s.writeMu.lockFor("Chat spawn of session " + string(rec.ID))
 	defer s.writeMu.Unlock()
 	return s.inTx(ctx, "commit Chat spawn", func(q *gen.Queries) error {
 		owner, err := q.GetSession(ctx, rec.ID)
@@ -2946,6 +2946,32 @@ func (s *Store) UpsertActivity(
 			return fmt.Errorf("lookup activity %s: %w", activity.ProviderItemID, err)
 		}
 	}
+	if activity.RequestID != "" {
+		// A reattached controller receives the host's replay of a request that
+		// is still pending, such as a question with no provider item id.
+		exists, err := q.ConversationActivityExistsForRequest(ctx,
+			gen.ConversationActivityExistsForRequestParams{
+				ConversationID: conversationID,
+				RequestID:      activity.RequestID,
+			})
+		if err != nil {
+			return fmt.Errorf("lookup activity request %s: %w", activity.RequestID, err)
+		}
+		if exists {
+			if err := q.SettleConversationActivityByRequest(ctx,
+				gen.SettleConversationActivityByRequestParams{
+					Status:         activity.Status,
+					Summary:        activity.Summary,
+					DetailJson:     detail,
+					UpdatedAt:      now,
+					ConversationID: conversationID,
+					RequestID:      activity.RequestID,
+				}); err != nil {
+				return fmt.Errorf("settle activity request %s: %w", activity.RequestID, err)
+			}
+			return nil
+		}
+	}
 
 	turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
 	return s.inTx(ctx, "insert activity", func(q *gen.Queries) error {
@@ -3166,7 +3192,9 @@ func (s *Store) projectProviderEvent(
 			providerEventID, method, payloadJSON, now, project,
 		)
 	}
-	s.writeMu.Lock()
+	// The projection runs controller code under the writer; name it for the
+	// stuck-writer watchdog.
+	s.writeMu.lockFor("provider event projection " + method + " in conversation " + conversationID)
 	defer s.writeMu.Unlock()
 
 	tx, err := s.writeDB.BeginTx(ctx, nil)
@@ -3493,13 +3521,27 @@ func (s *Store) ApplyProviderTitle(
 
 	var applied bool
 	err = s.inTx(ctx, "apply provider title", func(q *gen.Queries) error {
+		state, readErr := q.GetSessionTitleState(ctx, session)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("read session %s title: %w", session, readErr)
+		}
+		// A session with a title area carries its prefix on every automatic title.
+		area := state.TitleArea.String
+		label := domain.PrefixSessionTitle(area, title)
 		rows, updateErr := q.ApplyConversationTitleToSession(ctx,
 			gen.ApplyConversationTitleToSessionParams{
-				DisplayName: title,
+				DisplayName: label,
+				AutoTitle:   label,
 				UpdatedAt:   now,
 				ID:          session,
-				// The witness: only a label AO itself last wrote may be replaced.
-				DisplayName_2: conversation.AppliedTitle,
+				TitleArea:   state.TitleArea,
+				// The witness: only a label AO itself last wrote may be replaced,
+				// including one that an area chosen later has since prefixed.
+				AppliedTitle:         conversation.AppliedTitle,
+				PrefixedAppliedTitle: domain.PrefixSessionTitle(area, conversation.AppliedTitle),
 			})
 		if updateErr != nil {
 			return fmt.Errorf("apply title to session %s: %w", session, updateErr)
@@ -3509,7 +3551,7 @@ func (s *Store) ApplyProviderTitle(
 		}
 		applied = true
 		return q.UpdateConversationAppliedTitle(ctx, gen.UpdateConversationAppliedTitleParams{
-			AppliedTitle: title,
+			AppliedTitle: label,
 			UpdatedAt:    now,
 			ID:           conversationID,
 		})
@@ -3980,6 +4022,43 @@ func (s *Store) LoadConversationSnapshot(
 	ctx context.Context,
 	conversationID string,
 ) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotFull)
+}
+
+// LoadConversationTurnsSnapshot is LoadConversationSnapshot without messages or
+// activities. Chat reconnect and resume decisions read only turns, and the rest
+// of a long conversation can be hundreds of megabytes.
+func (s *Store) LoadConversationTurnsSnapshot(
+	ctx context.Context,
+	conversationID string,
+) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotTurnsOnly)
+}
+
+// LoadConversationSnapshotWithoutActivityOutput is LoadConversationSnapshot with
+// every activity's CommandOutput and StreamedText left empty (their truncation
+// flags are kept). Native history reconciliation never compares those bodies.
+func (s *Store) LoadConversationSnapshotWithoutActivityOutput(
+	ctx context.Context,
+	conversationID string,
+) (ConversationSnapshot, error) {
+	return s.loadConversationSnapshot(ctx, conversationID, snapshotWithoutActivityOutput)
+}
+
+// conversationSnapshotParts selects how much of the timeline a snapshot reads.
+type conversationSnapshotParts int
+
+const (
+	snapshotFull conversationSnapshotParts = iota
+	snapshotWithoutActivityOutput
+	snapshotTurnsOnly
+)
+
+func (s *Store) loadConversationSnapshot(
+	ctx context.Context,
+	conversationID string,
+	parts conversationSnapshotParts,
+) (ConversationSnapshot, error) {
 	conv, err := s.qr.SelectConversationByID(ctx, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationSnapshot{}, ErrConversationNotFound
@@ -4018,13 +4097,36 @@ func (s *Store) LoadConversationSnapshot(
 	// Messages and activities exclude anything attached to a rolled-back turn: the
 	// agent has forgotten those, and a timeline that still showed them would be
 	// describing a conversation the agent is not in.
-	messageRows, err := s.qr.SelectConversationMessages(ctx, conversationID)
-	if err != nil {
-		return ConversationSnapshot{}, fmt.Errorf("select messages: %w", err)
+	var messageRows []gen.ConversationMessage
+	var activityRows []gen.ConversationActivity
+	if parts != snapshotTurnsOnly {
+		messageRows, err = s.qr.SelectConversationMessages(ctx, conversationID)
+		if err != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select messages: %w", err)
+		}
 	}
-	activityRows, err := s.qr.SelectConversationActivities(ctx, conversationID)
-	if err != nil {
-		return ConversationSnapshot{}, fmt.Errorf("select activities: %w", err)
+	switch parts {
+	case snapshotFull:
+		activityRows, err = s.qr.SelectConversationActivities(ctx, conversationID)
+		if err != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select activities: %w", err)
+		}
+	case snapshotWithoutActivityOutput:
+		lite, liteErr := s.qr.SelectConversationActivitiesWithoutOutput(ctx, conversationID)
+		if liteErr != nil {
+			return ConversationSnapshot{}, fmt.Errorf("select activities: %w", liteErr)
+		}
+		activityRows = make([]gen.ConversationActivity, len(lite))
+		for i, row := range lite {
+			activityRows[i] = gen.ConversationActivity{
+				ID: row.ID, ConversationID: row.ConversationID, TurnID: row.TurnID,
+				Sequence: row.Sequence, Revision: row.Revision, Kind: row.Kind, Status: row.Status,
+				Summary: row.Summary, DetailJson: row.DetailJson, RequestID: row.RequestID,
+				ProviderItemID: row.ProviderItemID, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+				CommandOutputTruncated: row.CommandOutputTruncated,
+				StreamedTextTruncated:  row.StreamedTextTruncated, BranchID: row.BranchID,
+			}
+		}
 	}
 
 	presentation := s.conversationHistoryPresentation(ctx, conversationID)
@@ -4036,6 +4138,11 @@ func (s *Store) LoadConversationSnapshot(
 		BranchPoints:                     presentation.branchPoints,
 		BranchedFromEarlierMessage:       presentation.branchedFromEarlierMessage,
 	}
+	// Sized up front: growing by append copies every element several times over.
+	// Empty stays nil, as callers and JSON have always seen it.
+	if len(turnRows) > 0 {
+		snapshot.Turns = make([]domain.ConversationTurn, 0, len(turnRows))
+	}
 	for _, row := range turnRows {
 		turn := turnToDomain(row)
 		turn.HasRetryAttempt = retriedSources[turn.ID]
@@ -4043,8 +4150,14 @@ func (s *Store) LoadConversationSnapshot(
 		presentation.filterInactiveProviderTurn(&turn)
 		snapshot.Turns = append(snapshot.Turns, turn)
 	}
+	if len(messageRows) > 0 {
+		snapshot.Messages = make([]domain.ConversationMessage, 0, len(messageRows))
+	}
 	for _, row := range messageRows {
 		snapshot.Messages = append(snapshot.Messages, messageToDomain(row))
+	}
+	if len(activityRows) > 0 {
+		snapshot.Activities = make([]domain.ConversationActivity, 0, len(activityRows))
 	}
 	for _, row := range activityRows {
 		snapshot.Activities = append(snapshot.Activities, activityToDomain(row))

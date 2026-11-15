@@ -46,11 +46,12 @@ const claudePlanGuidance = "When you make a to-do list or plan, or do work with 
 
 // claudeStatusGuidance asks the main Claude agent to narrate its progress the
 // same way AO's bridge hook asks its subagents to, so the chat's agents board
-// can show what the main agent is doing now and the choices it made. It does
+// can show what the main agent is doing now and how its turn ended. It does
 // not depend on the to-do tools, which the user can turn off.
 const claudeStatusGuidance = "While you work, before each major step write one short line that starts with " +
-	"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
-	"starts with \"Decision:\" stating the choice and the reason in under 20 words."
+	"\"Status:\" saying what you are doing now. End every reply that finishes your turn with one line that " +
+	"starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, and the result or " +
+	"what you are waiting for in under 20 words."
 
 // claudeTodoToolsChoice returns the value the user chose for the to-do tools in
 // the project env or the daemon's own environment. A blank value is no choice.
@@ -91,7 +92,8 @@ type claudeLaunchAuthenticator interface {
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
-	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
+	driver := &checkpointDriver{plugin: plugin}
+	driver.ChatDriver = acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		// A live rejection is the ground truth that outranks any cached
 		// verdict, so drop the cache the moment one arrives. This is also the
@@ -167,10 +169,12 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 				Env:     env,
 			}, nil
 		},
-		SessionMeta:    claudeSessionMeta,
+		SessionMeta:    driver.sessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
-	}, log)}
+		ModelAlias:     claudeModelAlias,
+	}, log)
+	return driver
 }
 
 func claudeCanHibernate(ctx context.Context, conn *acpsdk.ClientSideConnection, id acpsdk.SessionId) (bool, error) {
@@ -223,37 +227,10 @@ func claudeAuthRejected(notifyDaemon func()) func() {
 	}
 }
 
+// claudePromptResponseFailure reads claude-agent-acp's AIR failure, which the
+// shared ACP classifier interprets.
 func claudePromptResponseFailure(response acpsdk.PromptResponse) error {
-	if response.StopReason != acpsdk.StopReasonEndTurn {
-		return nil
-	}
-	air := claudeNestedMap(claudeNestedMap(response.Meta, "jetbrains"), "air")
-	version, versionOK := air["version"].(float64)
-	failure := claudeNestedMap(air, "sessionFailure")
-	id, _ := failure["id"].(string)
-	title, _ := failure["title"].(string)
-	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" || failure["severity"] != "error" {
-		return nil
-	}
-	details, _ := failure["details"].(string)
-	var cause error
-	if actions, ok := failure["actions"].([]any); ok {
-		for _, action := range actions {
-			if action == "login" {
-				cause = ports.ErrChatAuthRequired
-				break
-			}
-		}
-	}
-	return ports.NewChatProviderFailure(strings.TrimSpace(title), strings.TrimSpace(details), cause)
-}
-
-func claudeNestedMap(meta map[string]any, key string) map[string]any {
-	if meta == nil {
-		return nil
-	}
-	value, _ := meta[key].(map[string]any)
-	return value
+	return acpdriver.SessionFailurePromptError(response)
 }
 
 // claudeACPLaunchEnv gives claude-agent-acp the same provider model IDs AO
@@ -405,11 +382,9 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 			"type": "preset", "preset": "claude_code", "append": standing,
 		}
 	}
-	// Also per session, so a choice made after the adapter started still applies.
+	// Where the session compacts is added per session too (see sessionMeta), so
+	// a choice made after the adapter started still applies.
 	options := map[string]any{}
-	if window := cfg.Env[claudeAutoCompactWindowEnv]; window != "" {
-		options["env"] = map[string]string{claudeAutoCompactWindowEnv: window}
-	}
 	if cfg.DisableTools {
 		options["tools"] = []string{}
 		options["strictMcpConfig"] = true
@@ -423,8 +398,6 @@ func claudeSessionMeta(cfg acpdriver.LaunchConfig) map[string]any {
 	}
 	return meta
 }
-
-const claudeAutoCompactWindowEnv = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
 
 func claudeSessionMode(permission ports.PermissionMode) string {
 	switch ports.NormalizePermissionMode(permission) {
@@ -454,6 +427,52 @@ func claudeModelName(id string) string {
 		name += "." + match[3]
 	}
 	return name
+}
+
+// claudeFamilyAlias matches a Claude Code family alias such as "fable" or
+// "opus[1m]", capturing its family and context size.
+var claudeFamilyAlias = regexp.MustCompile(`^(opus|sonnet|haiku|fable)(\[1m\])?$`)
+
+// claudeModelAlias finds the choice a family alias names when the session no
+// longer lists the alias. Claude Code lists a family's alias once, and moves it
+// to the full id when the session runs that model: on claude-fable-5-2 its
+// "fable" choice becomes "claude-fable-5-2". An alias runs the newest model of
+// its family, so only the one newest listed id of that family and context size
+// matches. Two ids of that version, such as a dated snapshot beside its
+// undated id, could be different models, so neither is chosen. The ACP driver
+// uses the answer only when it is the model the session runs.
+func claudeModelAlias(model string, choices []ports.ChatConfigOptionChoice) string {
+	alias := claudeFamilyAlias.FindStringSubmatch(strings.ToLower(strings.TrimSpace(model)))
+	if alias == nil {
+		return ""
+	}
+	newest, newestVersion, tied := "", [2]int{-1, -1}, false
+	for _, choice := range choices {
+		id, size := strings.ToLower(choice.Value), ""
+		if base, found := strings.CutSuffix(id, "[1m]"); found {
+			id, size = base, "[1m]"
+		}
+		match := claudeModelFamily.FindStringSubmatch(id)
+		if match == nil || match[1] != alias[1] || size != alias[2] {
+			continue
+		}
+		major, _ := strconv.Atoi(match[2])
+		minor := 0
+		if match[3] != "" {
+			minor, _ = strconv.Atoi(match[3])
+		}
+		version := [2]int{major, minor}
+		switch {
+		case version[0] > newestVersion[0] || (version[0] == newestVersion[0] && version[1] > newestVersion[1]):
+			newest, newestVersion, tied = choice.Value, version, false
+		case version == newestVersion:
+			tied = true
+		}
+	}
+	if tied {
+		return ""
+	}
+	return newest
 }
 
 func claudeSessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {

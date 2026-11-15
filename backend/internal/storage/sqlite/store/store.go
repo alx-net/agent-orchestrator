@@ -25,40 +25,6 @@ type Store struct {
 	writeMu *contextMutex
 }
 
-type contextMutex struct {
-	token chan struct{}
-}
-
-func newContextMutex() *contextMutex {
-	mutex := &contextMutex{token: make(chan struct{}, 1)}
-	mutex.token <- struct{}{}
-	return mutex
-}
-
-func (m *contextMutex) Lock() {
-	<-m.token
-}
-
-func (m *contextMutex) LockContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-m.token:
-		if err := ctx.Err(); err != nil {
-			m.token <- struct{}{}
-			return err
-		}
-		return nil
-	}
-}
-
-func (m *contextMutex) Unlock() {
-	m.token <- struct{}{}
-}
-
 type conversationProjectionTxKey struct{}
 
 // conversationWriter returns the transaction-bound query set when a provider
@@ -72,6 +38,21 @@ func (s *Store) conversationWriter(ctx context.Context) (*gen.Queries, func()) {
 	}
 	s.writeMu.Lock()
 	return s.qw, s.writeMu.Unlock
+}
+
+// WithConversationWriter runs fn holding the conversation writer. Writes fn
+// makes through the context it gets reuse that writer instead of waiting for it,
+// so a caller can take its own locks inside the writer's: the order a provider
+// event projection takes them in. Inside a projection it is that projection's.
+func (s *Store) WithConversationWriter(ctx context.Context, fn func(context.Context) error) error {
+	if q, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); ok && q != nil {
+		return fn(ctx)
+	}
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
+	defer s.writeMu.Unlock()
+	return fn(context.WithValue(ctx, conversationProjectionTxKey{}, s.qw))
 }
 
 func (s *Store) conversationReader(ctx context.Context) *gen.Queries {

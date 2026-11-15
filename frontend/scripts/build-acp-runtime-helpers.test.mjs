@@ -17,9 +17,12 @@ import {
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
+	patchClaudeFailureKinds,
 	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
+	patchClaudeMcpControl,
 	patchClaudeRetryDetails,
+	patchClaudeSessionSettings,
 	patchClaudeStaleIdleDebt,
 	patchClaudeSteerSettlement,
 	patchClaudeSubagentControl,
@@ -297,6 +300,54 @@ describe("patchClaudeFoldedPromptSettlement", () => {
 	});
 });
 
+describe("patchClaudeSessionSettings", () => {
+	// claude-agent-acp 0.70's settings option, as compiled.
+	const adapterSource = `
+        const configuredSettings = userProvidedOptions?.settings ??
+            (modelConfig
+                ? {
+                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
+                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
+                }
+                : undefined);
+        // Claude Code applies env from settings.json after the subprocess env.
+`;
+
+	function patchedSettings() {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		expect(patchClaudeSessionSettings(adapterPath)).toBe(true);
+		expect(patchClaudeSessionSettings(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		const start = patched.indexOf("// AO: merge session settings over the model settings.");
+		const end = patched.indexOf("// Claude Code applies env", start);
+		return new Function("userProvidedOptions", "modelConfig", `${patched.slice(start, end)}\nreturn configuredSettings;`);
+	}
+
+	it("keeps the model settings when a session also sends settings", () => {
+		const settings = patchedSettings();
+		const compaction = { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "383000" }, hooks: { PreCompact: [] } };
+
+		expect(settings({ settings: compaction }, { availableModels: ["opus"], modelOverrides: { opus: "x" } })).toEqual({
+			availableModels: ["opus"],
+			modelOverrides: { opus: "x" },
+			...compaction,
+		});
+		expect(settings({ settings: compaction }, undefined)).toEqual(compaction);
+		expect(settings(undefined, { availableModels: ["opus"] })).toEqual({ availableModels: ["opus"] });
+		expect(settings(undefined, undefined)).toBeUndefined();
+		// A settings file path still goes to the SDK unchanged.
+		expect(settings({ settings: "claude.json" }, { availableModels: ["opus"] })).toBe("claude.json");
+	});
+
+	it("fails packaging when the adapter's settings option changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "const configuredSettings = userProvidedOptions?.settings;\n");
+
+		expect(() => patchClaudeSessionSettings(adapterPath)).toThrow(/session settings patch/);
+	});
+});
+
 describe("patchClaudeStaleIdleDebt", () => {
 	it("drops unpaid idle debt when Claude starts running again", () => {
 		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
@@ -338,6 +389,97 @@ describe("patchClaudeStaleIdleDebt", () => {
 		writeFileSync(adapterPath, 'case "session_state_changed": {\n');
 
 		expect(() => patchClaudeStaleIdleDebt(adapterPath)).toThrow(/idle-debt patch/);
+	});
+});
+
+describe("patchClaudeFailureKinds", () => {
+	const extensionSource = `
+export function sessionFailureMeta(failure) {
+    return {
+        jetbrains: {
+            air: {
+                version: 1,
+                sessionFailure: {
+                    id: failure.id,
+                    category: failure.category,
+                    severity: failure.severity,
+                    title: failure.title,
+                    ...(failure.details ? { details: failure.details } : {}),
+                    actions: failure.actions,
+                },
+            },
+        },
+    };
+}
+`;
+	const adapterSource = `
+        let lastAssistantError;
+        const resetTurnScratch = () => {
+            lastAssistantError = undefined;
+        };
+        const failActiveWithSessionFailure = async (kind, error, title) => {
+            const failure = await createSessionFailure(kind, { title });
+            if (!failure) {
+                failActive(error);
+                return;
+            }
+            sessionFailures.recordActive(failure);
+        };
+                        if (message.type === "assistant" && message.parent_tool_use_id === null) {
+                            if (message.error) {
+                                lastAssistantError = message.error;
+                            }
+                        }
+`;
+
+	function writeBridge() {
+		const directory = temporaryDirectory();
+		const adapterPath = join(directory, "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		writeFileSync(join(directory, "session-failure-extension.js"), extensionSource);
+		return adapterPath;
+	}
+
+	it("sends the failure's kind, errorKind and Claude Code's api_error to AO", () => {
+		const adapterPath = writeBridge();
+
+		expect(patchClaudeFailureKinds(adapterPath)).toBe(true);
+		expect(patchClaudeFailureKinds(adapterPath)).toBe(false);
+
+		const extension = readFileSync(join(dirname(adapterPath), "session-failure-extension.js"), "utf8");
+		const sessionFailureMeta = new Function(`${extension.replace("export ", "")}; return sessionFailureMeta;`)();
+		const failure = { id: "t:error", category: "limit", severity: "error", title: "Out of quota", actions: [] };
+		expect(sessionFailureMeta({
+			...failure, kind: "quota_exhausted", errorKind: "rate_limit", apiError: "usage_limit_reached",
+		}).jetbrains.air.sessionFailure).toEqual({
+			...failure, kind: "quota_exhausted", errorKind: "rate_limit", apiError: "usage_limit_reached",
+		});
+		// A failure without them keeps the original wire shape.
+		expect(sessionFailureMeta(failure).jetbrains.air.sessionFailure).toEqual(failure);
+
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("let lastAssistantApiError;");
+		expect(patched).toContain("lastAssistantApiError = undefined;");
+		expect(patched).toContain('if (typeof message.api_error === "string") {');
+		expect(patched).toContain('failure.errorKind = typeof error?.data?.errorKind === "string" ? error.data.errorKind : undefined;');
+		expect(patched).toContain("failure.apiError = lastAssistantApiError;");
+		// The stamp goes after the missing-failure fallback, which has no failure.
+		expect(patched.indexOf("failure.apiError")).toBeGreaterThan(patched.indexOf("failActive(error);"));
+		expect(patched.indexOf("failure.apiError")).toBeLessThan(patched.indexOf("sessionFailures.recordActive(failure);"));
+	});
+
+	it("fails packaging when the adapter's failure handling changes", () => {
+		const adapterPath = writeBridge();
+		writeFileSync(adapterPath, adapterSource.replace("let lastAssistantError;", "let lastError;"));
+
+		expect(() => patchClaudeFailureKinds(adapterPath)).toThrow(/failure-kind patch/);
+	});
+
+	it("fails packaging when sessionFailureMeta changes", () => {
+		const adapterPath = writeBridge();
+		writeFileSync(join(dirname(adapterPath), "session-failure-extension.js"), "export function sessionFailureMeta() {}\n");
+
+		expect(() => patchClaudeFailureKinds(adapterPath)).toThrow(/failure-kind patch/);
 	});
 });
 
@@ -695,8 +837,9 @@ describe("patchClaudeSubagentProgress", () => {
 		expect(updatedInput).toEqual({ ...input, prompt: updatedInput.prompt });
 		expect(updatedInput.prompt).toBe(
 			"Find the retry loop.\n\nWhile you work, before each major step write one short line that starts with " +
-			"\"Status:\" saying what you are doing now. Whenever you choose between approaches, write one line that " +
-			"starts with \"Decision:\" stating the choice and the reason in under 20 words.",
+			"\"Status:\" saying what you are doing now. End your final report " +
+			"with one line that starts with \"Outcome:\" followed by done, blocked, failed or needs input, a dash, " +
+			"and the result or what you are waiting for in under 20 words.",
 		);
 		expect(input.prompt).toBe("Find the retry loop.");
 		expect(await hook({ hook_event_name: "PreToolUse", tool_name: "Task", tool_input: updatedInput })).toEqual({});
@@ -784,7 +927,7 @@ async function onMessage(session, message) {
 connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params));
 `;
 	const prefix =
-		"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: or Decision: line): ";
+		"Message from the user (sent directly to you while you work; follow it, and acknowledge with a Status: line): ";
 
 	function load({ userHooks } = {}) {
 		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
@@ -1008,6 +1151,143 @@ connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => 
 		writeFileSync(adapterPath, adapterSource);
 		expect(() => patchClaudeSubagentControl(adapterPath)).toThrow(/subagent control patch/);
 		expect(readFileSync(adapterPath, "utf8")).toBe(adapterSource);
+	});
+});
+
+describe("patchClaudeMcpControl", () => {
+	// claude-agent-acp 0.70, cut down to the lines the control patches anchor on.
+	const adapterSource = `
+const STEER_PRIORITY = "now";
+function initializeMeta() {
+    return {
+            _meta: {
+                steering: {
+                    supported: true,
+                },
+                goal: {},
+            },
+    };
+}
+function createSession(sessionId, q, options) {
+        this.sessions[sessionId] = {
+            query: q,
+            input: 1,
+        };
+}
+function aoLiveSession(agent, params) {
+    const session = agent.sessions[params?.sessionId];
+    if (!session) {
+        throw RequestError.invalidParams(undefined, "Live Claude session unavailable.");
+    }
+    return session;
+}
+connection.onRequest(GOAL_CONTROL_METHOD, { parse: parseGoalRequest }, (ctx) => agent.goal(ctx.params));
+`;
+
+	function load(query) {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, adapterSource);
+		expect(patchClaudeMcpControl(adapterPath)).toBe(true);
+		expect(patchClaudeMcpControl(adapterPath)).toBe(false);
+		const handlers = new Map();
+		const connection = { onRequest: (method, parser, handler) => {
+			handlers.set(method, (params) => handler({ params: parser.parse(params) }));
+			return connection;
+		} };
+		const agent = { sessions: {}, goal: () => ({}) };
+		const RequestError = {
+			invalidParams: (data, message) => Object.assign(new Error(message), { code: -32602, data }),
+		};
+		const adapter = new Function(
+			"connection", "agent", "GOAL_CONTROL_METHOD", "parseGoalRequest", "RequestError",
+			`${readFileSync(adapterPath, "utf8")}\nreturn { initializeMeta, createSession };`,
+		)(connection, agent, "goal", (params) => params, RequestError);
+		const launched = { ao: { type: "stdio", command: "ao" }, audit: { type: "sdk" } };
+		adapter.createSession.call(agent, "s1", query, { mcpServers: launched });
+		return { adapter, agent, handlers, launched };
+	}
+
+	const connected = { name: "linear", status: "connected", scope: "user", tools: [{ name: "a" }, { name: "b" }] };
+	const needsAuth = { name: "sentry", status: "needs-auth", scope: "project" };
+
+	it("advertises the requests next to steering", () => {
+		const { adapter } = load({});
+		expect(adapter.initializeMeta()._meta.mcpControl).toEqual({
+			supported: true,
+			statusMethod: "_claude/mcp_status",
+			reconnectMethod: "_claude/mcp_reconnect",
+			applyMethod: "_claude/mcp_apply",
+		});
+		expect(adapter.initializeMeta()._meta.steering).toEqual({ supported: true });
+	});
+
+	it("reports each live server with its tool count only when connected", async () => {
+		const { handlers } = load({ mcpServerStatus: async () => [connected, needsAuth] });
+		await expect(handlers.get("_claude/mcp_status")({ sessionId: "s1" })).resolves.toEqual({
+			servers: [
+				{ name: "linear", status: "connected", scope: "user", error: undefined, toolCount: 2 },
+				{ name: "sentry", status: "needs-auth", scope: "project", error: undefined, toolCount: undefined },
+			],
+		});
+	});
+
+	it("refuses a session that is not live", async () => {
+		const { handlers } = load({ mcpServerStatus: async () => [] });
+		await expect(handlers.get("_claude/mcp_status")({ sessionId: "gone" })).rejects.toThrow("Live Claude session unavailable.");
+	});
+
+	it("reconnects a named server and reports a refusal with the servers' state", async () => {
+		const reconnected = [];
+		const { handlers } = load({
+			mcpServerStatus: async () => [needsAuth],
+			reconnectMcpServer: async (name) => {
+				reconnected.push(name);
+				if (name === "sentry") throw new Error("Server status: needs-auth");
+			},
+		});
+		const reconnect = handlers.get("_claude/mcp_reconnect");
+		await expect(reconnect({ sessionId: "s1", serverName: "linear" })).resolves.toMatchObject({ error: undefined });
+		const refused = await reconnect({ sessionId: "s1", serverName: "sentry" });
+		expect(refused.error).toBe("Server status: needs-auth");
+		expect(refused.servers.map((server) => server.status)).toEqual(["needs-auth"]);
+		expect(reconnected).toEqual(["linear", "sentry"]);
+		await expect(reconnect({ sessionId: "s1" })).rejects.toThrow("needs a server name");
+	});
+
+	it("keeps what the session launched with whenever it changes the dynamic set", async () => {
+		const sets = [];
+		const { handlers, launched } = load({
+			mcpServerStatus: async () => [connected],
+			setMcpServers: async (servers) => {
+				sets.push(servers);
+				return { added: Object.keys(servers), removed: [], errors: { broken: "no route" } };
+			},
+		});
+		const apply = handlers.get("_claude/mcp_apply");
+		const config = { type: "http", url: "https://example.test/mcp", headers: { "X-Api-Key": "secret" } };
+		const result = await apply({ sessionId: "s1", set: { added: config } });
+		expect(result.errors).toEqual({ broken: "no route" });
+		expect(sets[0]).toEqual({ ...launched, added: config });
+
+		// A later change keeps an earlier one, and a removal drops only its own.
+		await apply({ sessionId: "s1", set: { second: config } });
+		expect(Object.keys(sets[1]).sort()).toEqual(["added", "ao", "audit", "second"]);
+		await apply({ sessionId: "s1", remove: ["added"] });
+		expect(Object.keys(sets[2]).sort()).toEqual(["ao", "audit", "second"]);
+	});
+
+	it("refuses a bridge it no longer recognizes and leaves it untouched", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		for (const changed of [
+			adapterSource.replace('const STEER_PRIORITY = "now";', 'const STEER_PRIORITY = "later";'),
+			adapterSource.replace("query: q,", "q,"),
+			adapterSource.replace("connection.onRequest(GOAL_CONTROL_METHOD", "connection.onNotification(GOAL_CONTROL_METHOD"),
+			adapterSource.replace("function aoLiveSession(agent, params) {", "function other(agent, params) {"),
+		]) {
+			writeFileSync(adapterPath, changed);
+			expect(() => patchClaudeMcpControl(adapterPath)).toThrow(/MCP control patch/);
+			expect(readFileSync(adapterPath, "utf8")).toBe(changed);
+		}
 	});
 });
 

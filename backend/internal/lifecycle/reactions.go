@@ -290,6 +290,18 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	return rearmErr
 }
 
+// DeliverAutomationMessage sends an AO-initiated message to a session through
+// the same guarded nudge path as the PR reaction nudges above: it is queued
+// behind a running Chat turn, wakes a hibernated Chat session, and is refused
+// (not sent) while the session awaits the human. Callers retry on a non-Sent
+// outcome; the message carries no dedup state of its own.
+func (m *Manager) DeliverAutomationMessage(ctx context.Context, id domain.SessionID, msg string) (sessionguard.Outcome, error) {
+	if m.guard == nil {
+		return sessionguard.SuppressedUnknown, fmt.Errorf("deliver automation message to %s: no messenger configured", id)
+	}
+	return m.guard.Nudge(ctx, id, msg)
+}
+
 func (m *Manager) terminateCompletedSession(ctx context.Context, id domain.SessionID) error {
 	if m.sessionMutationInProgress(id) {
 		return nil

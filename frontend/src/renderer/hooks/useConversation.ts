@@ -1202,6 +1202,11 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			content?: Record<string, unknown>,
 		) => resolveInput.mutateAsync({ requestId, action, content }),
 		interrupt: () => interrupt.mutate({ targetSessionId: sessionId as string }),
+		/** The same stop, for a caller that shows its own progress and refusal. */
+		interruptAsync: () => {
+			if (!sessionId) return Promise.reject(new Error("No conversation session is selected."));
+			return interrupt.mutateAsync({ targetSessionId: sessionId });
+		},
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
@@ -1409,6 +1414,7 @@ function steerNonAcceptance(error: unknown): ChatSteerOutcome | undefined {
 	return {
 		status: "not-accepted",
 		reason: steerRefusal(error) ?? apiErrorMessage(error),
+		code,
 	};
 }
 

@@ -340,6 +340,9 @@ func (r *acpRelay) providerFrame(
 	attached bool,
 ) ([]byte, bool, error) {
 	r.lastActivityAt = time.Now()
+	// Before the journal: a replayed turn must not carry whole PDFs, and they
+	// would otherwise fill the journal.
+	frame = SlimACPFrame(frame)
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(frame, &envelope) != nil {
 		return frame, false, nil //nolint:nilerr // preserve malformed output for the SDK's protocol error

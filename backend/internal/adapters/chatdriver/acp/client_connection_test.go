@@ -248,3 +248,17 @@ func readWireResponse(t *testing.T, reader *bufio.Reader) wireResponse {
 	}
 	return wireResponse{}
 }
+
+// A PDF read must not end the connection: this frame killed sessions, and
+// replaying it on reconnect kept them down.
+func TestExtensionReaderDeliversAnOversizedToolResultSlimmed(t *testing.T) {
+	frame := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","rawOutput":"` +
+		strings.Repeat("A", 15<<20) + `"}}}` + "\n"
+	out, err := io.ReadAll(newExtensionMethodReader(strings.NewReader(frame), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) >= 2<<20 || !strings.Contains(string(out), `"toolCallId":"t1"`) {
+		t.Fatalf("delivered %d bytes", len(out))
+	}
+}

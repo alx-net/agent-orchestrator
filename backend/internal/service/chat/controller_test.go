@@ -61,18 +61,35 @@ func openStore(t *testing.T) *sqlite.Store {
 	return st
 }
 
+// fullSnapshotReader also serves the narrower reads production wires, so chat
+// start tests exercise the same turns-only and output-free loads.
 func fullSnapshotReader(st *sqlite.Store) chatsvc.SnapshotReader {
-	return chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
-		rows, err := st.LoadConversationSnapshot(ctx, conversationID)
-		if err != nil {
-			return chatsvc.ConversationRows{}, err
-		}
-		return chatsvc.ConversationRows{
-			Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch, Turns: rows.Turns,
-			Messages: rows.Messages, Activities: rows.Activities,
-			BranchPoints: rows.BranchPoints, BranchedFromEarlierMessage: rows.BranchedFromEarlierMessage,
-		}, nil
-	})
+	return storeSnapshotReader{st: st}
+}
+
+type storeSnapshotReader struct{ st *sqlite.Store }
+
+func (r storeSnapshotReader) LoadConversationSnapshot(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return storeConversationRows(r.st.LoadConversationSnapshot(ctx, conversationID))
+}
+
+func (r storeSnapshotReader) LoadConversationTurnsSnapshot(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return storeConversationRows(r.st.LoadConversationTurnsSnapshot(ctx, conversationID))
+}
+
+func (r storeSnapshotReader) LoadConversationSnapshotWithoutActivityOutput(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {
+	return storeConversationRows(r.st.LoadConversationSnapshotWithoutActivityOutput(ctx, conversationID))
+}
+
+func storeConversationRows(rows store.ConversationSnapshot, err error) (chatsvc.ConversationRows, error) {
+	if err != nil {
+		return chatsvc.ConversationRows{}, err
+	}
+	return chatsvc.ConversationRows{
+		Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch, Turns: rows.Turns,
+		Messages: rows.Messages, Activities: rows.Activities,
+		BranchPoints: rows.BranchPoints, BranchedFromEarlierMessage: rows.BranchedFromEarlierMessage,
+	}, nil
 }
 
 func boundedSnapshotReader(st *sqlite.Store) chatsvc.SnapshotPageReader {

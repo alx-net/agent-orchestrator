@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import type { AgentReadinessSnapshot } from "./useAgentReadinessQuery";
 import { sessionInterfaceTransitionQueryKey } from "./useSessionInterfaceTransition";
 
@@ -28,8 +29,18 @@ export function followsSavedAccount(agent: AgentReadinessSnapshot | undefined): 
 	return Boolean(agent?.authentication.diagnostics?.some((step) => step.code === "saved_default_account"));
 }
 
+/** An account request the daemon refused, with its error code. */
+export class AgentAccountError extends Error {
+	constructor(message: string, readonly code?: string) {
+		super(message);
+	}
+}
+
 function unwrap<T>({ data, error }: { data?: T; error?: unknown }): T {
-	if (error) throw new Error(apiErrorMessage(error));
+	if (error) {
+		const nested = typeof error === "object" && error !== null ? (error as { error?: unknown }).error : undefined;
+		throw new AgentAccountError(apiErrorMessage(error), apiErrorCode(error) ?? apiErrorCode(nested));
+	}
 	return data as T;
 }
 
@@ -55,13 +66,22 @@ export function agentAccountName(account: Pick<AgentAccount, "email" | "provider
 		: t("settings.agentAccounts.cliLoginOf", { provider: agentAccountProviderNames[account.provider] });
 }
 
+/** An account's name among others: the computer's own login is marked when a
+ * saved account is signed in as the same email, so the two read apart. */
+export function agentAccountOptionName(account: AgentAccount, others: AgentAccount[], t: TFunction): string {
+	const name = agentAccountName(account, t);
+	const shared = others.some((other) => other.id !== account.id && other.provider === account.provider &&
+		agentAccountName(other, t).toLowerCase() === name.toLowerCase());
+	return shared && account.device ? `${name} · ${t("settings.harness.thisComputer")}` : name;
+}
+
 /** Names an account by id in status text, such as "Moved from … to …". */
 export function useAgentAccountLabel(enabled = true) {
 	const { t } = useTranslation();
 	const accounts = useAgentAccounts(enabled);
 	return (id: string | undefined) => {
 		const account = accounts.data?.find((candidate) => candidate.id === id);
-		return account ? agentAccountName(account, t) : t("settings.agentAccounts.removedAccount");
+		return account ? agentAccountOptionName(account, accounts.data ?? [], t) : t("settings.agentAccounts.removedAccount");
 	};
 }
 

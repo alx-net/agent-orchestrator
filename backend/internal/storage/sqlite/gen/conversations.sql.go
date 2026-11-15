@@ -345,16 +345,21 @@ func (q *Queries) AppendConversationMessageDelta(ctx context.Context, arg Append
 
 const applyConversationTitleToSession = `-- name: ApplyConversationTitleToSession :execrows
 UPDATE sessions
-SET display_name = ?, updated_at = ?
-WHERE id = ?
-  AND (display_name = '' OR display_name = ?)
+SET display_name = ?1, auto_title = ?2, updated_at = ?3
+WHERE id = ?4
+  AND title_area IS ?5
+  AND (display_name = '' OR display_name = ?6
+    OR display_name = ?7)
 `
 
 type ApplyConversationTitleToSessionParams struct {
-	DisplayName   string
-	UpdatedAt     time.Time
-	ID            domain.SessionID
-	DisplayName_2 string
+	DisplayName          string
+	AutoTitle            string
+	UpdatedAt            time.Time
+	ID                   domain.SessionID
+	TitleArea            sql.NullString
+	AppliedTitle         string
+	PrefixedAppliedTitle string
 }
 
 // Push a provider thread title into the session label, without ever overwriting a
@@ -368,12 +373,18 @@ type ApplyConversationTitleToSessionParams struct {
 // It lives with the conversation queries rather than the session ones because it is
 // part of the conversation title lifecycle; sessions is only the table the value
 // lands in.
+// A session with a title area also admits the witness carrying that area's prefix,
+// and the area itself is part of the guard: the caller composed the new label with
+// the area it read, so a different area must not slip in between.
 func (q *Queries) ApplyConversationTitleToSession(ctx context.Context, arg ApplyConversationTitleToSessionParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, applyConversationTitleToSession,
 		arg.DisplayName,
+		arg.AutoTitle,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.DisplayName_2,
+		arg.TitleArea,
+		arg.AppliedTitle,
+		arg.PrefixedAppliedTitle,
 	)
 	if err != nil {
 		return 0, err
@@ -624,6 +635,30 @@ type ConversationActivityExistsForProviderItemParams struct {
 // where output arrives before item/started creates the activity.
 func (q *Queries) ConversationActivityExistsForProviderItem(ctx context.Context, arg ConversationActivityExistsForProviderItemParams) (bool, error) {
 	row := q.db.QueryRowContext(ctx, conversationActivityExistsForProviderItem, arg.ConversationID, arg.ProviderItemID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const conversationActivityExistsForRequest = `-- name: ConversationActivityExistsForRequest :one
+SELECT EXISTS(
+    SELECT 1
+    FROM conversation_activities
+    WHERE conversation_id = ?1
+      AND request_id = ?2
+)
+`
+
+type ConversationActivityExistsForRequestParams struct {
+	ConversationID string
+	RequestID      string
+}
+
+// A persistent provider host replays every request still awaiting an answer to
+// the controller that reattaches to it. The previous controller already wrote
+// that request's row, and request ids are unique, so the replay updates it.
+func (q *Queries) ConversationActivityExistsForRequest(ctx context.Context, arg ConversationActivityExistsForRequestParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, conversationActivityExistsForRequest, arg.ConversationID, arg.RequestID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -2289,6 +2324,115 @@ func (q *Queries) SelectConversationActivitiesPage(ctx context.Context, arg Sele
 			&i.CommandOutput,
 			&i.CommandOutputTruncated,
 			&i.StreamedText,
+			&i.StreamedTextTruncated,
+			&i.BranchID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const selectConversationActivitiesWithoutOutput = `-- name: SelectConversationActivitiesWithoutOutput :many
+WITH RECURSIVE active_path(branch_id, max_sequence) AS (
+    SELECT conversations.active_branch_id, CAST(NULL AS INTEGER)
+    FROM conversations
+    WHERE conversations.id = ?1
+    UNION ALL
+    SELECT branch.parent_branch_id,
+           CASE
+               WHEN path.max_sequence IS NULL THEN branch.fork_after_sequence
+               WHEN branch.fork_after_sequence < path.max_sequence THEN branch.fork_after_sequence
+               ELSE path.max_sequence
+           END
+    FROM active_path AS path
+    JOIN conversation_branches AS branch ON branch.id = path.branch_id
+    WHERE branch.parent_branch_id IS NOT NULL
+)
+SELECT conversation_activities.id,
+       conversation_activities.conversation_id,
+       conversation_activities.turn_id,
+       conversation_activities.sequence,
+       conversation_activities.revision,
+       conversation_activities.kind,
+       conversation_activities.status,
+       conversation_activities.summary,
+       conversation_activities.detail_json,
+       conversation_activities.request_id,
+       conversation_activities.provider_item_id,
+       conversation_activities.created_at,
+       conversation_activities.updated_at,
+       conversation_activities.command_output_truncated,
+       conversation_activities.streamed_text_truncated,
+       conversation_activities.branch_id
+FROM conversation_activities
+JOIN active_path AS path ON path.branch_id = conversation_activities.branch_id
+WHERE conversation_activities.conversation_id = ?1
+  AND (path.max_sequence IS NULL OR conversation_activities.sequence <= path.max_sequence)
+  AND (conversation_activities.turn_id IS NULL OR conversation_activities.turn_id NOT IN (
+      SELECT discarded.id FROM conversation_turns AS discarded
+      WHERE discarded.conversation_id = ?1
+        AND (
+          discarded.rolled_back_at IS NOT NULL
+          OR discarded.state = 'cancelled'
+        )
+  ))
+ORDER BY conversation_activities.sequence
+`
+
+type SelectConversationActivitiesWithoutOutputRow struct {
+	ID                     string
+	ConversationID         string
+	TurnID                 sql.NullString
+	Sequence               int64
+	Revision               int64
+	Kind                   domain.ActivityKind
+	Status                 domain.ActivityStatus
+	Summary                string
+	DetailJson             string
+	RequestID              string
+	ProviderItemID         string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	CommandOutputTruncated int64
+	StreamedTextTruncated  int64
+	BranchID               string
+}
+
+// SelectConversationActivities without the command_output and streamed_text
+// bodies. Chat start reconciles native history on kind, summary and detail only,
+// and those bodies are most of a long conversation's bytes.
+func (q *Queries) SelectConversationActivitiesWithoutOutput(ctx context.Context, conversationID string) ([]SelectConversationActivitiesWithoutOutputRow, error) {
+	rows, err := q.db.QueryContext(ctx, selectConversationActivitiesWithoutOutput, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SelectConversationActivitiesWithoutOutputRow{}
+	for rows.Next() {
+		var i SelectConversationActivitiesWithoutOutputRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConversationID,
+			&i.TurnID,
+			&i.Sequence,
+			&i.Revision,
+			&i.Kind,
+			&i.Status,
+			&i.Summary,
+			&i.DetailJson,
+			&i.RequestID,
+			&i.ProviderItemID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CommandOutputTruncated,
 			&i.StreamedTextTruncated,
 			&i.BranchID,
 		); err != nil {
@@ -4429,6 +4573,33 @@ func (q *Queries) SettleConversationActivity(ctx context.Context, arg SettleConv
 		arg.UpdatedAt,
 		arg.ConversationID,
 		arg.ProviderItemID,
+	)
+	return err
+}
+
+const settleConversationActivityByRequest = `-- name: SettleConversationActivityByRequest :exec
+UPDATE conversation_activities
+SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?
+WHERE conversation_id = ? AND request_id = ? AND status <> 'cancelled'
+`
+
+type SettleConversationActivityByRequestParams struct {
+	Status         domain.ActivityStatus
+	Summary        string
+	DetailJson     string
+	UpdatedAt      time.Time
+	ConversationID string
+	RequestID      string
+}
+
+func (q *Queries) SettleConversationActivityByRequest(ctx context.Context, arg SettleConversationActivityByRequestParams) error {
+	_, err := q.db.ExecContext(ctx, settleConversationActivityByRequest,
+		arg.Status,
+		arg.Summary,
+		arg.DetailJson,
+		arg.UpdatedAt,
+		arg.ConversationID,
+		arg.RequestID,
 	)
 	return err
 }

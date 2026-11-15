@@ -97,6 +97,14 @@ type Config struct {
 	SessionMode func(ports.PermissionMode) string
 	// SessionOptions maps AO's per-turn choices onto ACP config option ids.
 	SessionOptions func(ports.ChatTurnSettings) []SessionOption
+	// ModelAlias returns the offered model choice that a model the session does
+	// not list stands for, such as Claude Code's "fable" once it lists that model
+	// as claude-fable-5-2, or "" when no single choice is certain. When that is
+	// the current model, no change is sent and the turn reports the id. Any other
+	// answer leaves the agent to resolve the name itself. Without this, an alias
+	// of the current model is sent every turn, and Claude Code checks every model
+	// change against the API.
+	ModelAlias func(model string, choices []ports.ChatConfigOptionChoice) string
 	// LaunchSessionOptions returns config options whose value is fixed for the
 	// whole session and known only from the launch, such as a persona the agent
 	// lets AO select by id but not by launch flag. They are set once after
@@ -380,7 +388,7 @@ func (d *Driver) openNewSession(
 		return fmt.Errorf("configure ACP session: %w", err)
 	}
 	settingsStarted := time.Now()
-	err = conv.applyTurnSettings(ctx, settings)
+	_, err = conv.applyTurnSettings(ctx, settings)
 	d.logStartStage(launchCfg.SessionID, "initial_settings", settingsStarted, err)
 	if err != nil {
 		// Initial model and permission mode may have been applied via launch-time
@@ -607,11 +615,16 @@ func (d *Driver) resumeSession(
 		conv.discard()
 		return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
 	}
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
-		if !errors.Is(err, ErrACPSetterUnsupported) {
-			conv.discard()
-			return nil, fmt.Errorf("%w: configure ACP session: %w", ports.ErrChatResumeFailed, err)
-		}
+	// Every send applies its settings again before the prompt, so a setting the
+	// agent refuses now (Claude Code checks a model change against the API, and
+	// an account at its usage limit answers 429) waits for that send, which
+	// reports the real error in the chat. Failing here instead threw away a
+	// conversation that had loaded and left the session impossible to resume.
+	settingsStarted := time.Now()
+	_, err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
+	d.logStartStage(launchCfg.SessionID, "resume_settings", settingsStarted, err)
+	if err != nil && !errors.Is(err, ErrACPSetterUnsupported) {
+		d.log.Warn("chat: resumed ACP session kept its previous settings", "sessionID", launchCfg.SessionID, "error", err)
 	}
 	if historyConversation != nil {
 		return historyConversation, nil
@@ -729,6 +742,7 @@ func (d *Driver) initialize(
 	conv := newConversation(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
 	)
+	conv.harness = d.cfg.Harness
 	conv.onAuthRejected = d.cfg.OnAuthRejected
 	conv.promptResponseFailure = d.cfg.PromptResponseFailure
 	conv.sessionPromptResponseFailure = d.cfg.SessionPromptResponseFailure
@@ -738,6 +752,7 @@ func (d *Driver) initialize(
 	conv.historyUserChunkIsMessage = d.cfg.HistoryUserChunkIsMessage
 	conv.plansSpanTurns = d.cfg.PlansSpanTurns
 	conv.requireAdvertised = d.cfg.RequireAdvertisedOptions
+	conv.modelAlias = d.cfg.ModelAlias
 	if proc.reconnected {
 		state := proc.acpState
 		if state == nil || state.SessionID == "" {
@@ -921,6 +936,9 @@ func conversationCapabilities(
 	if extensionSupported(init.Meta, subagentControlExtension) {
 		caps[ports.ChatCapabilitySubagents] = true
 	}
+	if extensionSupported(init.Meta, mcpControlExtension) {
+		caps[ports.ChatCapabilityMCPReload] = true
+	}
 	caps[ports.ChatCapabilityImages] = init.AgentCapabilities.PromptCapabilities.Image
 	caps[ports.ChatCapabilityEmbeddedContext] = init.AgentCapabilities.PromptCapabilities.EmbeddedContext
 	// ResourceLink is a baseline ACP content block rather than an optional prompt
@@ -949,17 +967,6 @@ func extensionSupported(meta map[string]any, name string) bool {
 }
 
 func pointer[T any](value T) *T { return &value }
-
-// isACPAuthRequired reports whether err is the agent telling us the credential
-// was refused, so the caller can raise a reauth prompt instead of a generic
-// turn failure.
-func isACPAuthRequired(err error) bool {
-	var requestErr *acpsdk.RequestError
-	if !errors.As(err, &requestErr) {
-		return false
-	}
-	return requestErr.Code == -32000
-}
 
 // acpResourceNotFound is ACP's JSON-RPC "Resource not found" error code. A
 // session/load or session/resume for an id the agent never persisted returns it.

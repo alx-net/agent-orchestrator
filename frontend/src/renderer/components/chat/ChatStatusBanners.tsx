@@ -16,7 +16,10 @@
 import { memo, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleArrowUp, KeyRound, Plug, TriangleAlert, X } from "lucide-react";
+import { useMcpConnect, useSessionMcpServers } from "../../hooks/useMcpServers";
 import { useSettings } from "../../hooks/useSettings";
+import { agentAccountProviderFor, useAgentAccountActions, useAgentAccounts, useSessionAgentAccounts } from "../../hooks/useAgentAccounts";
+import { showPendingAccountLogin } from "../settings/AgentAccountsSection";
 import { versionLabel } from "../../hooks/useHarnessUpdates";
 import { agentLabel } from "../../lib/agent-options";
 import { labelForHost } from "../../lib/host-clients";
@@ -39,6 +42,7 @@ export const ReauthBanner = memo(function ReauthBanner({
 	harness,
 	hostId,
 	cloud = false,
+	sessionId,
 }: {
 	account: ConversationAccount;
 	harness: string;
@@ -46,10 +50,23 @@ export const ReauthBanner = memo(function ReauthBanner({
 	hostId?: string;
 	/** The session runs in the cloud, so its login is the cloud connection's. */
 	cloud?: boolean;
+	/** The session, to sign in the saved account it runs on. */
+	sessionId?: string;
 }) {
 	const { t } = useTranslation();
 	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const [dismissedFailure, setDismissedFailure] = useState<string>();
+	const [signingIn, setSigningIn] = useState(false);
+	const accountActions = useAgentAccountActions();
+	// A session on an account added in AO needs that account signed in: the
+	// computer's own login would not reach it.
+	const provider = !hostId && !cloud ? agentAccountProviderFor(harness) : null;
+	const sessionAccounts = useSessionAgentAccounts(provider ? sessionId : undefined);
+	const accounts = useAgentAccounts();
+	const savedAccount = provider
+		? accounts.data?.find((option) => option.id === sessionAccounts.data?.[provider] && !option.device)
+		: undefined;
 	const failure = account.authFailureId ?? `${harness}:${account.reauthRequiredAt}:${account.reauthReason}`;
 	const required = account.authenticationState === "required" ||
 		(account.authenticationState === undefined && Boolean(account.reauthRequiredAt));
@@ -62,14 +79,34 @@ export const ReauthBanner = memo(function ReauthBanner({
 			<p className="min-w-0 flex-1 text-xs leading-snug text-foreground">
 				{host ? t("chat.reauth.expiredOnHost", { agent, host }) : t("chat.reauth.expired", { agent })}
 			</p>
-			<Button type="button" size="sm" variant="outline" className="shrink-0"
-				onClick={() => openGlobalSettings("harness", {
-					focusAgentId: harness,
-					...(hostId ? { hostId } : {}),
-					harnessView: cloud ? "cloud" : "local",
-					startLogin: true,
-					preserveProject: true,
-				})}>
+			<Button type="button" size="sm" variant="outline" className="shrink-0" disabled={signingIn}
+				data-terminal-focus-handoff="true"
+				onClick={() => {
+					const openHarness = (startLogin: boolean) => openGlobalSettings("harness", {
+						focusAgentId: harness,
+						...(hostId ? { hostId } : {}),
+						harnessView: cloud ? "cloud" : "local",
+						startLogin,
+						preserveProject: true,
+					});
+					if (!provider || !savedAccount) {
+						openHarness(true);
+						return;
+					}
+					// Start the account's own sign-in; the accounts page opens on it.
+					setSigningIn(true);
+					void accountActions.signInAgain(savedAccount.id)
+						.then((login) => {
+							const replaced = showPendingAccountLogin(provider, login);
+							if (replaced) void accountActions.cancelLogin(replaced.operationId).catch(() => undefined);
+							openHarness(false);
+						})
+						.catch((error: unknown) => {
+							showGlobalToast(t("chat.reauth.logInAgain"), error instanceof Error ? error.message : String(error), "error");
+							openHarness(false);
+						})
+						.finally(() => setSigningIn(false));
+				}}>
 				{t("chat.reauth.logInAgain")}
 			</Button>
 			<Button variant="ghost" size="icon" className="size-6 shrink-0"
@@ -219,6 +256,87 @@ export const McpServerBanner = memo(function McpServerBanner({
 			<span className="truncate">
 				{t("chat.mcpNotice.unavailable", { names, count: servers.length })}
 			</span>
+		</div>
+	);
+});
+
+function McpConnectButton({ sessionId, name }: { sessionId: string; name: string }) {
+	const { t } = useTranslation();
+	const connect = useMcpConnect({ name, sessionId });
+	const failed = connect.error || (connect.operation && ["failed", "timed_out"].includes(connect.operation.state) ? connect.operation.error : undefined);
+	return (
+		<span className="flex min-w-0 items-center gap-2">
+			{failed ? <span role="alert" className="min-w-0 truncate text-xs text-destructive" title={failed}>{failed}</span> : null}
+			<Button type="button" size="sm" variant="outline" className="shrink-0" disabled={connect.busy} onClick={() => void connect.start()}>
+				{connect.busy ? t("chat.mcpConnect.waiting") : t("chat.mcpConnect.action", { name })}
+			</Button>
+		</span>
+	);
+}
+
+const MCP_CONNECT_DISMISS_PREFIX = "ao:mcp-connect-dismissed:";
+
+function mcpConnectWasDismissed(key: string): boolean {
+	try {
+		return window.localStorage.getItem(key) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function displayServerName(name: string): string {
+	return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
+ * The session's agent lacks a server nobody signed in to here, including after
+ * it moved to a subscription without that sign-in. One click opens the browser,
+ * and the notice clears by itself once the agent has the server. Dismissing is
+ * per session and per set of servers: a new one still gets said.
+ */
+export const McpConnectBanner = memo(function McpConnectBanner({
+	sessionId,
+	servers,
+	active = true,
+}: {
+	sessionId: string;
+	/** Servers the running agent reports as needing a sign-in. */
+	servers: McpServer[];
+	active?: boolean;
+}) {
+	const { t } = useTranslation();
+	const names = servers.map((server) => server.name);
+	// A key server the running agent reports as refused is not a sign-in to offer.
+	const details = useSessionMcpServers(sessionId, active && names.length > 0);
+	const connectable = names.filter((name) => {
+		const row = details.data?.servers.find((server) => server.name === name);
+		return row ? row.accounts.some((status) => status.action === "connect") : !details.isSuccess;
+	});
+	const dismissKey = `${MCP_CONNECT_DISMISS_PREFIX}${sessionId}:${[...connectable].sort().join(",")}`;
+	const [dismissed, setDismissed] = useState<string | null>(null);
+	if (!active || connectable.length === 0 || dismissed === dismissKey || mcpConnectWasDismissed(dismissKey)) return null;
+	const shown = connectable.slice(0, 3);
+	return (
+		<div role="status" data-testid="mcp-connect-banner" className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-border bg-surface px-4 py-2">
+			<Plug aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+			<p className="min-w-0 flex-1 text-xs leading-snug text-foreground">
+				{connectable.length === 1
+					? t("chat.mcpConnect.one", { name: displayServerName(connectable[0] ?? "") })
+					: t("chat.mcpConnect.many", { count: connectable.length })}
+			</p>
+			{shown.map((name) => <McpConnectButton key={name} sessionId={sessionId} name={name} />)}
+			<Button variant="ghost" size="icon" className="size-6 shrink-0"
+				aria-label={t("chat.mcpConnect.dismiss")} title={t("chat.mcpConnect.dismiss")}
+				onClick={() => {
+					try {
+						window.localStorage.setItem(dismissKey, "1");
+					} catch {
+						// Best-effort: the state still covers this pane.
+					}
+					setDismissed(dismissKey);
+				}}>
+				<X aria-hidden="true" className="size-3.5" />
+			</Button>
 		</div>
 	);
 });

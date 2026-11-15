@@ -245,6 +245,55 @@ func TestTaskPreparationPromotionPreservesWorkspace(t *testing.T) {
 	}
 }
 
+func TestStandaloneTaskPreparationIsHiddenThenPromotedOrDeleted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	reserve := func() domain.SessionRecord {
+		t.Helper()
+		prepared := sampleRecord("")
+		prepared.ProjectID = ""
+		prepared.IsTaskPreparation = true
+		prepared.ProvisionState = domain.SessionProvisionProvisioning
+		prepared.Metadata.Branch = ""
+		prepared.Metadata.WorkspacePath = ""
+		created, err := s.CreateSession(ctx, prepared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.SetSessionProvisionedWorkspace(ctx, created.ID, "", "/standalone/"+string(created.ID), "", created.UpdatedAt); err != nil || !ok {
+			t.Fatalf("publish prepared folder = %v, %v", ok, err)
+		}
+		return created
+	}
+
+	claimed := reserve()
+	abandoned := reserve()
+	if claimed.ID != "standalone-1" || abandoned.ID != "standalone-2" {
+		t.Fatalf("reserved ids = %q, %q", claimed.ID, abandoned.ID)
+	}
+
+	visible := sampleRecord("")
+	visible.ProjectID = ""
+	visible.Metadata.Branch = ""
+	if ok, err := s.PromoteTaskPreparation(ctx, claimed.ID, visible); err != nil || !ok {
+		t.Fatalf("promote preparation = %v, %v", ok, err)
+	}
+	got, ok, err := s.GetSession(ctx, claimed.ID)
+	if err != nil || !ok {
+		t.Fatalf("get promoted session = %v, %v", ok, err)
+	}
+	if got.IsTaskPreparation || !got.IsStandalone() || got.Metadata.WorkspacePath != "/standalone/standalone-1" {
+		t.Fatalf("promoted session = %+v", got)
+	}
+
+	if deleted, err := s.DeleteTaskPreparation(ctx, abandoned.ID); err != nil || !deleted {
+		t.Fatalf("delete abandoned preparation = %v, %v", deleted, err)
+	}
+	if deleted, err := s.DeleteTaskPreparation(ctx, claimed.ID); err != nil || deleted {
+		t.Fatalf("delete claimed preparation = %v, %v; a claimed row must survive", deleted, err)
+	}
+}
+
 func TestTaskPreparationBaseWriteCannotOverwritePromotedSession(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -965,6 +1014,44 @@ func TestListLiveSessionsSkipsTerminated(t *testing.T) {
 	}
 	if live[1].Metadata.Branch != "feat/x" || live[1].Harness != domain.HarnessClaudeCode {
 		t.Fatalf("live session record not fully decoded: %+v", live[1])
+	}
+}
+
+// The preview poller's narrow read must carry the same fields it reads from a
+// full live session record, and skip ended sessions the same way.
+func TestListPreviewPollSessionsMatchesLiveSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	for range 2 {
+		rec := sampleRecord("mer")
+		rec.Metadata.PreviewURL = "index.html"
+		if _, err := s.CreateSession(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended, _, err := s.GetSession(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended.IsTerminated = true
+	if err := s.UpdateSession(ctx, ended); err != nil {
+		t.Fatal(err)
+	}
+	live, err := s.ListLiveSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := s.ListPreviewPollSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow) != len(live) || len(narrow) != 1 {
+		t.Fatalf("narrow = %d sessions, live = %d, want 1 each", len(narrow), len(live))
+	}
+	full, got := live[0], narrow[0]
+	if got.ID != full.ID || got.Kind != full.Kind || got.Metadata.WorkspacePath != full.Metadata.WorkspacePath || got.Metadata.PreviewURL != full.Metadata.PreviewURL {
+		t.Fatalf("narrow %+v differs from live %+v", got, full)
 	}
 }
 

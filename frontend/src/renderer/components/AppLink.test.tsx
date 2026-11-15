@@ -9,15 +9,30 @@ const url = "https://github.com/aoagents/agent-orchestrator/pull/42";
 afterEach(() => vi.restoreAllMocks());
 
 describe("AppLink", () => {
-	it("opens PR links in ao even when the product link stops propagation", () => {
+	it("opens web links in ao even when the product link stops propagation", () => {
 		const open = vi.fn();
 		const external = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const docs = "https://docs.example.com/guide";
 		render(<AppBrowserLinkContext.Provider value={open}>
-			<ProductExternalLink href={url} stopPropagation>PR #42</ProductExternalLink>
+			<ProductExternalLink href={docs} stopPropagation>Guide</ProductExternalLink>
 		</AppBrowserLinkContext.Provider>);
 		fireEvent.click(screen.getByRole("link"));
-		expect(open).toHaveBeenCalledExactlyOnceWith(url);
+		expect(open).toHaveBeenCalledExactlyOnceWith(docs);
 		expect(external).not.toHaveBeenCalled();
+	});
+
+	it("opens GitHub links in the signed-in system browser, not the ao browser", () => {
+		const open = vi.fn();
+		const external = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		const gist = "https://gist.github.com/ada/abc123";
+		render(<AppBrowserLinkContext.Provider value={open}>
+			<ProductExternalLink href={url} stopPropagation>PR #42</ProductExternalLink>
+			<AppLink href={gist}>Gist</AppLink>
+		</AppBrowserLinkContext.Provider>);
+		fireEvent.click(screen.getByRole("link", { name: "PR #42" }));
+		fireEvent.click(screen.getByRole("link", { name: "Gist" }));
+		expect(external.mock.calls).toEqual([[url], [gist]]);
+		expect(open).not.toHaveBeenCalled();
 	});
 
 	it("offers ao, external, and copy actions without opening on right-click", async () => {

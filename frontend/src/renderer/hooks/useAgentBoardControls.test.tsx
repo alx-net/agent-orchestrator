@@ -36,7 +36,6 @@ const audit: SubagentCard = {
 	startedAt: new Date(Date.now() - 60_000).toISOString(),
 	updatedAt: new Date().toISOString(),
 	notes: [{ kind: "status", text: "Reading the token validator", at: new Date(Date.now() - 30_000).toISOString() }],
-	decisions: [],
 	toolCount: 2,
 	inbox: [],
 };
@@ -47,14 +46,13 @@ const main: MainAgentSummary = {
 	startedAt: new Date(Date.now() - 120_000).toISOString(),
 	nowLine: "Waiting on the audit",
 	notes: [],
-	decisions: [],
 	sent: [],
 };
 
 type Steer = (text: string, attachments: undefined, clientMessageId: string) => Promise<ChatSteerOutcome | void>;
 
 function Harness({ cards, summary, steer }: { cards: SubagentCard[]; summary: MainAgentSummary; steer?: Steer }) {
-	const controls = useAgentBoardControls({ sessionId: "ao-1", cards, mainSent: summary.sent, steer });
+	const controls = useAgentBoardControls({ sessionId: "ao-1", cards, main: summary, steer });
 	return <SubagentBoard activeTurnId="turn-1" cards={cards} controls={controls} main={summary} mode="chat" />;
 }
 

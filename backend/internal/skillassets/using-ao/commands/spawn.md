@@ -3,6 +3,8 @@
 Spawn a worker or orchestrator agent session in a registered project, or a standalone worker session that is not tied to a project.
 Standalone sessions run in an AO-managed directory. Register a project first with `ao project add` for project-scoped sessions.
 
+Give each new, unrelated task to a fresh worker. Redirect an existing worker with `ao send` only for follow-ups on its own task or PR: a fresh worker costs far less than a long-running one that rereads its whole history every turn, and starts without stale context.
+
 ## Syntax
 
 ```
